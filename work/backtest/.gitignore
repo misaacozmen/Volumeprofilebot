@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+outputs/reports/*.csv
+data/processed/*
+!data/processed/.gitkeep

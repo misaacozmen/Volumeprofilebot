@@ -1,0 +1,179 @@
+{
+  "name": "NQ_SPX_QUALITY_TIME_MIXED_RR_V1",
+  "status": "LOCAL_WATCH_NOT_ALL_CRITERIA",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v6_strategy_loop\\nq_spx_quality_interactions_v1.json",
+  "entry_mode": {
+    "nq_funded_v3": "start",
+    "nq_phase": "start",
+    "spx_funded": "midpoint",
+    "spx_phase": "quarter_25"
+  },
+  "reward_r": {
+    "nq_funded_v3": 3.0,
+    "nq_phase": 3.0,
+    "spx_funded": 2.0,
+    "spx_phase": 2.0
+  },
+  "stop_management": "none",
+  "simple_rules": [
+    {
+      "round": 1,
+      "candidate": "nq_phase",
+      "feature": "context_QUALIFIED_STRUCTURE_REVERSAL",
+      "month": 12,
+      "value": true,
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 2,
+      "candidate": "nq_phase",
+      "feature": "time_bucket",
+      "month": 11,
+      "value": "10:00-10:30",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 4,
+      "candidate": "nq_phase",
+      "feature": "overnight_direction",
+      "month": 11,
+      "value": "up",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 6,
+      "candidate": "nq_phase",
+      "feature": "opposing_structure",
+      "month": 11,
+      "value": "present",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "candidate": "nq_funded_v3",
+      "feature": "htf_alignment",
+      "value": "opposed",
+      "action": "BLOCK",
+      "graph_evidence": "15m HTF state known at entry"
+    }
+  ],
+  "compound_rules": [
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "overnight_direction": "up",
+        "cisd_strength_regime": "low"
+      },
+      "graph_evidence": "overnight direction and CISD displacement known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "cisd_strength_regime": "normal",
+        "cisd_fvg_candles_regime": "high"
+      },
+      "graph_evidence": "CISD strength and elapsed candles known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "cisd_strength_regime": "low",
+        "fvg_size_regime": "low"
+      },
+      "graph_evidence": "CISD and completed FVG geometry known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "time_bucket": "09:30-10:00",
+        "opposing_structure": "present"
+      },
+      "graph_evidence": "entry timestamp and opposing structure are known before entry"
+    }
+  ],
+  "pair_rules": [
+    {
+      "system": "funded_pair",
+      "pair_rule": "opposite_direction_second_only"
+    },
+    {
+      "system": "phase_pair",
+      "pair_rule": "same_direction_second_only"
+    }
+  ],
+  "selection_periods": [
+    "2016-2021",
+    "2022-2023"
+  ],
+  "confirmation_period": "2024",
+  "historical_only": "2025-2026",
+  "metrics": {
+    "learn_2016_2021": {
+      "trades": 265,
+      "wins": 102,
+      "win_rate": 38.49,
+      "net_r": 89.0,
+      "max_drawdown_r": -12.0,
+      "profit_factor": 1.546
+    },
+    "validation_2022_2023": {
+      "trades": 147,
+      "wins": 69,
+      "win_rate": 46.94,
+      "net_r": 82.0,
+      "max_drawdown_r": -8.0,
+      "profit_factor": 2.051
+    },
+    "validation_2024": {
+      "trades": 48,
+      "wins": 29,
+      "win_rate": 60.42,
+      "net_r": 47.0,
+      "max_drawdown_r": -9.0,
+      "profit_factor": 3.474
+    },
+    "historical_2025_2026": {
+      "trades": 67,
+      "wins": 25,
+      "win_rate": 37.31,
+      "net_r": 17.0,
+      "max_drawdown_r": -14.0,
+      "profit_factor": 1.405
+    },
+    "validation_2022_2024": {
+      "trades": 195,
+      "wins": 98,
+      "win_rate": 50.26,
+      "net_r": 129.0,
+      "max_drawdown_r": -9.0,
+      "profit_factor": 2.33
+    },
+    "all_2016_2026": {
+      "trades": 527,
+      "wins": 225,
+      "win_rate": 42.69,
+      "net_r": 235.0,
+      "max_drawdown_r": -15.0,
+      "profit_factor": 1.778
+    }
+  },
+  "checks": {
+    "deterministic": true,
+    "prefix_lookahead_pass": true,
+    "data_invalid_excluded": true,
+    "graph_provable_only": true
+  },
+  "test_gate": "85/85 project tests PASS",
+  "selection_excluded": "2025-2026",
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "code_sha256": "56cbc765db4fd937860cd4e5c62adae914b04546c89228ab1f458db053fca9a3",
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "b3f6e5d49faa3719d95cffca0bf00803bdc650a4afab6c866418dbec2f078518",
+  "config_sha256": "f2fcb459c86bda5c0e2c03cc80a8a7efa1f1dfa6fe82c3b0ea340feba10efe78"
+}

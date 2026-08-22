@@ -1,0 +1,11 @@
+case_id,source,symbol,timeframe,profile,date,expected_order,expected_decision,expected_direction,expected_cisd_time,expected_fvg_time,manual_classification,issue_type,notes
+SPX-MAN-001,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-04,1,TAKE,,10:00,,PASS,CISD,"Sweep/FVG/entry/TP acceptable; CISD should be around 10:00, not engine 09:40."
+SPX-MAN-002,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-11,1,TAKE,short,,09:55,LEVEL_ISSUE,LEVEL_FVG,"Engine selected wrong swing-low liquidity; manual sees swing-high liquidity and earlier 09:55 FVG."
+SPX-MAN-003,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-11,2,TAKE,short,11:15,,PASS,CISD,"Second same-direction trade acceptable without fresh sweep; CISD should be around 11:15, not 11:10."
+SPX-MAN-004,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-13,1,SKIP,,,,FAIL,LEVEL_CISD_ENTRY,"Wrong/weak sweep below VAH, non-existent later CISD, cancel if target area reached before entry fill."
+SPX-MAN-005,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-17,1,SKIP,,,,FAIL,LEVEL_CISD,"Valid London+Asia high sweep appears later near VAH but no acceptable reaction/CISD follows."
+SPX-MAN-006,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-18,1,TAKE,long,10:15,,PASS,CISD,"Sweep and FVG acceptable; CISD should be around 10:15. Manual takes the losing trade."
+SPX-MAN-007,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2023-10-31,1,SKIP,,,,FAIL,LEVEL,"No valid sweep during trade window."
+SPX-MAN-008,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2025-02-19,1,SKIP,,,,FAIL,CISD,"Possible 10:00 swing-low sweep but no valid bearish CISD after VAL reaction."
+SPX-MAN-009,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2025-02-25,1,SKIP,,,,FAIL,CISD,"Engine appears to reuse or hallucinate CISD after sweep; manual would not take despite eventual TP."
+SPX-MAN-010,spx_first10_feedback,DUKASCOPY_USA500IDXUSD,5m,challenge_core_v2,2025-03-05,1,WATCH,short,,,FAIL,CISD_ENTRY_STOP,"Engine sweep time wrong and initial CISD invalidated; manual says valid sequence would require later CISD and different stop handling."

@@ -1,0 +1,4 @@
+fvg_size_class,stop_reference,numeric_threshold_status,scope,notes
+very_short,cisd_structure_edge,not_defined,manual_regression,"FVG is too short to carry the stop; extend to the end of the CISD structure."
+short,body_edge,not_defined,manual_regression,"Use the relevant candle body edge as the stop reference."
+long,fvg_outer_edge,not_defined,manual_regression,"Place the stop at or just beyond the far edge of the FVG."

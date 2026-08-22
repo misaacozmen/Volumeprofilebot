@@ -1,0 +1,10 @@
+case_id,date,array_type,htf,direction,manual_lower,manual_upper,source_url,notes
+SPX-FB2-002,2022-12-07,fvg,30m,bullish,3924.0,3927.6,https://www.tradingview.com/x/fxfgbLkN/,Controlling bullish support FVG blocks short.
+SPX-FB2-005,2022-12-28,fvg,30m,bearish,3834.0,3838.3,https://www.tradingview.com/x/tGwY3P3M/,Controlling bearish 30m FVG sets short context but order does not fill.
+SPX-FB2-007,2023-06-06,fvg,15m,bearish,4268.7,4270.2,https://www.tradingview.com/x/ynMdkIEr/,15m FVG transition supports long.
+SPX-FB2-009,2023-06-13,fvg,30m,bullish,4346.7,4353.5,https://www.tradingview.com/x/5VpyrjnT/,Controlling bullish support FVG blocks short.
+SPX-FB2-011,2023-06-16,order_block,15m,bullish,4427.8,4429.6,https://www.tradingview.com/x/YKqguSFC/,15m bullish OB body-close transition unlocks short.
+SPX-FB2-012,2023-06-20,fvg,30m,bearish,4394.4,4398.5,https://www.tradingview.com/x/YPN364hP/,Controlling bearish resistance FVG supports short.
+SPX-FB2-013,2023-06-27,fvg,30m,bullish,4334.8,4335.5,https://www.tradingview.com/x/y06RX3fs/,Controlling bullish support FVG supports long.
+SPX-FB2-014,2023-09-01,fvg,15m,bullish,4526.5,4530.8,https://www.tradingview.com/x/q9OFIOz1/,Bullish FVG body-close transition unlocks short.
+SPX-FB2-021,2023-10-11,fvg,30m,bearish,4371.2,4379.8,https://www.tradingview.com/x/9VY5QYnW/,Controlling bearish resistance FVG supports short.

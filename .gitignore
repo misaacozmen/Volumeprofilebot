@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.token
+*.key
+*.sig
+
+# Data files (Exclude large market datasets from git)
+work/backtest/data/raw/*.csv
+work/backtest/data/processed/
+data/raw/
+data/processed/
+*.ndjson
+
+# Live accounts & Private Credentials (Use *.example.json templates instead)
+work/backtest/live_forward/*_demo_config.json
+work/backtest/live_forward/*account*.json
+live_forward/*_demo_config.json
+
+# Binary installers and release distribution archives
+*.exe
+*.zip
+*.msi
+dist/
+outputs/deploy/*.exe
+outputs/*.zip
+
+# Reports, outputs, and temporary simulation artifacts
+*.log
+outputs/
+work/backtest/outputs/
+.pytest_cache/
+
+# Node / JavaScript dependencies
+node_modules/
+package-lock.json
+
+# Local IDEs & Operating System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+.agents/

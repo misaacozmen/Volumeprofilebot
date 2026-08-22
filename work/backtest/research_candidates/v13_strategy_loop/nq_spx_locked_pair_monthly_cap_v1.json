@@ -1,0 +1,33 @@
+{
+  "name": "NQ_SPX_LOCKED_PAIR_MONTHLY_CAP_V1",
+  "status": "LOCAL_LOCKED_PENDING_HISTORICAL_AUDIT",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v10_strategy_loop\\nq_spx_locked_pair_2016_2024_v1.json",
+  "monthly_realized_loss_cap_r": 9.0,
+  "reset": "calendar_month",
+  "state_rule": "only trades with exit_time <= current entry_time",
+  "open_trade_outcome_used": false,
+  "selection_period": "2016-2024",
+  "historical_2025_2026_used_for_selection": false,
+  "observed_pre2025": {
+    "trades": 663,
+    "win_rate": 44.04,
+    "net_r": 287.0,
+    "max_drawdown_r": 12.0,
+    "profit_factor": 1.774
+  },
+  "retention_ratio": 0.996992,
+  "rolling": {
+    "windows": 18,
+    "positive": 18,
+    "dd_pass": 18,
+    "net_nonworse": 18
+  },
+  "deterministic": true,
+  "graph_evidence_pass": true,
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "57893860eb2c2df5de8423a0dfedcc3acf5a3579658d422b962cc9a97afc2cc9",
+  "code_sha256": "b79d337306a8655c83edb074939474f9d8168ad1076bb589fc263eab1195b09a",
+  "config_sha256": "cd05790ea174483519f4a5e00913eca48c30145f654afc32e7799638b4664358"
+}

@@ -1,0 +1,113 @@
+{
+  "artifact_id": "nq_spx_locked_pair_conservative_rolling_v1",
+  "artifact_sha256": "16552b8d57a73ab739f1091a4572082de5fd61135bf06677917fff15bd9c99fd",
+  "artifact_type": "strategy_candidate",
+  "base_candidate": "research_candidates/v10_strategy_loop/nq_spx_locked_pair_2016_2024_v1.json",
+  "deterministic": true,
+  "development_result_sha256": "2f346bbb20184f0989e5539984b7c79054aa92aa703f05a8e57b0493fec9e284",
+  "fresh_forward_required": true,
+  "graph_evidence_pass": true,
+  "historical_2025_2026_used_for_selection": false,
+  "live_enabled": false,
+  "name": "NQ_SPX_LOCKED_PAIR_CONSERVATIVE_ROLLING_V1",
+  "observed_pre2025": {
+    "max_drawdown_r": 12.55,
+    "net_r": 287.95,
+    "profit_factor": 1.759,
+    "trades": 665,
+    "win_rate": 43.91
+  },
+  "open_trade_outcome_used": false,
+  "provenance": {
+    "environment": {
+      "dependencies": {
+        "pandas": "3.0.3"
+      },
+      "git_commit": null,
+      "python_implementation": "CPython",
+      "python_version": "3.14.5"
+    },
+    "inputs": [
+      {
+        "bytes": 340042,
+        "path": "outputs/reports/strategy_improvement_loop_v2/body_plus_classic_quota_day1_v1/audit/trade_evidence_index.csv",
+        "role": "trade_evidence",
+        "sha256": "4c6c9024ab5676099ec22b863be482d1977b7fa45f3500673a485677d3942a3c"
+      },
+      {
+        "bytes": 610836,
+        "path": "outputs/reports/strategy_improvement_loop_v4/iteration_065/locked_pair_v1/selected_trades_pre2025.csv",
+        "role": "research_dataset",
+        "sha256": "bdb1c3a955b3a2329688ffec101ed79a673be7161039d2e8ea20ed9eb4fbbe25"
+      },
+      {
+        "bytes": 1602,
+        "path": "research_candidates/v10_strategy_loop/nq_spx_locked_pair_2016_2024_v1.json",
+        "role": "base_candidate",
+        "sha256": "2f4f4813a310749594041ceaa943bc19ca76d43aae28f74ad90a48564a7ce93c"
+      },
+      {
+        "bytes": 10828,
+        "path": "scripts/candidate_artifact.py",
+        "role": "artifact_code",
+        "sha256": "26e08cafc94df9c89400677881c66b855f37ad32552abdb8841a907ab570ac5a"
+      },
+      {
+        "bytes": 4892,
+        "path": "scripts/freeze_conservative_rolling_state_v4.py",
+        "role": "freeze_code",
+        "sha256": "2904d7e05b540ef7471aeaea6ed2b1177653a3f3d91ea25bdadfd2629cbb0272"
+      },
+      {
+        "bytes": 4735,
+        "path": "scripts/freeze_risk_overlay_v4.py",
+        "role": "metric_code",
+        "sha256": "0fcc3b6eb35f7af89f8ff85726eceb0ef8d78c2dd74e40d35a2e716d0ed66630"
+      },
+      {
+        "bytes": 6285,
+        "path": "scripts/freeze_strategy_improvement_loop_v4.py",
+        "role": "selector_code",
+        "sha256": "0453b5f4e5663eddf2d33dff6bbb0ea16cb1749099562cfcb3de914fcdf165c7"
+      },
+      {
+        "bytes": 24377,
+        "path": "scripts/run_strategy_improvement_loop_v4.py",
+        "role": "strategy_code",
+        "sha256": "cfd0a5a493d171ba6a8ca8b6518eb35dd5bda7d0cc3b7018b0f792c2a0266db1"
+      }
+    ]
+  },
+  "retention_ratio": 1.0,
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "rolling": {
+    "dd_pass": 18,
+    "positive": 18,
+    "windows": 18
+  },
+  "schema_version": 2,
+  "selection_period": "2016-2024",
+  "selection_rule": "lowest nonnegative risk scale among pre-2025 passing rolling-state plateau; then highest net",
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "state_rule": "sum of last 10 terminal raw R values; open trades excluded",
+  "status": "LOCAL_LOCKED_PENDING_HISTORICAL_AUDIT"
+}

@@ -1,0 +1,2 @@
+case_id,date,htf,direction,manual_lower,manual_upper,expected_state,source_url,confidence,notes
+SPX-FB2-011,2023-06-16,15m,bullish,4427.8,4429.6,body_closed_inside,https://www.tradingview.com/x/YKqguSFC/,high,Bearish 07:45 candle before the 08:00 bullish displacement; 10:30 candle closes back inside the bullish OB before manual short entry.
