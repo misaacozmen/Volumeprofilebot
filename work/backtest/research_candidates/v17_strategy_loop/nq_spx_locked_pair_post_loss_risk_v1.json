@@ -1,0 +1,35 @@
+{
+  "name": "NQ_SPX_LOCKED_PAIR_POST_LOSS_RISK_V1",
+  "status": "LOCAL_LOCKED_PENDING_HISTORICAL_AUDIT",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v10_strategy_loop\\nq_spx_locked_pair_2016_2024_v1.json",
+  "risk_rule": {
+    "scaled_signals": 1,
+    "loss_scale": 0.75,
+    "healthy_scale": 1.24
+  },
+  "state_rule": "terminal loss scales next signal; open trades excluded",
+  "open_trade_outcome_used": false,
+  "selection_period": "2016-2024",
+  "historical_2025_2026_used_for_selection": false,
+  "observed_pre2025": {
+    "trades": 665,
+    "win_rate": 43.91,
+    "net_r": 286.27,
+    "max_drawdown_r": 12.92,
+    "profit_factor": 1.736
+  },
+  "retention_ratio": 1.0,
+  "rolling": {
+    "windows": 18,
+    "positive": 18,
+    "dd_pass": 18
+  },
+  "deterministic": true,
+  "graph_evidence_pass": true,
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "0c9a8dab13e9266975f25605f9de076aa6c7956c5c8d565d3bc6c27912622fb7",
+  "code_sha256": "3b97224b837ccb7de3d2900b5f2013a8cf91bafa80c233c6ce11b9b19d7a5ca9",
+  "config_sha256": "e766804b464b2433c319816e393511fc8a5a9dc8fc15c7496b7a1132e93b78ef"
+}

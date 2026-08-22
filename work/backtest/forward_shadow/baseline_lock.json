@@ -1,0 +1,28 @@
+{
+  "baseline_manifest_path": "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json",
+  "baseline_manifest_sha256": "d1f3d5ac93fc92f8c6855fafec6eda4a478d6431cca228294c93a7fb9ac23b97",
+  "engine_manifest": {
+    "code_hash": "a7456f84c7d07c09a728d0c8c83f8b7e491ed61bbce124c06bcf412beb31530f",
+    "config_hash": "0c253afd84d3bc4c333056a9170e8ddd7f5f3b246a597e5627bba186b3739029",
+    "data_hashes": {
+      "nq": "dda33f980eed4d964d23231921fcc34e6298e1a7d7a19cfd76180ad0ded9e9cf",
+      "spx": "8dbdc7e16d0800428d8583ea51eb9a52cd73a5296f6fb335901b171b7daf9f19"
+    },
+    "engine": "manual_state_canonical_v1",
+    "feeds": [
+      "DUKASCOPY"
+    ],
+    "result_hash": "b55a980e89bf31f31047558b804a183a95d359a1865dd095388eed93cc0682f2",
+    "timezone": "America/New_York"
+  },
+  "forward_contract": {
+    "execution": "SHADOW_ONLY_NO_ORDER_TRANSPORT",
+    "feed": "DUKASCOPY",
+    "htf": "15m",
+    "nq": "3m",
+    "pair_cap_r": -1.0,
+    "spx": "5m",
+    "timezone": "America/New_York"
+  },
+  "schema_version": 1
+}

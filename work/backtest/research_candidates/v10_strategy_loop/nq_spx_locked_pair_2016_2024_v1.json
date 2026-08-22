@@ -1,0 +1,54 @@
+{
+  "name": "NQ_SPX_LOCKED_PAIR_2016_2024_V1",
+  "status": "LOCAL_LOCKED_PENDING_HISTORICAL_AUDIT",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v9_strategy_loop\\nq_spx_local_best_effort_50_iterations_v1.json",
+  "added_compound_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "entry_weekday": "Monday",
+        "direction": "short"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "rule_selection_period": "2016-2024",
+  "historical_2025_2026_used_for_selection": false,
+  "criteria": {
+    "win_rate_pct": [
+      40,
+      45
+    ],
+    "max_drawdown_r": [
+      9,
+      13
+    ],
+    "net_r_above_pre2025_baseline": 263
+  },
+  "observed_pre2025": {
+    "trades": 665,
+    "win_rate": 43.91,
+    "net_r": 285.0,
+    "max_drawdown_r": 13.0,
+    "profit_factor": 1.764
+  },
+  "retention_ratio": 0.867014,
+  "checks": {
+    "deterministic": true,
+    "prefix_pass": true,
+    "graph_evidence_pass": true,
+    "rolling_windows": 18
+  },
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "9700679d550d051bfdde5d0e27e26eaaed12845adacb4bc268cbd1ff1b92ee4c",
+  "code_sha256": "9dcdce89858099af08e81818ebbe84124e685a065272188beb4282e7e5eeb565",
+  "config_sha256": "6481474715faa1ef58994a22449583bead980c69ee1e67fb9245d0b999407283"
+}

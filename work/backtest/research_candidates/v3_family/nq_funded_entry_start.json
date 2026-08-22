@@ -1,0 +1,50 @@
+{
+  "name": "NQ_FUNDED_ENTRY_START_V3",
+  "base_candidate": "nq_funded_session_midpoint_3r_0930_1030",
+  "change": {
+    "fvg_entry_mode": {
+      "from": "midpoint",
+      "to": "start"
+    }
+  },
+  "unchanged": [
+    "timeframes",
+    "weekdays",
+    "liquidity_rules",
+    "stop_model",
+    "reward_r",
+    "max_trades_per_day",
+    "first30_range_filter"
+  ],
+  "pair_results": {
+    "development_pre_2025": {
+      "trades": 129,
+      "win_rate_pct": 42.64,
+      "net_r": 50.0,
+      "max_drawdown_r": -8.0
+    },
+    "holdout_2025_plus": {
+      "trades": 45,
+      "win_rate_pct": 44.44,
+      "net_r": 20.0,
+      "max_drawdown_r": -6.0
+    },
+    "all": {
+      "trades": 174,
+      "win_rate_pct": 43.1,
+      "net_r": 70.0,
+      "max_drawdown_r": -8.0
+    }
+  },
+  "baseline_pair_all": {
+    "trades": 164,
+    "win_rate_pct": 42.68,
+    "net_r": 60.0,
+    "max_drawdown_r": -7.0
+  },
+  "status": "LOCAL_CANDIDATE_NOT_LIVE",
+  "deterministic_rerun": true,
+  "engine_tests": "85_passed",
+  "fresh_forward_required": true,
+  "live_enabled": false
+}

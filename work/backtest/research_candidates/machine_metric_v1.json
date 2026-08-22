@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "MACHINE_METRIC_V1",
+  "objective": [
+    "win_rate",
+    "net_r",
+    "max_drawdown_r",
+    "trade_retention"
+  ],
+  "blocked_context_sources": {
+    "nq": [],
+    "spx": [
+      "FIRST_QUALIFIED_STRUCTURE",
+      "SELECTED_LIQUIDITY_SWEEP"
+    ]
+  },
+  "pair_cap_r": -1.0,
+  "strategy_thresholds": "UNCHANGED",
+  "timeframes": {
+    "nq": "3m",
+    "spx": "5m",
+    "htf": "15m"
+  },
+  "timezone": "America/New_York",
+  "live_enabled": false
+}

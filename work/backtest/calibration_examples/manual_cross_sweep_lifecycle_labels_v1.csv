@@ -1,0 +1,3 @@
+case_id,date,symbol,timeframe,expected_decision,opening_thesis_direction,opening_cisd_time,opening_thesis_invalidated,later_engine_sweep_time,later_engine_liquidity,later_sweep_starts_new_thesis,manual_confidence,manual_notes
+SPX-FB2-018,2023-09-27,DUKASCOPY_USA500IDXUSD,5m,SKIP,long,09:40,yes,09:35,asia_high,no,high,"Bullish CISD loses direction before any valid PD array; the engine's later short must not be treated as a fresh manual thesis without explicit re-qualification."
+SPX-FB2-020,2023-10-04,DUKASCOPY_USA500IDXUSD,5m,TAKE,short,premarket,yes,09:35,london_high,yes,high,"Premarket bearish CISD is invalidated; the fresh London-high sweep followed by a new 10:00 bearish CISD and 10:25 PD array creates a valid new short thesis."

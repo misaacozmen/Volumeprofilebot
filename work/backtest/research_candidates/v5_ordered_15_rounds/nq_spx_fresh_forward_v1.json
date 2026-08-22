@@ -1,0 +1,146 @@
+{
+  "name": "NQ_SPX_ORDERED_15_ROUND_FRESH_FORWARD_V1",
+  "status": "LOCAL_WATCH_FRESH_FORWARD_REQUIRED",
+  "base_candidates": [
+    "nq_funded_v3",
+    "nq_phase",
+    "spx_funded",
+    "spx_phase"
+  ],
+  "entry_mode": {
+    "nq_funded_v3": "start",
+    "nq_phase": "start",
+    "spx_funded": "midpoint",
+    "spx_phase": "quarter_25"
+  },
+  "reward_r": {
+    "nq_funded_v3": 3.0,
+    "nq_phase": 3.0,
+    "spx_funded": 3.0,
+    "spx_phase": 3.0
+  },
+  "rules": [
+    {
+      "round": 1,
+      "candidate": "nq_phase",
+      "feature": "context_QUALIFIED_STRUCTURE_REVERSAL",
+      "month": 12,
+      "value": true,
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 2,
+      "candidate": "nq_phase",
+      "feature": "time_bucket",
+      "month": 11,
+      "value": "10:00-10:30",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 4,
+      "candidate": "nq_phase",
+      "feature": "overnight_direction",
+      "month": 11,
+      "value": "up",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 6,
+      "candidate": "nq_phase",
+      "feature": "opposing_structure",
+      "month": 11,
+      "value": "present",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    }
+  ],
+  "pair_rule": {
+    "baseline": "causal_daily_minus_1r_cap",
+    "selected_by_system": {
+      "funded_pair": "opposite_direction_second_only",
+      "phase_pair": "same_direction_second_only"
+    }
+  },
+  "segments": {
+    "learn_2016_2021": [
+      2016,
+      2021
+    ],
+    "validation_2022_2023": [
+      2022,
+      2023
+    ],
+    "validation_2024": [
+      2024,
+      2024
+    ],
+    "historical_2025_2026": [
+      2025,
+      2026
+    ]
+  },
+  "selection_excluded": "2025-2026",
+  "live_enabled": false,
+  "server_changed": false,
+  "fresh_forward_required": true,
+  "metrics": {
+    "learn_2016_2021": {
+      "trades": 430,
+      "wins": 122,
+      "win_rate": 28.37,
+      "net_r": 58.0,
+      "max_drawdown_r": -32.0,
+      "profit_factor": 1.188
+    },
+    "validation_2022_2023": {
+      "trades": 247,
+      "wins": 83,
+      "win_rate": 33.6,
+      "net_r": 85.0,
+      "max_drawdown_r": -15.0,
+      "profit_factor": 1.518
+    },
+    "validation_2024": {
+      "trades": 81,
+      "wins": 32,
+      "win_rate": 39.51,
+      "net_r": 47.0,
+      "max_drawdown_r": -17.0,
+      "profit_factor": 1.959
+    },
+    "historical_2025_2026": {
+      "trades": 118,
+      "wins": 36,
+      "win_rate": 30.51,
+      "net_r": 26.0,
+      "max_drawdown_r": -14.0,
+      "profit_factor": 1.317
+    }
+  },
+  "checks": {
+    "deterministic": true,
+    "first_result_sha256": "4bc58e2629162783eaf30a8f6bd614f809716820f8c99fb09bb4fad3249ebd94",
+    "second_result_sha256": "4bc58e2629162783eaf30a8f6bd614f809716820f8c99fb09bb4fad3249ebd94",
+    "prefix_lookahead_pass": true,
+    "prefix_result_sha256": "ccd16ea4095d64bff0ba3583ff57c9d1bf29a03eab7c9abfb22b22ab3c965c52",
+    "full_pre2025_result_sha256": "ccd16ea4095d64bff0ba3583ff57c9d1bf29a03eab7c9abfb22b22ab3c965c52",
+    "causality": "PASS: event schedule pre-known; prior-day features shifted; first30 unavailable before 10:00; pair result only after terminal time",
+    "data_invalid_markers": 94,
+    "live_enabled": false,
+    "final_transform_deterministic": true,
+    "final_transform_result_sha256": "51586cbd57b139762b041995c516bd025f88e3f98ad295fb01b328ecd06e09f8",
+    "final_transform_prefix_pass": true,
+    "pair_entry_prefix_pass": true
+  },
+  "code_sha256": "c78505befda4f5be35129ecc630e2ab38fa4876905fa9aa9410a9f4764055d30",
+  "config_sha256": "83036e36e5424f89725abd49bc9ee6fbee4a2106d3613cbeec784b09f083af18",
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "51586cbd57b139762b041995c516bd025f88e3f98ad295fb01b328ecd06e09f8",
+  "event_calendar_sha256": "aee67e86a79a1ffe714ae5b7d00c770a5aa6f1e93227b2ac3078626dca9a2dd6",
+  "invalid_sessions_sha256": "c634379a210699c14b9a54ad1ea0a010fbdda1c4e852cee0c5327c6a06ffcfb1",
+  "test_gate": "15/15 rounds PASS; 85/85 project tests each",
+  "final_candidate_by_leg": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\outputs\\reports\\ordered_15_round_research_v1\\final_candidate_by_leg.csv"
+}

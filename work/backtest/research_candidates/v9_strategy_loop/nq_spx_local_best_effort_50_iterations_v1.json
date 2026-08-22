@@ -1,0 +1,176 @@
+{
+  "name": "NQ_SPX_LOCAL_BEST_EFFORT_50_ITERATIONS_V1",
+  "status": "LOCAL_REJECT_CRITERIA_UNMET",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v7_strategy_loop\\nq_spx_quality_time_mixed_rr_v1.json",
+  "mechanisms": {
+    "base_profile": "block_spx_phase_monday_v1",
+    "spx_latest_entry_time": "10:45",
+    "base_spx_phase_monday": "BLOCK",
+    "supplemental_phase_body": {
+      "setup": "body_fvg",
+      "cisd_fvg_candles_regime": "low"
+    },
+    "supplemental_classic": {
+      "fvg_size_regime": "high",
+      "htf_alignment": "opposed"
+    },
+    "causal_selector": "base always; chronological supplemental while accepted month-to-date count < 5",
+    "selector_uses_trade_outcome": false
+  },
+  "entry_mode": {
+    "nq_funded_v3": "start",
+    "nq_phase": "start",
+    "spx_funded": "midpoint",
+    "spx_phase": "quarter_25"
+  },
+  "reward_r": {
+    "nq_funded_v3": 3.0,
+    "nq_phase": 3.0,
+    "spx_funded": 2.0,
+    "spx_phase": 2.0
+  },
+  "stop_management": "none",
+  "simple_rules": [
+    {
+      "round": 1,
+      "candidate": "nq_phase",
+      "feature": "context_QUALIFIED_STRUCTURE_REVERSAL",
+      "month": 12,
+      "value": true,
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 2,
+      "candidate": "nq_phase",
+      "feature": "time_bucket",
+      "month": 11,
+      "value": "10:00-10:30",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 4,
+      "candidate": "nq_phase",
+      "feature": "overnight_direction",
+      "month": 11,
+      "value": "up",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 6,
+      "candidate": "nq_phase",
+      "feature": "opposing_structure",
+      "month": 11,
+      "value": "present",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "candidate": "nq_funded_v3",
+      "feature": "htf_alignment",
+      "value": "opposed",
+      "action": "BLOCK",
+      "graph_evidence": "15m HTF state known at entry"
+    }
+  ],
+  "compound_rules": [
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "overnight_direction": "up",
+        "cisd_strength_regime": "low"
+      },
+      "graph_evidence": "overnight direction and CISD displacement known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "cisd_strength_regime": "normal",
+        "cisd_fvg_candles_regime": "high"
+      },
+      "graph_evidence": "CISD strength and elapsed candles known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "cisd_strength_regime": "low",
+        "fvg_size_regime": "low"
+      },
+      "graph_evidence": "CISD and completed FVG geometry known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "time_bucket": "09:30-10:00",
+        "opposing_structure": "present"
+      },
+      "graph_evidence": "entry timestamp and opposing structure are known before entry"
+    }
+  ],
+  "pair_rules": [
+    {
+      "system": "funded_pair",
+      "pair_rule": "opposite_direction_second_only"
+    },
+    {
+      "system": "phase_pair",
+      "pair_rule": "same_direction_second_only"
+    }
+  ],
+  "criteria": {
+    "win_rate_pct": [
+      40,
+      45
+    ],
+    "max_drawdown_r": [
+      9,
+      13
+    ],
+    "minimum_trades_each_valid_completed_month": 5,
+    "minimum_net_r_each_full_valid_year": 20,
+    "net_r_must_visibly_improve": true
+  },
+  "observed": {
+    "segment": "all_2016_2026",
+    "trades": 894,
+    "wins": 366,
+    "win_rate": 40.94,
+    "net_r": 292.0,
+    "max_drawdown_r": -16.0,
+    "profit_factor": 1.553
+  },
+  "criteria_pass": {
+    "win_rate": true,
+    "net_r": true,
+    "max_drawdown": false,
+    "monthly_trades": false,
+    "annual_net_r": false
+  },
+  "checks": {
+    "trade_count": 894,
+    "deterministic_result_hash": true,
+    "required_evidence_nonnull": true,
+    "causal_event_order": true,
+    "entry_stop_target_geometry": true,
+    "data_invalid_excluded": true,
+    "all_five_event_bars_found_in_raw_data": true,
+    "raw_event_match_count": 894,
+    "prefix_through_2024_matches_full_run": true,
+    "prefix_trade_count": 767,
+    "duplicate_signal_count": 0,
+    "result_sha256": "cfcb1e7206fb77b8ae00dcd3724d8e0a06dbdf20b719bbc55ae08a4aa51029e3",
+    "pass": true,
+    "project_tests": "85/85 PASS"
+  },
+  "selection_excluded": "2025-2026",
+  "fresh_forward_required": true,
+  "live_enabled": false,
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "cfcb1e7206fb77b8ae00dcd3724d8e0a06dbdf20b719bbc55ae08a4aa51029e3",
+  "code_sha256": "ffdc224cc8b1282fff0dfe62d0dda3f0294a3c532b052bc31bd020c0dd2b84b2",
+  "config_sha256": "3f61c1c63299028ec17b3552f7d9d668b836cf23f64d94b7a4d4a7a55e9d2917"
+}

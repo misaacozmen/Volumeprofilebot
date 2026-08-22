@@ -1,0 +1,271 @@
+{
+  "artifact_id": "first30_thresholds_pre2025_v1",
+  "artifact_sha256": "133aa0c7aa0e1767a8cea0da4c8eab54be3817e35ef97170d315af3b7302e015",
+  "artifact_type": "first30_thresholds",
+  "calibration": {
+    "cutoff_exclusive": "2025-01-01",
+    "method": "session_first30_range",
+    "quantiles": [
+      0.6,
+      0.7
+    ],
+    "timezone": "America/New_York"
+  },
+  "provenance": {
+    "environment": {
+      "dependencies": {
+        "pandas": "3.0.3"
+      },
+      "git_commit": null,
+      "python_implementation": "CPython",
+      "python_version": "3.14.5"
+    },
+    "inputs": [
+      {
+        "bytes": 6763,
+        "path": "backtest/data_inspector.py",
+        "role": "loader_dependency",
+        "sha256": "330d55d5e9ee7e2befefd450d067754d0d5b0a434e8bfe659fd9a134db079728"
+      },
+      {
+        "bytes": 3974,
+        "path": "backtest/data_loader.py",
+        "role": "loader_code",
+        "sha256": "98844fce90f16472746f2dbe713063d190c20ef2d8f65852d28bd049a208a318"
+      },
+      {
+        "bytes": 4910,
+        "path": "backtest/integrity.py",
+        "role": "loader_dependency",
+        "sha256": "11c9a90f5b266b9fd59c233e4fca06ae690a072e728672d69be65fce19e94dc3"
+      },
+      {
+        "bytes": 65182,
+        "path": "backtest/strategy.py",
+        "role": "calculation_code",
+        "sha256": "b12ec16366ac2c1e155df45199193c7229c74f764487d15b47e92d4aef3e8327"
+      },
+      {
+        "bytes": 24973069,
+        "path": "data/raw/DUKASCOPY_USA500IDXUSD, 5m_2022-01-01_2026-07-03.csv",
+        "role": "market_data",
+        "sha256": "8ff3ac69ff3f33dc9ee12ab929f522873a1953f9ecf0aa664846e9d06320d65b"
+      },
+      {
+        "bytes": 21739,
+        "path": "data/raw/DUKASCOPY_USA500IDXUSD, 5m_2022-03-31_2022-04-01.csv",
+        "role": "market_data",
+        "sha256": "5fbda1461c6b49dbdc2d399d4437c64a52000d7b2b2ed926776af78afe8dee59"
+      },
+      {
+        "bytes": 4732674,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-01-01_2022-07-01.csv",
+        "role": "market_data",
+        "sha256": "8bf74dded252adfed5ccb583b900a0707f3a6dd50dff7a5fc851afc1c1c18914"
+      },
+      {
+        "bytes": 29452,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-03-10_2022-03-11.csv",
+        "role": "market_data",
+        "sha256": "ae9d061c846f75049a3c0bb4d9551ddb1f6c763245bb550222c3f445d9e5d172"
+      },
+      {
+        "bytes": 38015,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-04-06_2022-04-07.csv",
+        "role": "market_data",
+        "sha256": "b7152ba36d7b0a96d6116ca979a9fe3213f207338770f59aa5c813c488cff16d"
+      },
+      {
+        "bytes": 38054,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-05-26_2022-05-27.csv",
+        "role": "market_data",
+        "sha256": "38d48efc539ee600f958432c32ef09f1003a274f80d6da921895fba2926761b8"
+      },
+      {
+        "bytes": 4826496,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-07-01_2023-01-01.csv",
+        "role": "market_data",
+        "sha256": "e26b3ba004f14a47b3d515af0441e95541e233052694b1e2aa8558238d2072e3"
+      },
+      {
+        "bytes": 10298,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-06_2022-11-07.csv",
+        "role": "market_data",
+        "sha256": "7f1f34f76750baa6fa506b1877bd3a9d0b35acc0ab5e3d1135e6bf4964481eef"
+      },
+      {
+        "bytes": 38028,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-07_2022-11-08.csv",
+        "role": "market_data",
+        "sha256": "a8831ee690d08d15abb242385f252297b405fdab0804dc738d287a4513f073cf"
+      },
+      {
+        "bytes": 27710,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-11_2022-11-12.csv",
+        "role": "market_data",
+        "sha256": "735638b5b6d0cba634dde7d683240c8f4f5b5fb276d9b2bcf230b0bfb2f32184"
+      },
+      {
+        "bytes": 10274,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-13_2022-11-14.csv",
+        "role": "market_data",
+        "sha256": "8cbfe53f0980a1d027b406084faa1d201e1a49690ce57d76298d4f6619b11348"
+      },
+      {
+        "bytes": 4754787,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-01-01_2023-07-01.csv",
+        "role": "market_data",
+        "sha256": "706cb9e1ae06f43e8a56b4dab720aa4cecfa6764cb5d685b21df87279b51bdf8"
+      },
+      {
+        "bytes": 27730,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-01-27_2023-01-28.csv",
+        "role": "market_data",
+        "sha256": "9812ce26e5b5be7d873011a9c5efc802f14845ab97e9a90697c5f5041b721302"
+      },
+      {
+        "bytes": 38011,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-05-18_2023-05-19.csv",
+        "role": "market_data",
+        "sha256": "9e209943ed7e93c80e01cebf5c4da027a75dafffb3b0da6eb85f712684949954"
+      },
+      {
+        "bytes": 38014,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-06-20_2023-06-21.csv",
+        "role": "market_data",
+        "sha256": "780ee4a63fb0c50f68a71b6a5d2d7442c192827f9309934a02615c859fc7666d"
+      },
+      {
+        "bytes": 4645761,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-07-01_2024-01-01.csv",
+        "role": "market_data",
+        "sha256": "1ef99d9abbb8d61e585aa77de472c53961d2509a820f06388a829cc166ae8da2"
+      },
+      {
+        "bytes": 38000,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-08-09_2023-08-10.csv",
+        "role": "market_data",
+        "sha256": "242a8bd95b8f92bf8213552f5af89188efe7acca680edf72dba297e72e257606"
+      },
+      {
+        "bytes": 37988,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-20_2023-12-21.csv",
+        "role": "market_data",
+        "sha256": "6c5421164f9448ac8b392acec8abf9041c352bea37826bdd048be12399d41605"
+      },
+      {
+        "bytes": 10264,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-25_2023-12-26.csv",
+        "role": "market_data",
+        "sha256": "79c41c9888d7489d497f3f03b66f7bd22a961a5fb297bb07dd8622f68f07cd2c"
+      },
+      {
+        "bytes": 38004,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-26_2023-12-27.csv",
+        "role": "market_data",
+        "sha256": "3583febee8bea3ba56a8fc89d6b0bdb69f988bb3b2f9b05dff0d7aa17037710c"
+      },
+      {
+        "bytes": 37973,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-28_2023-12-29.csv",
+        "role": "market_data",
+        "sha256": "492201a42b7b0e35ac46bb62e917e5ae897c44b3942658991b8cb56187a91eaa"
+      },
+      {
+        "bytes": 27740,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-29_2023-12-30.csv",
+        "role": "market_data",
+        "sha256": "dbbcb2b855c076d9ed13b8b028ccb2a7377e0f84a5c518fb0602525ecd679a13"
+      },
+      {
+        "bytes": 4814134,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-01-01_2024-07-01.csv",
+        "role": "market_data",
+        "sha256": "dadc7a4021708838bc90faf40cfe9a6b849995a176d3e4b1b3152f1dca58b3ea"
+      },
+      {
+        "bytes": 8981,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-04-28_2024-04-29.csv",
+        "role": "market_data",
+        "sha256": "a1dfe81a7e9518074255777b293524506c600a8b272dbedab2d1272ba0ce398d"
+      },
+      {
+        "bytes": 4858387,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-07-01_2025-01-01.csv",
+        "role": "market_data",
+        "sha256": "a36b243477cf991c68afe7b2367c7608f238613e6a7357cb50973b837f67fd00"
+      },
+      {
+        "bytes": 32363,
+        "path": "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-09-02_2024-09-03.csv",
+        "role": "market_data",
+        "sha256": "3b636fd2d9c75a28c9b2fe99302c63d1b2c331c347d6bb5e8fea1c8840bf0260"
+      },
+      {
+        "bytes": 10828,
+        "path": "scripts/candidate_artifact.py",
+        "role": "artifact_code",
+        "sha256": "26e08cafc94df9c89400677881c66b855f37ad32552abdb8841a907ab570ac5a"
+      },
+      {
+        "bytes": 5683,
+        "path": "scripts/frozen_first30_thresholds.py",
+        "role": "calibration_code",
+        "sha256": "874acd3adee4ab47805c632af091b9d0c5e608e99809fb219c9727a30d7ff9c3"
+      },
+      {
+        "bytes": 16973,
+        "path": "scripts/run_main_candidate_filter_tests.py",
+        "role": "calibration_entrypoint",
+        "sha256": "5cc869b2cb7d9099d71f8492b64bdd32115bb2a825851b4f91e4fc6c00c64ae8"
+      }
+    ]
+  },
+  "schema_version": 2,
+  "thresholds": [
+    {
+      "first30_q60": 19.514,
+      "first30_q70": 23.2808,
+      "sample_days": 773,
+      "source_paths": [
+        "data/raw/DUKASCOPY_USA500IDXUSD, 5m_2022-01-01_2026-07-03.csv",
+        "data/raw/DUKASCOPY_USA500IDXUSD, 5m_2022-03-31_2022-04-01.csv"
+      ],
+      "symbol": "DUKASCOPY_USA500IDXUSD",
+      "timeframe": "5m"
+    },
+    {
+      "first30_q60": 107.8242,
+      "first30_q70": 119.778,
+      "sample_days": 773,
+      "source_paths": [
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-01-01_2022-07-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-03-10_2022-03-11.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-04-06_2022-04-07.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-05-26_2022-05-27.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-07-01_2023-01-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-06_2022-11-07.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-07_2022-11-08.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-11_2022-11-12.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-13_2022-11-14.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-01-01_2023-07-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-01-27_2023-01-28.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-05-18_2023-05-19.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-06-20_2023-06-21.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-07-01_2024-01-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-08-09_2023-08-10.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-20_2023-12-21.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-25_2023-12-26.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-26_2023-12-27.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-28_2023-12-29.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2023-12-29_2023-12-30.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-01-01_2024-07-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-04-28_2024-04-29.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-07-01_2025-01-01.csv",
+        "data/raw/DUKASCOPY_USATECHIDXUSD, 3m_2024-09-02_2024-09-03.csv"
+      ],
+      "symbol": "DUKASCOPY_USATECHIDXUSD",
+      "timeframe": "3m"
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+{
+  "name": "NQ_SPX_BEST_EFFORT_30_ITERATIONS_V1",
+  "status": "LOCAL_BEST_EFFORT_REJECT_CRITERIA_UNMET",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v7_strategy_loop\\nq_spx_quality_time_mixed_rr_v1.json",
+  "mechanisms": [
+    "SPX latest_entry_time=10:45",
+    "SPX allowed weekdays add Monday",
+    "SPX Phase causal classic FVG/IFVG + body-FVG union",
+    "body-FVG eligibility: cisd_fvg_candles_regime=low",
+    "selector: earliest entry, classic wins exact-signal tie, max 2 per candidate/day"
+  ],
+  "entry_mode": {
+    "nq_funded_v3": "start",
+    "nq_phase": "start",
+    "spx_funded": "midpoint",
+    "spx_phase": "quarter_25"
+  },
+  "reward_r": {
+    "nq_funded_v3": 3.0,
+    "nq_phase": 3.0,
+    "spx_funded": 2.0,
+    "spx_phase": 2.0
+  },
+  "stop_management": "none",
+  "simple_rules": [
+    {
+      "round": 1,
+      "candidate": "nq_phase",
+      "feature": "context_QUALIFIED_STRUCTURE_REVERSAL",
+      "month": 12,
+      "value": true,
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 2,
+      "candidate": "nq_phase",
+      "feature": "time_bucket",
+      "month": 11,
+      "value": "10:00-10:30",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 4,
+      "candidate": "nq_phase",
+      "feature": "overnight_direction",
+      "month": 11,
+      "value": "up",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 6,
+      "candidate": "nq_phase",
+      "feature": "opposing_structure",
+      "month": 11,
+      "value": "present",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "candidate": "nq_funded_v3",
+      "feature": "htf_alignment",
+      "value": "opposed",
+      "action": "BLOCK",
+      "graph_evidence": "15m HTF state known at entry"
+    }
+  ],
+  "compound_rules": [
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "overnight_direction": "up",
+        "cisd_strength_regime": "low"
+      },
+      "graph_evidence": "overnight direction and CISD displacement known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "cisd_strength_regime": "normal",
+        "cisd_fvg_candles_regime": "high"
+      },
+      "graph_evidence": "CISD strength and elapsed candles known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "cisd_strength_regime": "low",
+        "fvg_size_regime": "low"
+      },
+      "graph_evidence": "CISD and completed FVG geometry known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "time_bucket": "09:30-10:00",
+        "opposing_structure": "present"
+      },
+      "graph_evidence": "entry timestamp and opposing structure are known before entry"
+    }
+  ],
+  "pair_rules": [
+    {
+      "system": "funded_pair",
+      "pair_rule": "opposite_direction_second_only"
+    },
+    {
+      "system": "phase_pair",
+      "pair_rule": "same_direction_second_only"
+    }
+  ],
+  "criteria": {
+    "win_rate_pct": [
+      40,
+      45
+    ],
+    "max_drawdown_r": [
+      9,
+      13
+    ],
+    "minimum_trades_each_completed_month": 5,
+    "minimum_net_r_each_full_year": 20,
+    "net_r_must_visibly_improve": true
+  },
+  "observed_all": {
+    "segment": "all_2016_2026",
+    "trades": 854,
+    "wins": 348,
+    "win_rate": 40.75,
+    "net_r": 277.0,
+    "max_drawdown_r": -17.0,
+    "profit_factor": 1.547
+  },
+  "failed_month_count": 18,
+  "failed_year_count": 2,
+  "checks": {
+    "deterministic": true,
+    "prefix_lookahead_pass": true,
+    "data_invalid_excluded": true,
+    "graph_provable_only": true,
+    "project_tests": "85/85 PASS"
+  },
+  "selection_excluded": "2025-2026",
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "code_sha256": "44a2c467cee0eb82d296c93c0953f17de01ff4c25078d7d66cbfc44faad22e1b",
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "09c7e3edf324f26a8e7f3e1ddd53dc7c4cee8aa8f021d9bb7507ccad450f4053",
+  "config_sha256": "69f11feb1aa61d2f8d6e48625971893e81e77d359ed9ca51e3ecb5bf298dc6a5"
+}

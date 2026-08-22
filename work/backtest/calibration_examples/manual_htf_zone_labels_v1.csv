@@ -1,0 +1,10 @@
+case_id,date,htf,direction,manual_lower,manual_upper,expected_state,source_url,confidence,notes
+SPX-FB2-002,2022-12-07,30m,bullish,3924.0,3927.6,respected_not_body_broken,https://www.tradingview.com/x/fxfgbLkN/,high,30m support FVG drawn around 3924-3928.
+SPX-FB2-005,2022-12-28,30m,bearish,3834.0,3838.3,body_closed_inside,https://www.tradingview.com/x/tGwY3P3M/,high,30m two-FVG resistance band drawn around 3834-3838.
+SPX-FB2-007,2023-06-06,15m,bearish,4268.7,4270.2,body_closed_through,https://www.tradingview.com/x/ynMdkIEr/,high,15m FVG drawn near VAL and crossed by the opening body.
+SPX-FB2-009,2023-06-13,30m,bullish,4346.7,4353.5,respected_not_body_broken,https://www.tradingview.com/x/5VpyrjnT/,high,Opening 30m bullish support FVG.
+SPX-FB2-011,2023-06-16,30m,bullish,4425.8,4427.2,body_closed_through,https://www.tradingview.com/x/YKqguSFC/,high,30m bullish FVG below the separately drawn 15m order block.
+SPX-FB2-012,2023-06-20,30m,bearish,4394.4,4398.5,respected_not_body_broken,https://www.tradingview.com/x/YPN364hP/,high,30m bearish resistance FVG; corrects the earlier heuristic bullish-direction assumption.
+SPX-FB2-013,2023-06-27,30m,bullish,4334.8,4335.5,respected_for_long,https://www.tradingview.com/x/y06RX3fs/,high,Thin 30m bullish support FVG below the entry setup.
+SPX-FB2-014,2023-09-01,15m,bullish,4526.5,4530.8,body_closed_through,https://www.tradingview.com/x/q9OFIOz1/,high,15m bullish FVG closed through before the manual short.
+SPX-FB2-021,2023-10-11,30m,bearish,4371.2,4379.8,respected_for_short,https://www.tradingview.com/x/9VY5QYnW/,high,Large 30m bearish resistance FVG above the open.

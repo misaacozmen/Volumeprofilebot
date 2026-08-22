@@ -1,0 +1,70 @@
+{
+  "name": "NQ_PHASE_MONTH_DIRECTION_V1",
+  "base_candidate": "nq_phase_strong_start_3r_0930_1030",
+  "rules": [
+    {
+      "month": 6,
+      "blocked_direction": "short",
+      "train_2016_2021": {
+        "trades": 12,
+        "net_r": -12.0,
+        "positive_year_ratio": 0.0
+      },
+      "validation_2022_2024": {
+        "trades": 3,
+        "net_r": -3.0
+      }
+    },
+    {
+      "month": 8,
+      "blocked_direction": "short",
+      "train_2016_2021": {
+        "trades": 12,
+        "net_r": -8.0,
+        "positive_year_ratio": 0.25
+      },
+      "validation_2022_2024": {
+        "trades": 5,
+        "net_r": -1.0
+      }
+    }
+  ],
+  "phase_pair_all": {
+    "baseline": {
+      "trades": 657,
+      "win_rate_pct": 29.38,
+      "net_r": 80.5,
+      "max_drawdown_r": -32.0
+    },
+    "candidate": {
+      "trades": 623,
+      "win_rate_pct": 30.66,
+      "net_r": 106.5,
+      "max_drawdown_r": -32.0
+    }
+  },
+  "phase_pair_holdout_2025_2026": {
+    "baseline": {
+      "trades": 79,
+      "win_rate_pct": 35.44,
+      "net_r": 28.0,
+      "max_drawdown_r": -8.0
+    },
+    "candidate": {
+      "trades": 77,
+      "win_rate_pct": 36.36,
+      "net_r": 30.0,
+      "max_drawdown_r": -8.0
+    }
+  },
+  "watch_only": [
+    {
+      "month": 9,
+      "blocked_direction": "short",
+      "reason": "Consistently negative but train count is 9, below the frozen minimum of 10."
+    }
+  ],
+  "status": "POST_HOC_EXPLORATORY_FRESH_FORWARD_REQUIRED",
+  "live_enabled": false,
+  "server_changed": false
+}

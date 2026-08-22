@@ -1,0 +1,168 @@
+{
+  "name": "NQ_SPX_QUALITY_INTERACTIONS_V1",
+  "status": "LOCAL_WATCH_NOT_ALL_CRITERIA",
+  "base_candidate": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\research_candidates\\v5_ordered_15_rounds\\nq_spx_fresh_forward_v1.json",
+  "entry_mode": {
+    "nq_funded_v3": "start",
+    "nq_phase": "start",
+    "spx_funded": "midpoint",
+    "spx_phase": "quarter_25"
+  },
+  "reward_r": {
+    "nq_funded_v3": 3.0,
+    "nq_phase": 3.0,
+    "spx_funded": 3.0,
+    "spx_phase": 3.0
+  },
+  "simple_rules": [
+    {
+      "round": 1,
+      "candidate": "nq_phase",
+      "feature": "context_QUALIFIED_STRUCTURE_REVERSAL",
+      "month": 12,
+      "value": true,
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 2,
+      "candidate": "nq_phase",
+      "feature": "time_bucket",
+      "month": 11,
+      "value": "10:00-10:30",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 4,
+      "candidate": "nq_phase",
+      "feature": "overnight_direction",
+      "month": 11,
+      "value": "up",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "round": 6,
+      "candidate": "nq_phase",
+      "feature": "opposing_structure",
+      "month": 11,
+      "value": "present",
+      "action": "BLOCK",
+      "walk_forward_positive_ratio": 1.0
+    },
+    {
+      "candidate": "nq_funded_v3",
+      "feature": "htf_alignment",
+      "value": "opposed",
+      "action": "BLOCK",
+      "graph_evidence": "15m HTF state known at entry"
+    }
+  ],
+  "compound_rules": [
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "overnight_direction": "up",
+        "cisd_strength_regime": "low"
+      },
+      "graph_evidence": "overnight direction and CISD displacement known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "candidate": "nq_phase",
+      "conditions": {
+        "cisd_strength_regime": "normal",
+        "cisd_fvg_candles_regime": "high"
+      },
+      "graph_evidence": "CISD strength and elapsed candles known before entry"
+    },
+    {
+      "action": "BLOCK_ALL",
+      "conditions": {
+        "cisd_strength_regime": "low",
+        "fvg_size_regime": "low"
+      },
+      "graph_evidence": "CISD and completed FVG geometry known before entry"
+    }
+  ],
+  "pair_rules": [
+    {
+      "system": "funded_pair",
+      "pair_rule": "opposite_direction_second_only"
+    },
+    {
+      "system": "phase_pair",
+      "pair_rule": "same_direction_second_only"
+    }
+  ],
+  "selection_periods": [
+    "2016-2021",
+    "2022-2023"
+  ],
+  "confirmation_period": "2024",
+  "historical_only": "2025-2026",
+  "metrics": {
+    "learn_2016_2021": {
+      "trades": 290,
+      "wins": 95,
+      "win_rate": 32.76,
+      "net_r": 90.0,
+      "max_drawdown_r": -19.0,
+      "profit_factor": 1.462
+    },
+    "validation_2022_2023": {
+      "trades": 162,
+      "wins": 65,
+      "win_rate": 40.12,
+      "net_r": 98.0,
+      "max_drawdown_r": -9.0,
+      "profit_factor": 2.01
+    },
+    "validation_2024": {
+      "trades": 51,
+      "wins": 26,
+      "win_rate": 50.98,
+      "net_r": 53.0,
+      "max_drawdown_r": -11.0,
+      "profit_factor": 3.12
+    },
+    "historical_2025_2026": {
+      "trades": 75,
+      "wins": 24,
+      "win_rate": 32.0,
+      "net_r": 21.0,
+      "max_drawdown_r": -13.0,
+      "profit_factor": 1.412
+    },
+    "validation_2022_2024": {
+      "trades": 213,
+      "wins": 91,
+      "win_rate": 42.72,
+      "net_r": 151.0,
+      "max_drawdown_r": -11.0,
+      "profit_factor": 2.238
+    },
+    "all_2016_2026": {
+      "trades": 578,
+      "wins": 210,
+      "win_rate": 36.33,
+      "net_r": 262.0,
+      "max_drawdown_r": -19.0,
+      "profit_factor": 1.712
+    }
+  },
+  "checks": {
+    "deterministic": true,
+    "prefix_lookahead_pass": true,
+    "data_invalid_excluded": true,
+    "graph_provable_only": true
+  },
+  "test_gate": "85/85 project tests PASS",
+  "live_enabled": false,
+  "fresh_forward_required": true,
+  "code_sha256": "1b35e425fb550a0d4cc7fde846da293a4eb27360038c8b1fec9161dfc52c6b6e",
+  "data_sha256": "9d4a5a530e366efe26fbbbbd4efad913e975684d4184b715fd28a4beccbbdf02",
+  "result_sha256": "613f7539f63aeaee02dffd7c18e42ffcdc8a3216564706580ea053d9d0058dc9",
+  "config_sha256": "004640fdb3b9f24ed0fcba594e98c4d2cf0e3a0f62404e94bd3176c50c8effa0"
+}

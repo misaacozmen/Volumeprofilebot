@@ -1,0 +1,33 @@
+{
+  "blocked_context_sources": {
+    "nq": [
+      "FIRST_QUALIFIED_STRUCTURE",
+      "PREMARKET_CONTEXT",
+      "QUALIFIED_STRUCTURE_REVERSAL",
+      "VAH_SUPPORT_FLIP"
+    ],
+    "spx": [
+      "SELECTED_LIQUIDITY_SWEEP"
+    ]
+  },
+  "blocked_directions": {
+    "nq": [],
+    "spx": []
+  },
+  "blocked_weekdays": {
+    "nq": [],
+    "spx": []
+  },
+  "live_enabled": false,
+  "name": "V2_CONTEXT_EDGE",
+  "pair_cap_r": -1.0,
+  "schema_version": 1,
+  "selection_basis": "PRE_2025_MACHINE_METRICS_ONLY",
+  "strategy_thresholds": "UNCHANGED",
+  "timeframes": {
+    "htf": "15m",
+    "nq": "3m",
+    "spx": "5m"
+  },
+  "timezone": "America/New_York"
+}
