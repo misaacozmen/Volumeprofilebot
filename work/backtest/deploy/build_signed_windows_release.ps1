@@ -142,6 +142,19 @@ try {
         }
         Remove-Item -LiteralPath $resolved -Force
     }
+    foreach ($secret in @(
+        Get-ChildItem -LiteralPath $Stage -Recurse -File |
+            Where-Object {
+                $_.Extension -in @(".pem", ".key", ".dpapi", ".pfx", ".cer", ".crt") -or
+                $_.Name -match '(credential|password|secret|\.env)'
+            }
+    )) {
+        $resolved = [IO.Path]::GetFullPath($secret.FullName)
+        if (-not $resolved.StartsWith(([IO.Path]::GetFullPath($Stage) + [IO.Path]::DirectorySeparatorChar))) {
+            throw "Unsafe secret cleanup target: $resolved"
+        }
+        Remove-Item -LiteralPath $resolved -Force
+    }
 
     & $Python -m pip download --disable-pip-version-check --only-binary=:all: `
         --platform win_amd64 --python-version 311 --implementation cp --abi cp311 `
