@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputArchive,
     [string]$Python = "python",
-    [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA "OtoBacktest\release-private-key.dpapi")
+    [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA "OtoBacktest\release-private-key.dpapi"),
+    [string]$ReleaseId
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +27,57 @@ $Super1ProvenanceFiles = @()
 if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
     throw "DPAPI release signing key is missing: $PrivateKeyPath"
 }
+
+# 1. Git dirty check
+$gitStatus = (& git status --porcelain $SourceRoot)
+if ($gitStatus) {
+    throw "Git working tree is dirty; refusing release build: $($gitStatus -join '; ')"
+}
+$gitCommit = (& git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $gitCommit) {
+    throw "Could not determine git commit."
+}
+$gitDirty = $false
+
+# 2. CPython 3.11 check
+$pyCheck = (& $Python -c "import sys, platform; print(f'{sys.version_info.major}.{sys.version_info.minor}|{platform.python_implementation()}|{sys.version}')")
+if ($LASTEXITCODE -ne 0 -or -not $pyCheck) {
+    throw "Failed to query Python environment: $Python"
+}
+$pyParts = $pyCheck.Split("|")
+if ($pyParts[0] -ne "3.11" -or $pyParts[1] -ne "CPython") {
+    throw "Release build requires CPython 3.11. Found: $pyCheck"
+}
+$pythonVersion = $pyParts[2].Trim()
+$pythonExe = (& $Python -c "import sys; print(sys.executable)").Trim()
+$pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+# 3. Pre-build test suite execution
+$pytestCmd = "$Python -m pytest $SourceRoot"
+$pytestOutput = & $Python -m pytest $SourceRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Release build aborted: pytest test suite failed."
+}
+$pytestOutputText = $pytestOutput -join "`n"
+$passedCount = 0
+if ($pytestOutputText -match '(\d+)\s+passed') {
+    $passedCount = [int]$Matches[1]
+} else {
+    throw "Could not determine pytest passed count from output."
+}
+if ($passedCount -lt 233) {
+    throw "Release build aborted: pytest passed count ($passedCount) is below baseline (233)."
+}
+$pytestPassed = $true
+$pytestPassedCount = $passedCount
+
+$createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
+if (-not $ReleaseId) {
+    $utcFormatted = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
+    $shortCommit = if ($gitCommit.Length -ge 12) { $gitCommit.Substring(0, 12) } else { $gitCommit }
+    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v7"
+}
+
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
 
 try {
@@ -156,6 +208,7 @@ try {
             "deploy/check_super1_flat_windows.ps1",
             "deploy/rollover_super1_campaign_windows.ps1",
             "deploy/run_super1_windows.ps1",
+            "deploy/stage_signed_upgrader_windows.ps1",
             "deploy/super1_secure_task.ps1",
             "deploy/upgrade_super1_signed_app_windows.ps1",
             "live_forward/super1_xm_mt5_demo_config.json",
@@ -177,12 +230,33 @@ try {
         throw "Output archive already exists; refusing to overwrite: $Archive"
     }
     Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Archive -CompressionLevel Optimal
+    
+    $manifestFiles = @()
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         $archiveEntries = @($zip.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
         foreach ($relative in $requiredPayloadFiles) {
             if ($relative -notin $archiveEntries) {
                 throw "Release archive is incomplete; required file is missing: $relative"
+            }
+        }
+        foreach ($entry in ($zip.Entries | Sort-Object FullName)) {
+            $entryPath = $entry.FullName.Replace("\", "/")
+            if ($entryPath.EndsWith("/")) { continue }
+            $entryStream = $entry.Open()
+            $hasher = [Security.Cryptography.SHA256]::Create()
+            try {
+                $entryHash = ([BitConverter]::ToString(
+                    $hasher.ComputeHash($entryStream)
+                )).Replace("-", "").ToLowerInvariant()
+            }
+            finally {
+                $hasher.Dispose()
+                $entryStream.Dispose()
+            }
+            $manifestFiles += [ordered]@{
+                path = $entryPath
+                sha256 = $entryHash
             }
         }
     }
@@ -197,11 +271,19 @@ try {
     }
     $manifest = [ordered]@{
         schema_version = 1
+        release_id = $ReleaseId
         profile = $Profile
         archive_file = [IO.Path]::GetFileName($Archive)
         archive_sha256 = $archiveHash
-        built_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
-        python = "3.11"
+        created_at_utc = $createdAtUtc
+        built_at_utc = $createdAtUtc
+        git_commit = $gitCommit
+        git_dirty = $gitDirty
+        python_version = $pythonVersion
+        python_executable_sha256 = $pythonExeSha256
+        pytest_command = $pytestCmd
+        pytest_passed = $pytestPassed
+        pytest_passed_count = $pytestPassedCount
         dependencies = [ordered]@{
             pandas = "3.0.3"
             MetaTrader5 = "5.0.6090"
@@ -226,6 +308,7 @@ try {
                 }
             }
         )
+        files = $manifestFiles
     }
     $manifestJson = $manifest | ConvertTo-Json -Depth 6
     [IO.File]::WriteAllText($manifestPath, $manifestJson + "`n", (New-Object Text.UTF8Encoding($false)))
@@ -255,6 +338,7 @@ try {
     }
 
     [ordered]@{
+        release_id = $ReleaseId
         archive = $Archive
         manifest = $manifestPath
         signature = $signaturePath

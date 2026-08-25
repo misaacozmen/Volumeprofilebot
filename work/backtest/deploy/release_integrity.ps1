@@ -16,7 +16,8 @@ function Get-ReleaseSha256 {
 function Assert-SignedReleaseArchive {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,
-        [string]$ExpectedProfile
+        [string]$ExpectedProfile,
+        [string]$SourceRoot
     )
 
     $archivePath = [IO.Path]::GetFullPath($Archive)
@@ -73,7 +74,137 @@ function Assert-SignedReleaseArchive {
     if ($actualArchiveHash -ne ([string]$manifest.archive_sha256).ToLowerInvariant()) {
         throw "Release archive SHA-256 validation failed."
     }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    $archiveFilesMap = @{}
+    try {
+        foreach ($entry in $zip.Entries) {
+            $entryPath = $entry.FullName.Replace("\", "/")
+            if ($entryPath.EndsWith("/")) { continue }
+            $fileName = [IO.Path]::GetFileName($entryPath).ToLowerInvariant()
+            if ($fileName -match '\.(key|pem|dpapi|pfx|cer|crt)$' -or
+                $fileName -match '(credential|password|secret|\.env)') {
+                throw "Forbidden credential or signing key file in archive: $entryPath"
+            }
+            $entryStream = $entry.Open()
+            $hasher = [Security.Cryptography.SHA256]::Create()
+            try {
+                $entryHash = ([BitConverter]::ToString(
+                    $hasher.ComputeHash($entryStream)
+                )).Replace("-", "").ToLowerInvariant()
+            }
+            finally {
+                $hasher.Dispose()
+                $entryStream.Dispose()
+            }
+            $archiveFilesMap[$entryPath] = $entryHash
+        }
+    }
+    finally {
+        $zip.Dispose()
+    }
+
+    if ($manifest.files) {
+        $manifestFilesMap = @{}
+        foreach ($f in $manifest.files) {
+            $manifestFilesMap[[string]$f.path] = ([string]$f.sha256).ToLowerInvariant()
+        }
+        foreach ($path in $manifestFilesMap.Keys) {
+            if (-not $archiveFilesMap.ContainsKey($path)) {
+                throw "Archive is missing manifest file entry: $path"
+            }
+            if ($archiveFilesMap[$path] -ne $manifestFilesMap[$path]) {
+                throw "Archive file entry SHA-256 mismatch for $path"
+            }
+        }
+        foreach ($path in $archiveFilesMap.Keys) {
+            if (-not $manifestFilesMap.ContainsKey($path)) {
+                throw "Archive contains unexpected entry not in manifest: $path"
+            }
+        }
+    }
+
+    if ($SourceRoot) {
+        Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFilesMap -SourceRoot $SourceRoot -Profile ([string]$manifest.profile)
+    }
+
     return $manifest
+}
+
+function Assert-ReleaseSourceIntegrity {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$ArchiveFilesMap,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$Profile
+    )
+    $resolvedSource = [IO.Path]::GetFullPath($SourceRoot)
+    if (-not (Test-Path -LiteralPath $resolvedSource -PathType Container)) {
+        throw "SourceRoot directory does not exist: $resolvedSource"
+    }
+
+    $sourceDirs = @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")
+    $sourceFiles = @("pyproject.toml", "README.md")
+    $sourceFiles += "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json"
+
+    if ($Profile -eq "super1") {
+        $sourceDirs += @(
+            "research_candidates/super1",
+            "research_candidates/v20_strategy_loop"
+        )
+        $candJson = Join-Path $resolvedSource "research_candidates\v20_strategy_loop\nq_spx_local_fresh_forward_candidate_v1.json"
+        if (Test-Path -LiteralPath $candJson) {
+            $payload = Get-Content -LiteralPath $candJson -Raw | ConvertFrom-Json
+            if ($payload.provenance -and $payload.provenance.inputs) {
+                foreach ($inp in $payload.provenance.inputs) {
+                    $sourceFiles += [string]$inp.path
+                }
+            }
+        }
+    }
+
+    $sourceProdFiles = @{}
+    foreach ($dir in $sourceDirs) {
+        $fullDir = Join-Path $resolvedSource ($dir.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        if (Test-Path -LiteralPath $fullDir) {
+            foreach ($file in (Get-ChildItem -LiteralPath $fullDir -Recurse -File)) {
+                if ($file.Extension -in @(".pyc", ".pyo", ".tmp", ".bak") -or
+                    $file.FullName -match '[\\/](__pycache__|\.pytest_cache|\.git|\.venv)[\\/]') {
+                    continue
+                }
+                $rel = $file.FullName.Substring($resolvedSource.Length).TrimStart('\', '/').Replace("\", "/")
+                $sourceProdFiles[$rel] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+    }
+    foreach ($f in $sourceFiles) {
+        $fullFile = Join-Path $resolvedSource ($f.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        if (Test-Path -LiteralPath $fullFile) {
+            $rel = $f.Replace("\", "/")
+            $sourceProdFiles[$rel] = (Get-FileHash -LiteralPath $fullFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+
+    foreach ($rel in $sourceProdFiles.Keys) {
+        if (-not $ArchiveFilesMap.ContainsKey($rel)) {
+            throw "Production source file missing from release archive: $rel"
+        }
+        if ($ArchiveFilesMap[$rel] -ne $sourceProdFiles[$rel]) {
+            throw "Production file content mismatch between source and release archive: $rel"
+        }
+    }
+
+    foreach ($rel in $ArchiveFilesMap.Keys) {
+        if ($rel -match '^wheelhouse' -or $rel -match '^requirements-.*\.lock$') {
+            continue
+        }
+        if (-not $sourceProdFiles.ContainsKey($rel)) {
+            throw "Release archive contains unexpected production entry not present in source tree: $rel"
+        }
+        if ($ArchiveFilesMap[$rel] -ne $sourceProdFiles[$rel]) {
+            throw "Release archive entry mismatch with source tree: $rel"
+        }
+    }
 }
 
 function Install-LockedRelease {

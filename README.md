@@ -93,17 +93,23 @@ python -m backtest.cli run data/raw --symbol DUKASCOPY_USATECHIDXUSD --timeframe
 
 ---
 
-## ⚙️ Forward Testing & MT5 Setup
+## ⚙️ Forward Testing & MT5 Operations
 
-1. Copy `.env.example` to `.env` and fill in your credentials (do NOT commit `.env` to GitHub):
-   ```bash
-   cp .env.example .env
-   ```
-2. Configure your MT5 connection in `work/backtest/live_forward/xm_mt5_config.json` using `xm_mt5_config.example.json` as a template.
-3. Run the forward shadow runner:
-   ```bash
-   python work/backtest/scripts/run_xm_mt5_forward.py
-   ```
+Tek yetkili Windows ve Super1 operasyonel prosedürü için [docs/LIVE_OPERATIONS_TR.md](docs/LIVE_OPERATIONS_TR.md) belgesini inceleyin.
+
+### Önemli Güvenlik ve Yapılandırma Kuralları:
+* `.env` dosyası runtime süreçleri tarafından **otomatik yüklenmez**.
+* `XM_MT5_LOGIN` ve `XM_MT5_PASSWORD` düz metin olarak kullanılmaz/desteklenmez.
+* Gerçek ortam değişkenleri: `XM_MT5_SERVER`, `XM_MT5_READ_ONLY_PASSWORD` ve `XM_MT5_TERMINAL_PATH`.
+* Windows üretim ortamında MT5 parolası asla düz metin saklanmaz; **yalnız DPAPI / launcher üzerinden** şifreli olarak enjekte edilir.
+* **Tek Desteklenen Rollout Sırası**: `Signed Staging` → `Signed Upgrade` → `Flat Check` → `Sealed Rollover`.
+* Eski yükleme betikleri (`install_super1_windows.ps1`, `finalize_super1_fresh_windows.ps1`, `repair_super1_task_s4u_windows.ps1`) **`LEGACY — DO NOT USE`** olarak işaretlenmiştir.
+
+### Komut Satırı / Runner Kullanımı:
+Forward runner komutları her zaman geçerli bir alt komut (`status`, `doctor`, `daily-health`, `run-once`, `smoke-order`) ile çağrılmalıdır:
+```powershell
+python scripts/run_super1_xm_mt5_forward.py status --output-root C:\Super1\state
+```
 
 ---
 
@@ -113,6 +119,8 @@ python -m backtest.cli run data/raw --symbol DUKASCOPY_USATECHIDXUSD --timeframe
 ├── README.md                      # Root documentation
 ├── .gitignore                     # Git exclusion rules (sanitizes data & credentials)
 ├── .env.example                   # Environment variable template
+├── docs/
+│   └── LIVE_OPERATIONS_TR.md      # Tek yetkili Windows/Super1 operasyonel prosedürü
 ├── work/
 │   └── backtest/
 │       ├── pyproject.toml         # Package definition and pytest configuration
@@ -125,8 +133,9 @@ python -m backtest.cli run data/raw --symbol DUKASCOPY_USATECHIDXUSD --timeframe
 │       │   ├── engine_pipeline.py # Multi-leg execution & risk pipeline
 │       │   ├── risk.py            # Causal portfolio risk & daily loss cap
 │       │   └── cli.py             # Command line interface
+│       ├── deploy/                # Signed deployment and upgrade pipeline
 │       ├── scripts/               # Download, diagnostic, and forward scripts
-│       ├── tests/                 # Automated pytest suite (233 tests)
+│       ├── tests/                 # Automated pytest suite (236+ tests)
 │       └── live_forward/          # MT5 configuration templates
 ```
 

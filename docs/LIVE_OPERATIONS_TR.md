@@ -1,0 +1,93 @@
+# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1)
+
+> **ÖNEMLİ:** Bu belge, Windows ve Super1 üretim ortamı için **tek yetkili operasyonel runbook**'tur. Burada belirtilen sıra dışındaki hiçbir manuel hotfix, doğrudan betik kopyalama veya geçersiz prosedür kabul edilmez.
+
+---
+
+## 1. Temel Kurallar ve Güvenlik Sözleşmesi
+
+* **live_enabled=false**: Demo ortamında gerçek bakiye riski alınamaz.
+* **Şifreli Kimlik Yönetimi**: MT5 parolası hiçbir zaman düz metin saklanmaz veya `.env` dosyasına yazılmaz. Yalnızca DPAPI ve güvenli launcher üzerinden enjekte edilir.
+* **Çevre Değişkenleri**: Runtime tarafından `.env` dosyası **otomatik yüklenmez**. Gerçek değişken isimleri şunlardır:
+  - `XM_MT5_SERVER`
+  - `XM_MT5_READ_ONLY_PASSWORD`
+  - `XM_MT5_TERMINAL_PATH`
+* **Eski Betikler (LEGACY — DO NOT USE)**:
+  - `deploy/install_super1_windows.ps1` (LEGACY)
+  - `deploy/finalize_super1_fresh_windows.ps1` (LEGACY)
+  - `deploy/repair_super1_task_s4u_windows.ps1` (LEGACY)
+  Bu betikler asla doğrudan çalıştırılmamalıdır.
+
+---
+
+## 2. Tek Desteklenen Rollout Sırası
+
+Rollout işlemi yalnızca aşağıdaki fail-closed sıra ile gerçekleştirilir:
+
+```
+[1. Signed Staging] ➔ [2. Signed Upgrade] ➔ [3. Flat Check] ➔ [4. Sealed Rollover] ➔ [5. Demo Smoke]
+```
+
+### Adım 1: Signed Staging (`stage_signed_upgrader_windows.ps1`)
+Upgrader betiği, imzalı release bütünlüğü doğrulandıktan sonra SHA-256 adresli izole konuma kopyalanır:
+```powershell
+& C:\Super1\app\deploy\stage_signed_upgrader_windows.ps1 `
+    -Archive C:\Super1\releases\super1-<TIMESTAMP>-<COMMIT>-v7.zip `
+    -ExpectedPythonSha256 <PYTHON_EXE_SHA256> `
+    -ExpectedTerminalSha256 <TERMINAL_EXE_SHA256>
+```
+* Upgrader `C:\Program Files\OtoBacktestDeploy\super1-<SHA256>\` altına alınır.
+* ACL mirası kapatılır; yalnızca SYSTEM ve Administrators FullControl yetkisiyle kilitlenir.
+
+### Adım 2: Signed Upgrade (`upgrade_super1_signed_app_windows.ps1`)
+Yalnızca kilitli ve izole staged upgrader üzerinden yürütülür:
+* Uygulama dosyaları atomik olarak değiştirilir.
+* İmzalı manifest ve offline wheelhouse kilitleri doğrulanır.
+* Görevler `UPGRADED_STOPPED` durumunda bekletilir.
+
+### Adım 3: Flat Check (`check_super1_flat_windows.ps1`)
+Uygulama başlatılmadan önce pozisyon, emir ve yetki durumu mühürlenir:
+```powershell
+& C:\Super1\app\deploy\check_super1_flat_windows.ps1 -Root C:\Super1
+```
+* Yalnızca `READY_FLAT_SEALED` çıktısı alındığında sonraki adıma geçilebilir.
+
+### Adım 4: Sealed Rollover (`rollover_super1_campaign_windows.ps1`)
+Flat-readiness kanıtı sağlandıktan sonra kampanya rollover yapılır:
+```powershell
+& C:\Super1\app\deploy\rollover_super1_campaign_windows.ps1 `
+    -Root C:\Super1 `
+    -ReadinessEvidencePath <EVIDENCE_JSON_PATH> `
+    -ExpectedReadinessSha256 <EVIDENCE_SHA256>
+```
+* Eski kampanya verisi silinmez; güvenli arşive taşınır.
+* Yeni temiz kampanya başlatılır ve tasklar aktifleştirilir.
+
+### Adım 5: Demo Smoke Order Testi
+Süreçler başladıktan sonra broker emir iletimi doğrulanır:
+```powershell
+& C:\Super1\venv311\Scripts\python.exe `
+    C:\Super1\app\scripts\run_super1_xm_mt5_forward.py `
+    --output-root C:\Super1\state `
+    smoke-order --confirm-demo
+```
+* Minimum hacimli demo limit/stop emri iletilir.
+* Broker readback doğrulanır ve anında iptal edilir.
+* Pozisyon ve bekleyen emir sayısı 0 olarak kapanmalıdır (`RECONCILED`).
+
+---
+
+## 3. İzleme ve Kabul Kapıları
+
+Her güncel seans için zorunlu kontroller:
+1. `Super1XM` ve `Super1Watchdog` görevleri `Running` ve `LastTaskResult = 0`.
+2. Heartbeat gecikmesi $\le 120$ saniye.
+3. `fatal_latch.json` ve `launcher_failure.json` bulunmamalı.
+4. Günlük sağlık raporu (`daily-health`):
+   ```powershell
+   & C:\Super1\venv311\Scripts\python.exe C:\Super1\app\scripts\run_super1_xm_mt5_forward.py daily-health --output-root C:\Super1\state
+   ```
+5. Promosyon değerlendirmesi için:
+   * En az 30 takvim günü
+   * En az 30 geçerli seans
+   * En az 20 puanlanabilir karar tamamlanmalıdır.
