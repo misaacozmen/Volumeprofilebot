@@ -168,7 +168,8 @@ function Assert-ReleaseSourceIntegrity {
         $fullDir = Join-Path $resolvedSource ($dir.Replace("/", [IO.Path]::DirectorySeparatorChar))
         if (Test-Path -LiteralPath $fullDir) {
             foreach ($file in (Get-ChildItem -LiteralPath $fullDir -Recurse -File)) {
-                if ($file.Extension -in @(".pyc", ".pyo", ".tmp", ".bak") -or
+                if ($file.Extension -in @(".pyc", ".pyo", ".tmp", ".bak", ".pem", ".key", ".dpapi", ".pfx", ".cer", ".crt") -or
+                    $file.Name -match '(credential|password|secret|\.env)' -or
                     $file.FullName -match '[\\/](__pycache__|\.pytest_cache|\.git|\.venv)[\\/]') {
                     continue
                 }
