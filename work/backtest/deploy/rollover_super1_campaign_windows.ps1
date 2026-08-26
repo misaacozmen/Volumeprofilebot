@@ -566,8 +566,9 @@ try {
         -RunnerSid $runnerSid `
         -ExpectedLauncherPath $RunScript `
         -ExpectedLauncherSha256 $launcherSha256 `
+        -ExpectedExitCode 0 `
         -NotBefore $initRequestedAt
-    $initHash = Get-Super1SecureSha256 -Path $initResult
+    $initHash = $initProducerBinding.result_sha256
     $initLock = [IO.File]::Open(
         $initResult,
         [IO.FileMode]::Open,
@@ -575,7 +576,7 @@ try {
         [IO.FileShare]::Read
     )
     try {
-        $initPayload = [IO.File]::ReadAllText($initResult) | ConvertFrom-Json
+        $initPayload = $initProducerBinding.result_payload
         $initAge = [DateTimeOffset]::UtcNow -
             [DateTimeOffset]::Parse([string]$initPayload.checked_at_utc).ToUniversalTime()
         if ((Get-Super1SecureSha256 -Path $initResult) -cne $initHash -or

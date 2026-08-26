@@ -1,4 +1,4 @@
-# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v10
+# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v11
 
 > **ÖNEMLİ:** Bu belge, Windows ve Super1 üretim ortamı için **tek yetkili operasyonel runbook**'tur. Burada belirtilen sıra dışındaki hiçbir manuel hotfix, doğrudan betik kopyalama veya geçersiz prosedür kabul edilmez.
 
@@ -27,6 +27,16 @@ Rollout işlemi yalnızca aşağıdaki fail-closed sıra ile gerçekleştirilir:
 ```
 [1. Signed Staging] ➔ [2. Signed Upgrade] ➔ [3. Flat Check] ➔ [4. Sealed Rollover] ➔ [5. Demo Smoke]
 ```
+
+### Tek Seferlik Private S3 Transferi (v11)
+
+Transfer yalnız `eu-central-1` bölgesinde, `otobacktest-transfer-<12_DIGIT_ACCOUNT_ID>-<V11_SHA12>` adlı geçici private bucket üzerinden yapılır. BucketOwnerEnforced, ACL disabled, Block Public Access dört ayarı açık, versioning disabled ve varsayılan şifreleme SSE-S3 olmalıdır. Bucket policy, public ACL, public URL ve static website yasaktır. Bucket içinde yalnız tek v11 transfer bundle nesnesi bulunabilir.
+
+Presigned GET ve evidence için presigned PUT süresi 900 saniyedir. GET URL bearer secret’tır; checkpoint, log veya rapora yazılmaz. Remote URL `Read-Host` ile alınır; `PSReadLine` kaldırılır, işlem bitince URL değişkeni ve clipboard temizlenir.
+
+Remote tarafında bundle dış SHA256, tam beş üye, duplicate/traversal ve beş iç SHA doğrulanmadan açma veya deployment yapılmaz. Incoming dizini inheritance kapalı, reparse’siz, SYSTEM/Administrators FullControl ve doğrulama sonrası ReadOnly olmalıdır. Doğrulama bitince download object silinir; boş private bucket evidence dönüşü için tutulur. Redacted evidence ZIP credential, DPAPI, `.env`, token, parola veya terminal profil dosyası içeremez. Evidence yerelde doğrulandıktan sonra evidence object ve bucket silinir.
+
+Kullanılabilecek blocker kodları: `WAITING_USER_AWS_LOGIN`, `BLOCKED_S3_TRANSFER_PERMISSION`, `BLOCKED_RDP_TEXT_CLIPBOARD`, `BLOCKED_TRANSFER_HASH_MISMATCH`, `BLOCKED_EVIDENCE_RETURN`.
 
 ### Adım 1: Signed Staging (`stage_signed_upgrader_windows.ps1`)
 Upgrader betiği, imzalı release bütünlüğü doğrulandıktan sonra SHA-256 adresli izole konuma kopyalanır:

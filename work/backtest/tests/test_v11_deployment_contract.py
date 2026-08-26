@@ -36,7 +36,7 @@ def test_smoke_uses_exact_trusted_host_and_script_path() -> None:
     assert '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0"' in text
     assert "-cne $ExpectedPSHome" in text
     assert "TrustedScript" in text and "-cne $TrustedScript" in text
-    assert "PSModulePath" in text and "Import-Module ScheduledTasks" in text
+    assert "PSModulePath" in text and "Import-Module -Name $ScheduledTasksModule" in text
 
 
 def test_smoke_output_uses_modify_runner_rights() -> None:
@@ -72,18 +72,10 @@ def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
 def test_builder_and_integrity_use_v10_baselines() -> None:
     builder = source("build_signed_windows_release.ps1")
     integrity = source("release_integrity.ps1")
-    assert '"-v10"' in builder
-    assert "$passedCount -lt 258" in builder
-    assert "$artifactPassedCount -lt 115" in builder
-    assert "-lt 258" in integrity and "-lt 115" in integrity
-
-
-def test_runbook_has_single_v10_incoming_staging_command() -> None:
-    docs = (ROOT.parent.parent / "docs" / "LIVE_OPERATIONS_TR.md").read_text(encoding="utf-8")
-    assert "v10" in docs.lower()
-    assert docs.count("-ExpectedPythonSha256") == 1
-    assert docs.count("-ExpectedTerminalSha256") == 1
-    assert "-BootstrapIntegrityScript" in docs
+    assert '"-v11"' in builder
+    assert "$passedCount -lt 267" in builder
+    assert "$artifactPassedCount -lt 138" in builder
+    assert "-lt 267" in integrity and "-lt 138" in integrity
 
 
 def test_v7_v8_v9_are_not_builder_defaults() -> None:
@@ -117,3 +109,60 @@ def test_release_integrity_requires_provenance_and_normalized_manifest_paths() -
     assert "RequireProvenance" in text
     assert "non-normalized file path" in text
     assert "$null -eq $manifest.files" in text
+
+
+def test_smoke_trusts_exact_process_and_module_manifest() -> None:
+    text = source("run_super1_demo_smoke_windows.ps1")
+    assert "GetCurrentProcess().MainModule.FileName" in text
+    assert "ScheduledTasks.psd1" in text and "-Force -PassThru" in text
+    assert "Module.Path" in text
+
+
+def test_smoke_restores_module_path_on_preflight_failure() -> None:
+    text = source("run_super1_demo_smoke_windows.ps1")
+    assert "OriginalPSModulePath" in text
+    assert "finally" in text and "$env:PSModulePath = $OriginalPSModulePath" in text
+
+
+def test_producer_snapshot_returns_exact_locked_result_and_exit_code() -> None:
+    text = source("super1_secure_task.ps1")
+    assert "ExpectedExitCode" in text
+    assert "result_text" in text and "result_payload" in text and "producer_exit_code" in text
+    assert "FileShare]::Read" in text
+
+
+def test_smoke_failure_cleanup_is_ordered_exhaustive_and_seals() -> None:
+    text = source("run_super1_demo_smoke_windows.ps1")
+    assert "cleanupErrors" in text and "Assert-Super1SecureSealedTree" in text
+    assert text.index("Stop-Super1SecureRuntime") < text.index("Remove-Item -LiteralPath $activeRequest")
+
+
+def test_smoke_success_revalidates_tasks_and_uses_fresh_snapshots() -> None:
+    text = source("run_super1_demo_smoke_windows.ps1")
+    assert text.count("Assert-Super1SecureTaskBindings") >= 2
+    assert "healthPayload.updated_at" in text and "observed_at_utc" in text
+
+
+def test_stage_holds_all_trusted_inputs_and_exact_host() -> None:
+    text = source("stage_signed_upgrader_windows.ps1")
+    assert "ExpectedPSHome" in text and "FileShare]::Read" in text
+    assert text.count("ReparsePoint") >= 4
+
+
+def test_stage_revalidates_containers_and_uses_create_new() -> None:
+    text = source("stage_signed_upgrader_windows.ps1")
+    assert "Assert-StageContainer" in text and "FileMode]::CreateNew" in text
+    assert "icacls.exe" in text and "LASTEXITCODE" in text
+
+
+def test_upgrader_preflight_failure_releases_locks_and_restores_environment() -> None:
+    text = source("upgrade_super1_signed_app_windows.ps1")
+    assert "SelfScriptLock" in text and "PowerShellHostLock" in text
+    assert "PYTHONHOME" in text and "PYTHONPATH" in text and "PSModulePath" in text
+
+
+def test_runbook_authorizes_only_private_s3_round_trip() -> None:
+    docs = (ROOT.parent.parent / "docs" / "LIVE_OPERATIONS_TR.md").read_text(encoding="utf-8")
+    assert "Private S3" in docs and "eu-central-1" in docs
+    assert "900" in docs and "SSE-S3" in docs
+    assert "BLOCKED_S3_TRANSFER_PERMISSION" in docs

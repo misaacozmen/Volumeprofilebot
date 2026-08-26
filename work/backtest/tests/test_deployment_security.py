@@ -582,18 +582,15 @@ def test_watchdog_telegram_is_transition_based_and_rate_limited() -> None:
 def test_stage_signed_upgrader_windows_fail_closed_contract() -> None:
     source = text("stage_signed_upgrader_windows.ps1")
 
-    assert 'Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1"' in source
-    assert "$upgraderSha256 = (Get-FileHash -LiteralPath $resolvedUpgraderSource" in source
+    assert 'Assert-SignedReleaseArchive -Archive $archivePath -ExpectedProfile "super1"' in source
+    assert "$upgraderSha256 = ([string]$upgraderEntry[0].sha256).ToLowerInvariant()" in source
     assert 'Join-Path $ProgramFiles "OtoBacktestDeploy"' in source
     assert '("super1-" + $upgraderSha256)' in source
     assert '"upgrade_super1_signed_app_windows.ps1"' in source
-    assert "$rootAcl.SetAccessRuleProtection($true, $false)" in source
+    assert "Assert-StageContainer" in source
     assert '@("S-1-5-18", "S-1-5-32-544")' in source
-    assert "$TargetDir" in source
-    assert '& $icaclsExe $TargetDir /setowner "*S-1-5-18"' in source
-    assert "Staged upgrader directory contains untrusted ACL rule" in source
-    assert "Staged upgrader directory rule is not FullControl" in source
-    assert "$copiedHash -cne $upgraderSha256" in source
+    assert "Set-StageAcl" in source
+    assert "New staged file hash mismatch before ACL" in source
     assert "-ExpectedSelfSha256 $upgraderSha256" in source
 
 
@@ -607,8 +604,8 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert "Release build requires CPython 3.11" in source
     assert '$pytestCmd = "$Python -m pytest $SourceRoot"' in source
     assert "Release build aborted: pytest test suite failed" in source
-    assert "$passedCount -lt 233" in source
-    assert "is below baseline (233)" in source
+    assert "$passedCount -lt 267" in source
+    assert "is below baseline (267)" in source
     assert "deploy/stage_signed_upgrader_windows.ps1" in source
     for key in (
         "release_id",
@@ -639,4 +636,3 @@ def test_release_integrity_validates_entries_and_rejects_credentials_and_source_
     assert "Production source file missing from release archive" in source
     assert "Production file content mismatch between source and release archive" in source
     assert "Release archive contains unexpected production entry not present in source tree" in source
-
