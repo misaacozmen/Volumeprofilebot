@@ -38,6 +38,8 @@ Remote tarafında bundle dış SHA256, tam beş üye, duplicate/traversal ve be�
 
 Kullanılabilecek blocker kodları: `WAITING_USER_AWS_LOGIN`, `BLOCKED_S3_TRANSFER_PERMISSION`, `BLOCKED_RDP_TEXT_CLIPBOARD`, `BLOCKED_TRANSFER_HASH_MISMATCH`, `BLOCKED_EVIDENCE_RETURN`.
 
+Bu bucket public website olarak yapılandırılamaz. RDP drive redirection kullanılmaz.
+
 ### Adım 1: Signed Staging (`stage_signed_upgrader_windows.ps1`)
 Upgrader betiği, imzalı release bütünlüğü doğrulandıktan sonra SHA-256 adresli izole konuma kopyalanır:
 ```powershell

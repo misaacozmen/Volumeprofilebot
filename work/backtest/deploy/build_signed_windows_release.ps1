@@ -92,8 +92,6 @@ try {
     foreach ($directory in @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $directory) -Destination (Join-Path $Stage $directory) -Recurse
     }
-    $runbookSource = [IO.Path]::GetFullPath((Join-Path $SourceRoot "..\..\docs"))
-    if (Test-Path -LiteralPath $runbookSource -PathType Container) { Copy-Item -LiteralPath $runbookSource -Destination (Join-Path $Stage "docs") -Recurse }
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
     }

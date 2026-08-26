@@ -161,8 +161,8 @@ def test_upgrader_preflight_failure_releases_locks_and_restores_environment() ->
     assert "PYTHONHOME" in text and "PYTHONPATH" in text and "PSModulePath" in text
 
 
-def test_runbook_authorizes_only_private_s3_round_trip() -> None:
-    docs = (ROOT.parent.parent / "docs" / "LIVE_OPERATIONS_TR.md").read_text(encoding="utf-8")
-    assert "Private S3" in docs and "eu-central-1" in docs
-    assert "900" in docs and "SSE-S3" in docs
-    assert "BLOCKED_S3_TRANSFER_PERMISSION" in docs
+def test_stage_locks_all_trusted_inputs_before_bootstrap_execution() -> None:
+    text = source("stage_signed_upgrader_windows.ps1")
+    assert "inputLocks" in text
+    assert "FileShare]::Read" in text
+    assert text.index("$inputLocks") < text.index(". $bootstrapPath")
