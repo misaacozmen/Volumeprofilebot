@@ -241,7 +241,7 @@ def test_super1_upgrade_runs_only_from_sha_addressed_protected_self() -> None:
     header = source[: source.index(")\n\n$ErrorActionPreference")]
 
     assert "[string]$ExpectedSelfSha256" in header
-    assert 'Join-Path $ProgramFiles "OtoBacktestDeploy"' in source
+    assert '[Environment+SpecialFolder]::ProgramFiles' in source
     assert '("super1-" + $ExpectedSelfSha256)' in source
     assert '"upgrade_super1_signed_app_windows.ps1"' in source
     assert "$CurrentSelfPath.Equals(" in source
@@ -584,7 +584,7 @@ def test_stage_signed_upgrader_windows_fail_closed_contract() -> None:
 
     assert 'Assert-SignedReleaseArchive -Archive $archivePath -ExpectedProfile "super1"' in source
     assert "$upgraderSha256 = ([string]$upgraderEntry[0].sha256).ToLowerInvariant()" in source
-    assert 'Join-Path $ProgramFiles "OtoBacktestDeploy"' in source
+    assert '[Environment+SpecialFolder]::ProgramFiles' in source
     assert '("super1-" + $upgraderSha256)' in source
     assert '"upgrade_super1_signed_app_windows.ps1"' in source
     assert "Assert-StageContainer" in source
@@ -597,9 +597,9 @@ def test_stage_signed_upgrader_windows_fail_closed_contract() -> None:
 def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> None:
     source = text("build_signed_windows_release.ps1")
 
-    assert 'git status --porcelain $SourceRoot' in source
+    assert 'git -C $RepoRoot status --porcelain -- $SourceRoot' in source
     assert "Git working tree is dirty; refusing release build" in source
-    assert 'git rev-parse HEAD' in source
+    assert 'git -C $RepoRoot rev-parse HEAD' in source
     assert '$pyParts[0] -ne "3.11" -or $pyParts[1] -ne "CPython"' in source
     assert "Release build requires CPython 3.11" in source
     assert '$pytestCmd = "$Python -m pytest $SourceRoot"' in source

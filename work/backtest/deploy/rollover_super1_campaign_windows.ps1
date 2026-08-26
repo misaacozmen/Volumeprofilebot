@@ -568,28 +568,17 @@ try {
         -ExpectedLauncherSha256 $launcherSha256 `
         -ExpectedExitCode 0 `
         -NotBefore $initRequestedAt
-    $initHash = $initProducerBinding.result_sha256
-    $initLock = [IO.File]::Open(
-        $initResult,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Read,
-        [IO.FileShare]::Read
-    )
-    try {
-        $initPayload = $initProducerBinding.result_payload
-        $initAge = [DateTimeOffset]::UtcNow -
-            [DateTimeOffset]::Parse([string]$initPayload.checked_at_utc).ToUniversalTime()
-        if ((Get-Super1SecureSha256 -Path $initResult) -cne $initHash -or
-            [int]$initPayload.schema_version -ne 1 -or
-            [string]$initPayload.evidence_nonce -cne $initNonce -or
-            [string]$initPayload.state -cne "INITIALIZED" -or
-            [int]$initPayload.exit_code -ne 0 -or
-            $initAge.TotalSeconds -lt -5 -or $initAge.TotalSeconds -gt 45 -or
-            -not (Test-Path -LiteralPath (Join-Path $State "campaign_lock.json") -PathType Leaf)) {
-            throw "Super1 sealed campaign initialization evidence failed."
-        }
+    $initPayload = $initProducerBinding.result_payload
+    $initAge = [DateTimeOffset]::UtcNow -
+        [DateTimeOffset]::Parse([string]$initPayload.checked_at_utc).ToUniversalTime()
+    if ([int]$initPayload.schema_version -ne 1 -or
+        [string]$initPayload.evidence_nonce -cne $initNonce -or
+        [string]$initPayload.state -cne "INITIALIZED" -or
+        [int]$initPayload.exit_code -ne 0 -or
+        $initAge.TotalSeconds -lt -5 -or $initAge.TotalSeconds -gt 45 -or
+        -not (Test-Path -LiteralPath (Join-Path $State "campaign_lock.json") -PathType Leaf)) {
+        throw "Super1 sealed campaign initialization evidence failed."
     }
-    finally { $initLock.Dispose() }
 
     $rolloutStarted = [DateTimeOffset]::UtcNow
     Start-ScheduledTask -TaskName $MainTask

@@ -19,6 +19,8 @@ Set-StrictMode -Version Latest
 $OriginalPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
+$SelfScriptLock = $null
+$PowerShellHostLock = $null
 $ExpectedPSHome = [IO.Path]::GetFullPath(
     (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0")
 )
@@ -28,6 +30,7 @@ $script:Super1PowerShellExe = [IO.Path]::GetFullPath(
 $CurrentPowerShellExe = [IO.Path]::GetFullPath(
     [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 )
+try {
 if (-not [IO.Path]::GetFullPath($PSHOME).Equals(
         $ExpectedPSHome,
         [StringComparison]::OrdinalIgnoreCase
@@ -170,7 +173,10 @@ if ((Get-Item -LiteralPath $script:Super1PowerShellExe -Force).Attributes -band
     [IO.FileAttributes]::ReparsePoint) {
     throw "Trusted Windows PowerShell executable is a reparse point."
 }
-Import-Module -Name $SecurityModule -Force -ErrorAction Stop
+$loadedSecurityModule = @(Import-Module -Name $SecurityModule -Force -PassThru -ErrorAction Stop)
+if ($loadedSecurityModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$loadedSecurityModule[0].Path).Equals($SecurityModule, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unexpected Microsoft.PowerShell.Security module path."
+}
 $PowerShellSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
     -LiteralPath $script:Super1PowerShellExe
 if ([string]$PowerShellSignature.Status -cne "Valid" -or
@@ -202,7 +208,22 @@ $PowerShellHostEvidence = [pscustomobject]@{
         $script:Super1PowerShellExe
     ).ProductVersion
 }
-Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
+$loadedScheduledTasksModule = @(Import-Module -Name $ScheduledTasksModule -Force -PassThru -ErrorAction Stop)
+if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$loadedScheduledTasksModule[0].Path).Equals($ScheduledTasksModule, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unexpected ScheduledTasks module path."
+}
+}
+catch {
+    $preflightFailure = $_
+    try { if ($SelfScriptLock) { $SelfScriptLock.Dispose() } } catch { }
+    $SelfScriptLock = $null
+    try { if ($PowerShellHostLock) { $PowerShellHostLock.Dispose() } } catch { }
+    $PowerShellHostLock = $null
+    $env:PSModulePath = $OriginalPSModulePath
+    $env:PYTHONHOME = $OriginalPythonHome
+    $env:PYTHONPATH = $OriginalPythonPath
+    throw $preflightFailure
+}
 
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"

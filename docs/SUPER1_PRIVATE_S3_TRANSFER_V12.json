@@ -1,0 +1,28 @@
+{
+  "region": "eu-central-1",
+  "bucket_template": "otobacktest-transfer-{account_id}-{commit_sha12}",
+  "ownership": "BucketOwnerEnforced",
+  "public_access_block": {
+    "block_public_acls": true,
+    "ignore_public_acls": true,
+    "block_public_policy": true,
+    "restrict_public_buckets": true
+  },
+  "versioning": "disabled",
+  "encryption": "AES256",
+  "bucket_policy_allowed": false,
+  "website_allowed": false,
+  "object_count_before_download": 1,
+  "bundle_entries": 5,
+  "presigned_get_seconds": 900,
+  "presigned_put_seconds": 900,
+  "rdp_drive_redirection_allowed": false,
+  "evidence_exclusions": ["credentials", "DPAPI", ".env", "tokens", "passwords", "terminal profiles"],
+  "blockers": [
+    "WAITING_USER_AWS_LOGIN",
+    "BLOCKED_S3_TRANSFER_PERMISSION",
+    "BLOCKED_RDP_TEXT_CLIPBOARD",
+    "BLOCKED_TRANSFER_HASH_MISMATCH",
+    "BLOCKED_EVIDENCE_RETURN"
+  ]
+}
