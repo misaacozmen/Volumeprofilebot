@@ -193,19 +193,10 @@ try {
         -RunnerSid $runnerSid `
         -ExpectedLauncherPath $Launcher `
         -ExpectedLauncherSha256 $launcherSha256 `
+        -ExpectedExitCode 0 `
         -NotBefore $requestedAt
-    $resultHash = Get-Super1SecureSha256 -Path $Result
-    $resultLock = [IO.File]::Open(
-        $Result,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Read,
-        [IO.FileShare]::Read
-    )
-    try {
-        $payload = [IO.File]::ReadAllText($Result) | ConvertFrom-Json
-        if ((Get-Super1SecureSha256 -Path $Result) -cne $resultHash) {
-            throw "Sealed Super1 readiness result changed while read-locked."
-        }
+    $resultHash = $producerBinding.result_sha256
+    $payload = $producerBinding.result_payload
         $runtime = [IO.File]::ReadAllText($RuntimeConfig) | ConvertFrom-Json
         $pin = [IO.File]::ReadAllText($TerminalPin) | ConvertFrom-Json
         $checked = [DateTimeOffset]::Parse([string]$payload.checked_at_utc).ToUniversalTime()
@@ -336,8 +327,6 @@ try {
             producer_sha256 = [string]$producerBinding.producer_sha256
             producer_process_id = [int]$producerBinding.producer_process_id
         }
-    }
-    finally { $resultLock.Dispose() }
     $succeeded = $true
 }
 catch { $failure = $_ }

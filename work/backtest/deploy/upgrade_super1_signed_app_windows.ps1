@@ -207,7 +207,7 @@ Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "aa28a9fa7e810f1277de4e2eb929a321b003ca59515073a51e3de99e63842a14"
+$ExpectedIntegrityScriptSha256 = "74349cfd4afe7683d17d59430e6c1349feb0a2190fe4c6668d231bf68784f585"
 
 function Test-PathWithin {
     param(

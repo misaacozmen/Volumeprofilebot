@@ -8,22 +8,24 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$ExpectedPSHome = "C:\Windows\System32\WindowsPowerShell\v1.0"
+if (-not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -ne "Desktop" -or [IO.Path]::GetFullPath($PSHOME) -cne $ExpectedPSHome -or [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -cne (Join-Path $ExpectedPSHome "powershell.exe")) { throw "Trusted 64-bit Windows PowerShell is required." }
 $ExpectedBootstrapIntegritySha256 = $ExpectedBootstrapIntegritySha256.ToLowerInvariant()
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archivePath = [IO.Path]::GetFullPath($Archive)
 $bootstrapPath = [IO.Path]::GetFullPath($BootstrapIntegrityScript)
-if (-not (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) { throw "Bootstrap integrity script is missing." }
+foreach ($inputPath in @($archivePath, [IO.Path]::ChangeExtension($archivePath, ".manifest.json"), [IO.Path]::ChangeExtension($archivePath, ".manifest.sig"), $bootstrapPath)) { if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf) -or (Get-Item -LiteralPath $inputPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Trusted release input is missing or unsafe: $inputPath" } }
+$inputLocks = @()
+try {
+$inputLocks = @($archivePath, [IO.Path]::ChangeExtension($archivePath, ".manifest.json"), [IO.Path]::ChangeExtension($archivePath, ".manifest.sig"), $bootstrapPath) | ForEach-Object { [IO.File]::Open($_, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read) }
 $bootstrapHash = (Get-FileHash -LiteralPath $bootstrapPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($bootstrapHash -cne $ExpectedBootstrapIntegritySha256) {
     throw "Bootstrap integrity script is missing or has an unexpected SHA-256."
 }
 . $bootstrapPath
 $manifest = Assert-SignedReleaseArchive -Archive $archivePath -ExpectedProfile "super1" -RequireProvenance
-# Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1"
-# $upgraderSha256 = (Get-FileHash -LiteralPath $resolvedUpgraderSource -Algorithm SHA256).Hash.ToLowerInvariant()
 # The signed archive is the only upgrader source.
-# Staging contract: $rootAcl.SetAccessRuleProtection($true, $false), @("S-1-5-18", "S-1-5-32-544") and $TargetDir are verified below; & $icaclsExe $TargetDir /setowner "*S-1-5-18". Staged upgrader directory contains untrusted ACL rule / Staged upgrader directory rule is not FullControl are rejected.
 $selfPath = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
 $selfHash = (Get-FileHash -LiteralPath $selfPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $selfEntry = @($manifest.files | Where-Object { [string]$_.path -eq "deploy/stage_signed_upgrader_windows.ps1" })
@@ -75,13 +77,16 @@ function Assert-StageContainer([string]$Path) {
     if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Staging container is a reparse point: $Path" }
     Assert-StageAcl $Path
 }
+$icaclsExe = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
+if (-not (Test-Path -LiteralPath $icaclsExe -PathType Leaf)) { throw "Trusted icacls.exe is missing." }
 function Set-StageAcl([string]$Path, [bool]$Directory) {
     $acl = if ($Directory) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
     $acl.SetAccessRuleProtection($true, $false)
     $inherit = if ($Directory) { [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [Security.AccessControl.InheritanceFlags]::None }
     foreach ($sid in @("S-1-5-18", "S-1-5-32-544")) { [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)) }
     if ($Directory) { [IO.Directory]::SetAccessControl($Path, $acl) } else { [IO.File]::SetAccessControl($Path, $acl) }
-    & (Join-Path ([Environment]::SystemDirectory) "icacls.exe") $Path /setowner "*S-1-5-18" /Q | Out-Null
+    & $icaclsExe $Path /setowner "*S-1-5-18" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls owner update failed: $Path" }
     Assert-StageAcl $Path
 }
 if (Test-Path -LiteralPath $deployRoot) { Assert-StageContainer $deployRoot } else { New-Item -ItemType Directory -Path $deployRoot | Out-Null; Set-StageAcl $deployRoot $true }
@@ -99,10 +104,11 @@ try {
             if (-not (Get-Item -LiteralPath $target).IsReadOnly) { throw "Existing staged file is not ReadOnly: $target" }
             continue
         }
-        $stream = $zip.GetEntry($pair[0]).Open(); $bytes = New-Object IO.MemoryStream
-        try { $stream.CopyTo($bytes); [IO.File]::WriteAllBytes($target, $bytes.ToArray()) } finally { $bytes.Dispose(); $stream.Dispose() }
+        $stream = $zip.GetEntry($pair[0]).Open(); $outputStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.CopyTo($outputStream); $outputStream.Flush($true) } finally { $outputStream.Dispose(); $stream.Dispose() }
         $writtenHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($writtenHash -cne ([string]$manifestEntry.sha256).ToLowerInvariant()) { throw "New staged file hash mismatch before ACL: $target" }
+        if ((Get-Item -LiteralPath $target -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "New staged file is a reparse point: $target" }
         Set-StageAcl $target $false
         (Get-Item -LiteralPath $target).IsReadOnly = $true
     }
@@ -111,3 +117,5 @@ finally { $zip.Dispose() }
 foreach ($path in @($deployRoot, $shaDir, $targetUpgrader, $targetIntegrity)) { Assert-StageAcl $path }
 if (-not (Get-Item -LiteralPath $targetUpgrader).IsReadOnly -or -not (Get-Item -LiteralPath $targetIntegrity).IsReadOnly) { throw "Staged files must be ReadOnly." }
 & $targetUpgrader -Archive $archivePath -ExpectedPythonSha256 $ExpectedPythonSha256 -ExpectedTerminalSha256 $ExpectedTerminalSha256 -ExpectedSelfSha256 $upgraderSha256
+}
+finally { foreach ($lock in @($inputLocks)) { try { $lock.Dispose() } catch {} } }

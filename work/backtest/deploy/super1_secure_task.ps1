@@ -525,6 +525,7 @@ function Get-Super1SecureProducerEnvelope {
         [Parameter(Mandatory = $true)][string]$ExpectedLauncherPath,
         [Parameter(Mandatory = $true)][string]$ExpectedLauncherSha256,
         [Parameter(Mandatory = $true)][DateTimeOffset]$NotBefore,
+        [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
         [int]$MaxAgeSeconds = 90
     )
     $producer = [IO.Path]::GetFullPath($ProducerPath)
@@ -538,9 +539,6 @@ function Get-Super1SecureProducerEnvelope {
             throw "Super1 producer binding file is missing or is a reparse point: $path"
         }
     }
-    $requestSha256 = Get-Super1SecureSha256 -Path $request
-    $resultSha256 = Get-Super1SecureSha256 -Path $result
-    $producerSha256 = Get-Super1SecureSha256 -Path $producer
     $locks = New-Object Collections.Generic.List[IO.FileStream]
     try {
         foreach ($path in @($request, $result, $producer)) {
@@ -551,13 +549,20 @@ function Get-Super1SecureProducerEnvelope {
                 [IO.FileShare]::Read
             ))
         }
-        $requestPayload = [IO.File]::ReadAllText($request) | ConvertFrom-Json
-        $producerPayload = [IO.File]::ReadAllText($producer) | ConvertFrom-Json
-        if ((Get-Super1SecureSha256 -Path $request) -cne $requestSha256 -or
-            (Get-Super1SecureSha256 -Path $result) -cne $resultSha256 -or
-            (Get-Super1SecureSha256 -Path $producer) -cne $producerSha256) {
-            throw "Sealed Super1 producer binding changed while read-locked."
-        }
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try {
+            $requestStream = $locks[0]; $resultStream = $locks[1]; $producerStream = $locks[2]
+            $requestStream.Position = 0; $requestBytes = $hash.ComputeHash($requestStream); $requestStream.Position = 0
+            $resultStream.Position = 0; $resultBytes = $hash.ComputeHash($resultStream); $resultStream.Position = 0
+            $producerStream.Position = 0; $producerBytes = $hash.ComputeHash($producerStream); $producerStream.Position = 0
+            $requestSha256 = ([BitConverter]::ToString($requestBytes)).Replace("-", "").ToLowerInvariant()
+            $resultSha256 = ([BitConverter]::ToString($resultBytes)).Replace("-", "").ToLowerInvariant()
+            $producerSha256 = ([BitConverter]::ToString($producerBytes)).Replace("-", "").ToLowerInvariant()
+            $requestReader = New-Object IO.StreamReader($requestStream, [Text.Encoding]::UTF8, $true, 4096, $true); $requestText = $requestReader.ReadToEnd(); $requestReader.Dispose(); $requestPayload = $requestText | ConvertFrom-Json
+            $resultReader = New-Object IO.StreamReader($resultStream, [Text.Encoding]::UTF8, $true, 4096, $true); $resultText = $resultReader.ReadToEnd(); $resultReader.Dispose()
+            $resultPayload = $resultText | ConvertFrom-Json
+            $producerReader = New-Object IO.StreamReader($producerStream, [Text.Encoding]::UTF8, $true, 4096, $true); $producerText = $producerReader.ReadToEnd(); $producerReader.Dispose(); $producerPayload = $producerText | ConvertFrom-Json
+        } finally { $hash.Dispose() }
         try {
             $requestedAt = [DateTimeOffset]::Parse(
                 [string]$requestPayload.requested_at_utc
@@ -589,6 +594,7 @@ function Get-Super1SecureProducerEnvelope {
             [string]$producerPayload.nonce -cne $Nonce -or
             [string]$producerPayload.request_sha256 -cne $requestSha256 -or
             [string]$producerPayload.result_sha256 -cne $resultSha256 -or
+            [int]$producerPayload.exit_code -ne $ExpectedExitCode -or
             [string]$producerPayload.producer_runner_sid -cne $RunnerSid -or
             [int]$producerPayload.producer_process_id -le 4 -or
             [string]$producerPayload.launcher_sha256 -cne
@@ -609,6 +615,9 @@ function Get-Super1SecureProducerEnvelope {
             started_at_utc = $producerStartedAt.ToString("o")
             produced_at_utc = $producedAt.ToString("o")
             producer_process_id = [int]$producerPayload.producer_process_id
+            result_text = $resultText
+            result_payload = $resultPayload
+            producer_exit_code = [int]$producerPayload.exit_code
         }
     }
     finally {
