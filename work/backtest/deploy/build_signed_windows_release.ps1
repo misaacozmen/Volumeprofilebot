@@ -18,7 +18,6 @@ Add-Type -AssemblyName System.IO.Compression
 
 $SourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $RepoRoot = (& git -C $SourceRoot rev-parse --show-toplevel).Trim()
-# Git policy compatibility marker: git status --porcelain $SourceRoot; git rev-parse HEAD; all actual queries use git -C $RepoRoot.
 $Archive = [IO.Path]::GetFullPath($OutputArchive)
 $OutputRoot = Split-Path -Parent $Archive
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("otobt-release-" + [Guid]::NewGuid().ToString("N"))
@@ -68,7 +67,6 @@ if ($pytestOutputText -match '(\d+)\s+passed') {
 } else {
     throw "Could not determine pytest passed count from output."
 }
-# Test policy compatibility marker: source baseline is 258.
 if ($passedCount -lt 267) {
     throw "Release build aborted: pytest passed count ($passedCount) is below baseline (267)."
 }
@@ -83,7 +81,7 @@ $createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 if (-not $ReleaseId) {
     $utcFormatted = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
     $shortCommit = if ($gitCommit.Length -ge 12) { $gitCommit.Substring(0, 12) } else { $gitCommit }
-    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v11" # release suffix "-v11"
+    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v12"
 }
 
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
@@ -95,12 +93,13 @@ try {
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
     }
-    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v11_deployment_contract.py")
+    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v12_deployment_contract.py")
     $artifactTestRoot = Join-Path $Stage "artifact_tests"
     New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
     foreach ($testFile in $artifactTestFiles) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot (Join-Path "tests" $testFile)) -Destination (Join-Path $artifactTestRoot $testFile)
     }
+    Copy-Item -LiteralPath (Join-Path $SourceRoot "tests\powershell_contract.py") -Destination (Join-Path $artifactTestRoot "powershell_contract.py")
     $baselineSource = Join-Path $SourceRoot "outputs\reports\engine_reliability_audit_2025_feb_mar\run_manifest.json"
     $baselineTarget = Join-Path $Stage "outputs\reports\engine_reliability_audit_2025_feb_mar"
     New-Item -ItemType Directory -Force -Path $baselineTarget | Out-Null
@@ -201,7 +200,7 @@ try {
     $artifactPassedCount = 0
     if ($artifactOutputText -match '(\d+)\s+passed') { $artifactPassedCount = [int]$Matches[1] }
     if ($artifactPassedCount -lt 138) { throw "Locked artifact pytest baseline is below 138: $artifactPassedCount" }
-    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v11_deployment_contract.py"
+    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v12_deployment_contract.py"
     $artifactPytestPassed = $true
     $lockedDependencies = @($lockLines)
     Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force

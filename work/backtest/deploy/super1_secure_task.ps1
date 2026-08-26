@@ -558,10 +558,15 @@ function Get-Super1SecureProducerEnvelope {
             $requestSha256 = ([BitConverter]::ToString($requestBytes)).Replace("-", "").ToLowerInvariant()
             $resultSha256 = ([BitConverter]::ToString($resultBytes)).Replace("-", "").ToLowerInvariant()
             $producerSha256 = ([BitConverter]::ToString($producerBytes)).Replace("-", "").ToLowerInvariant()
-            $requestReader = New-Object IO.StreamReader($requestStream, [Text.Encoding]::UTF8, $true, 4096, $true); $requestText = $requestReader.ReadToEnd(); $requestReader.Dispose(); $requestPayload = $requestText | ConvertFrom-Json
-            $resultReader = New-Object IO.StreamReader($resultStream, [Text.Encoding]::UTF8, $true, 4096, $true); $resultText = $resultReader.ReadToEnd(); $resultReader.Dispose()
-            $resultPayload = $resultText | ConvertFrom-Json
-            $producerReader = New-Object IO.StreamReader($producerStream, [Text.Encoding]::UTF8, $true, 4096, $true); $producerText = $producerReader.ReadToEnd(); $producerReader.Dispose(); $producerPayload = $producerText | ConvertFrom-Json
+            $requestReader = New-Object IO.StreamReader($requestStream, [Text.Encoding]::UTF8, $true, 4096, $true)
+            try { $requestStream.Position = 0; $requestText = $requestReader.ReadToEnd(); $requestPayload = $requestText | ConvertFrom-Json }
+            finally { $requestReader.Dispose() }
+            $resultReader = New-Object IO.StreamReader($resultStream, [Text.Encoding]::UTF8, $true, 4096, $true)
+            try { $resultStream.Position = 0; $resultText = $resultReader.ReadToEnd(); $resultPayload = $resultText | ConvertFrom-Json }
+            finally { $resultReader.Dispose() }
+            $producerReader = New-Object IO.StreamReader($producerStream, [Text.Encoding]::UTF8, $true, 4096, $true)
+            try { $producerStream.Position = 0; $producerText = $producerReader.ReadToEnd(); $producerPayload = $producerText | ConvertFrom-Json }
+            finally { $producerReader.Dispose() }
         } finally { $hash.Dispose() }
         try {
             $requestedAt = [DateTimeOffset]::Parse(

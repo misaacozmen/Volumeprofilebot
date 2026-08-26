@@ -1,4 +1,4 @@
-# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v11
+# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v12
 
 > **ÖNEMLİ:** Bu belge, Windows ve Super1 üretim ortamı için **tek yetkili operasyonel runbook**'tur. Burada belirtilen sıra dışındaki hiçbir manuel hotfix, doğrudan betik kopyalama veya geçersiz prosedür kabul edilmez.
 
@@ -28,7 +28,9 @@ Rollout işlemi yalnızca aşağıdaki fail-closed sıra ile gerçekleştirilir:
 [1. Signed Staging] ➔ [2. Signed Upgrade] ➔ [3. Flat Check] ➔ [4. Sealed Rollover] ➔ [5. Demo Smoke]
 ```
 
-### Tek Seferlik Private S3 Transferi (v11)
+### Tek Seferlik Private S3 Transferi (v12)
+
+Normatif makine sözleşmesi: `docs/SUPER1_PRIVATE_S3_TRANSFER_V12.json`.
 
 Transfer yalnız `eu-central-1` bölgesinde, `otobacktest-transfer-<12_DIGIT_ACCOUNT_ID>-<V11_SHA12>` adlı geçici private bucket üzerinden yapılır. BucketOwnerEnforced, ACL disabled, Block Public Access dört ayarı açık, versioning disabled ve varsayılan şifreleme SSE-S3 olmalıdır. Bucket policy, public ACL, public URL ve static website yasaktır. Bucket içinde yalnız tek v11 transfer bundle nesnesi bulunabilir.
 
@@ -39,6 +41,8 @@ Remote tarafında bundle dış SHA256, tam beş üye, duplicate/traversal ve be�
 Kullanılabilecek blocker kodları: `WAITING_USER_AWS_LOGIN`, `BLOCKED_S3_TRANSFER_PERMISSION`, `BLOCKED_RDP_TEXT_CLIPBOARD`, `BLOCKED_TRANSFER_HASH_MISMATCH`, `BLOCKED_EVIDENCE_RETURN`.
 
 Bu bucket public website olarak yapılandırılamaz. RDP drive redirection kullanılmaz.
+
+AWS API readback doğrulanmadan upload veya presigned URL oluşturulmaz. ZIP yollarında case-insensitive duplicate, rooted, drive-qualified, backslash ve traversal reddedilir. Remote extraction CreateNew ve containment kontrolüyle yapılır; overwrite yasaktır. Windows dizin ReadOnly biti güvenlik kapısı değildir. Incoming root ve çıkarılan her dosya SYSTEM owner, yalnız SYSTEM/Administrators explicit FullControl, inheritance kapalı ve reparse’siz olmalıdır; doğrulama sonrası dosyalar ReadOnly yapılır. URL ve clipboard temizliği try/finally içindedir. Download object remote hash doğrulamasının hemen ardından silinir. Evidence PUT benzersiz ve önceden bulunmayan key kullanır ve SHA256 checksum’a bağlanır. Evidence yerelde doğrulanmadan object veya bucket temizlenmez; sonunda evidence object ve bucket yokluğu API readback ile doğrulanır.
 
 ### Adım 1: Signed Staging (`stage_signed_upgrader_windows.ps1`)
 Upgrader betiği, imzalı release bütünlüğü doğrulandıktan sonra SHA-256 adresli izole konuma kopyalanır:
