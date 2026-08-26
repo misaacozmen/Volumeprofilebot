@@ -207,7 +207,7 @@ Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "1218c82972f8ad0a93286eabd1f30e2c68c85f59eb7a716f699ba1077db8a7fc"
+$ExpectedIntegrityScriptSha256 = "aa28a9fa7e810f1277de4e2eb929a321b003ca59515073a51e3de99e63842a14"
 
 function Test-PathWithin {
     param(
@@ -1961,7 +1961,7 @@ try {
         }
     }
 
-    $ReleaseManifest = Assert-SignedReleaseArchive -Archive $ArchivePath -ExpectedProfile "super1"
+    $ReleaseManifest = Assert-SignedReleaseArchive -Archive $ArchivePath -ExpectedProfile "super1" -RequireProvenance
     $sourceManifest = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.json")
     $sourceSignature = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.sig")
     $sourceComponents = @($ArchivePath, $sourceManifest, $sourceSignature)
@@ -2007,7 +2007,8 @@ try {
         -RunnerSid $runnerSid
     $verifiedReleaseManifest = Assert-SignedReleaseArchive `
         -Archive $VerifiedArchive `
-        -ExpectedProfile "super1"
+        -ExpectedProfile "super1" `
+        -RequireProvenance
     if ([string]$verifiedReleaseManifest.archive_sha256 -ne [string]$ReleaseManifest.archive_sha256) {
         throw "Verified signed release copy does not match the originally validated release."
     }

@@ -1039,6 +1039,65 @@ def demo_client(fake_mt5: FakeTradeMt5) -> object:
     return client
 
 
+def test_smoke_exposure_counts_foreign_magic_orders_and_positions() -> None:
+    mt5 = FakeOrderMt5()
+    mt5.pending = [SimpleNamespace(ticket=1, magic=111), SimpleNamespace(ticket=2, magic=222)]
+    mt5.positions_get = lambda: (SimpleNamespace(ticket=3, magic=333), SimpleNamespace(ticket=4, magic=444))
+    exposure = demo_client(mt5)._smoke_exposure()
+    assert exposure == {"open_orders": 2, "open_positions": 2, "unknown_exposure": 0}
+
+
+def test_smoke_rejects_foreign_exposure_before_order_check() -> None:
+    mt5 = FakeOrderMt5()
+    mt5.pending = [SimpleNamespace(ticket=1, magic=999)]
+    mt5.order_check = lambda request: (_ for _ in ()).throw(AssertionError("order_check must not run"))
+    with pytest.raises(MODULE.core.CriticalLiveError, match="flat dedicated demo account"):
+        demo_client(mt5).smoke_order(Path("."), {"runtime_config_hash": "test"})
+
+
+def test_smoke_rejects_foreign_position_exposure_before_order_check() -> None:
+    mt5 = FakeOrderMt5()
+    mt5.positions_get = lambda: (SimpleNamespace(ticket=1, magic=999),)
+    mt5.order_check = lambda request: (_ for _ in ()).throw(AssertionError("order_check must not run"))
+    with pytest.raises(MODULE.core.CriticalLiveError, match="flat dedicated demo account"):
+        demo_client(mt5).smoke_order(Path("."), {"runtime_config_hash": "test"})
+
+
+def test_smoke_does_not_pass_when_foreign_exposure_remains_after_cancellation(tmp_path) -> None:
+    mt5 = FakeOrderMt5()
+    foreign = SimpleNamespace(ticket=999, magic=999, comment="foreign")
+    original_remove = mt5.order_send
+    def remove_with_foreign(request):
+        result = original_remove(request)
+        if request["action"] == mt5.TRADE_ACTION_REMOVE:
+            mt5.pending.append(foreign)
+        return result
+    mt5.order_send = remove_with_foreign
+    with pytest.raises(MODULE.core.CriticalLiveError, match="return the dedicated demo account to flat"):
+        demo_client(mt5).smoke_order(tmp_path, {"runtime_config_hash": "test"})
+
+
+def test_smoke_exposure_keeps_unknown_state_fail_closed() -> None:
+    mt5 = FakeOrderMt5()
+    mt5.orders_get = lambda ticket=None: None
+    with pytest.raises(MODULE.BrokerStateUnknownError):
+        demo_client(mt5)._smoke_exposure()
+
+
+def test_smoke_exposure_counts_empty_dedicated_account_as_known_flat() -> None:
+    exposure = demo_client(FakeOrderMt5())._smoke_exposure()
+    assert exposure["open_orders"] == 0
+    assert exposure["open_positions"] == 0
+    assert exposure["unknown_exposure"] == 0
+
+
+def test_smoke_foreign_order_is_not_hidden_by_magic_filter() -> None:
+    mt5 = FakeOrderMt5()
+    mt5.pending = [SimpleNamespace(ticket=77, magic=0, comment="manual")]
+    client = demo_client(mt5)
+    assert client._smoke_exposure()["open_orders"] == len(mt5.pending)
+
+
 def test_demo_identity_and_terminal_permission_are_both_required() -> None:
     client = demo_client(FakeTradeMt5(terminal_trade_allowed=False))
     status = client.order_permission_status()

@@ -17,7 +17,8 @@ function Assert-SignedReleaseArchive {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,
         [string]$ExpectedProfile,
-        [string]$SourceRoot
+        [string]$SourceRoot,
+        [switch]$RequireProvenance
     )
 
     $archivePath = [IO.Path]::GetFullPath($Archive)
@@ -80,8 +81,15 @@ function Assert-SignedReleaseArchive {
     $archiveFilesMap = @{}
     try {
         foreach ($entry in $zip.Entries) {
-            $entryPath = $entry.FullName.Replace("\", "/")
+            $entryPath = $entry.FullName
+            if ($entryPath -ne $entryPath.Replace("\", "/") -or
+                [IO.Path]::IsPathRooted($entryPath) -or $entryPath -match '^[A-Za-z]:' -or
+                $entryPath -match '(^|/)\.\.(/|$)' -or $entryPath -match '(^|/)\./|//') {
+                throw "Archive contains a rooted, traversal, reversed, or non-normalized path: $entryPath"
+            }
+            $entryPath = $entryPath.Replace("\", "/")
             if ($entryPath.EndsWith("/")) { continue }
+            if ($archiveFilesMap.ContainsKey($entryPath)) { throw "Archive contains duplicate ZIP entry: $entryPath" }
             $fileName = [IO.Path]::GetFileName($entryPath).ToLowerInvariant()
             if ($fileName -match '\.(key|pem|dpapi|pfx|cer|crt)$' -or
                 $fileName -match '(credential|password|secret|\.env)') {
@@ -103,6 +111,31 @@ function Assert-SignedReleaseArchive {
     }
     finally {
         $zip.Dispose()
+    }
+
+    if ($RequireProvenance) {
+        if ([string]::IsNullOrWhiteSpace([string]$manifest.release_id) -or
+            [string]$manifest.git_commit -notmatch '^[A-Fa-f0-9]{40}$' -or
+            [bool]$manifest.git_dirty -ne $false -or
+            [string]$manifest.python_version -notmatch '^3\.11' -or
+            [bool]$manifest.pytest_passed -ne $true -or
+            [int]$manifest.pytest_passed_count -lt 258 -or
+            [bool]$manifest.artifact_pytest_passed -ne $true -or
+            $null -eq $manifest.artifact_pytest_count -or
+            [int]$manifest.artifact_pytest_count -lt 115 -or
+            $null -eq $manifest.files -or @($manifest.files).Count -eq 0) {
+            throw "Release manifest provenance is incomplete or below the required test baseline."
+        }
+        $seenManifestPaths = @{}
+        foreach ($f in @($manifest.files)) {
+            $path = [string]$f.path
+            if ([string]::IsNullOrWhiteSpace($path) -or $path -ne $path.Replace("\", "/") -or
+                [IO.Path]::IsPathRooted($path) -or $path -match '^[A-Za-z]:' -or $path -match '(^|/)\.\.(/|$)' -or
+                $path -match '(^|/)\./|//' -or $seenManifestPaths.ContainsKey($path)) {
+                throw "Release manifest contains a duplicate or non-normalized file path: $path"
+            }
+            $seenManifestPaths[$path] = $true
+        }
     }
 
     if ($manifest.files) {

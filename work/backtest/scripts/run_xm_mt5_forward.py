@@ -350,6 +350,16 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         if status["state"] != "READY":
             raise core.CriticalLiveError(f"MT5 demo order permission gate failed: {status['checks']}")
 
+    def _smoke_exposure(self) -> dict[str, int]:
+        """Return the dedicated demo account exposure gate, failing closed on unknown state."""
+        orders = self._mt5_collection("orders_get")
+        positions = self._mt5_collection("positions_get")
+        return {
+            "open_orders": len(orders),
+            "open_positions": len(positions),
+            "unknown_exposure": 0,
+        }
+
     def _comment(self, leg_key: str, order_id: str) -> str:
         digest = sha256(order_id.encode("utf-8")).hexdigest()[:16]
         return f"{self.config['order_comment_prefix']}:{leg_key}:{digest}"[:31]
@@ -1526,6 +1536,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
 
     def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
         self._require_order_permission()
+        exposure_before = self._smoke_exposure()
+        if any(exposure_before.values()):
+            raise core.CriticalLiveError(
+                f"Smoke requires a flat dedicated demo account: {exposure_before}"
+            )
         symbol = str(self.config["legs"]["nq"]["epic"])
         if not self.mt5.symbol_select(symbol, True):
             raise core.CriticalLiveError(f"{symbol}: symbol_select failed for smoke order.")
@@ -1577,6 +1592,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         if current is None:
             raise core.CriticalLiveError("Smoke pending order was not observable after submission.")
         cancelled = self._remove_order(output_root, current, "SMOKE_TEST")
+        exposure_after = self._smoke_exposure()
+        if any(exposure_after.values()):
+            raise core.CriticalLiveError(
+                f"Smoke did not return the dedicated demo account to flat: {exposure_after}"
+            )
         return {
             "state": "PASS",
             "demo_verified": True,
@@ -1584,6 +1604,9 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "minimum_volume": request["volume"],
             "submitted_ticket": int(sent.order),
             "cancelled": cancelled,
+            "open_orders_after": exposure_after["open_orders"],
+            "open_positions_after": exposure_after["open_positions"],
+            "unknown_exposure_after": exposure_after["unknown_exposure"],
         }
 
 

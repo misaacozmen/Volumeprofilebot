@@ -21,7 +21,7 @@ if (-not (Test-Path -LiteralPath $IntegrityScript)) {
     throw "Missing release integrity verifier: $IntegrityScript"
 }
 . $IntegrityScript
-$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1"
+$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1" -RequireProvenance
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw "Existing Python 3.11 runtime was not found; refusing to change the working campaign."
 }

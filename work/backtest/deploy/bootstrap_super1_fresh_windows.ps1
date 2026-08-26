@@ -23,7 +23,7 @@ if (-not (Test-Path -LiteralPath $IntegrityScript)) {
     throw "Missing release integrity verifier: $IntegrityScript"
 }
 . $IntegrityScript
-$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1"
+$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1" -RequireProvenance
 if (Test-Path -LiteralPath $App) {
     throw "Super1 app already exists; refusing to overwrite it."
 }

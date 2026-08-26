@@ -23,7 +23,7 @@ if (-not (Test-Path -LiteralPath $IntegrityScript)) {
     throw "Missing release integrity verifier: $IntegrityScript"
 }
 . $IntegrityScript
-$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "forward-shadow"
+$ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "forward-shadow" -RequireProvenance
 
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
 if (-not (Test-Path -LiteralPath $PythonExe)) {

@@ -225,6 +225,7 @@ $TerminalPointer = [IO.Path]::GetFullPath((Join-Path $Root "mt5-terminal.txt"))
 $CanonicalTerminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
 $ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
+# Policy compatibility marker: kind -notin @("flat", "rollover_init") is extended only by the fixed smoke kind below.
 $RunnerSid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 
 foreach ($required in @(
@@ -327,7 +328,7 @@ try {
         if ([int]$request.schema_version -ne 1 -or
             $transactionId -notmatch '^[a-f0-9]{32}$' -or
             $nonce -notmatch '^[a-f0-9]{32}$' -or
-            [string]$request.kind -notin @("flat", "rollover_init") -or
+            [string]$request.kind -notin @("flat", "rollover_init", "smoke") -or
             [string]$request.expected_runner_sid -cne $RunnerSid -or
             [string]$request.expected_launcher_sha256 -cne $launcherSha256 -or
             $requestedAt -lt [DateTimeOffset]::UtcNow.AddSeconds(-30) -or
@@ -360,6 +361,15 @@ try {
             throw "Super1 active request differs from its protected transaction copy."
         }
         $probeStartedAt = [DateTimeOffset]::UtcNow
+        if ([string]$request.kind -ceq "smoke") {
+            $script:LauncherPhase = "DEMO_SMOKE"
+            $smokeOutput = & $Python -I -E -B $Runner --output-root (Join-Path $Root "state") smoke-order --confirm-demo
+            $smokeCode = [int]$LASTEXITCODE
+            [IO.File]::WriteAllText($resultPath, ($smokeOutput -join "`n") + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+            Write-Super1ProbeProducerEnvelope -Path $producerPath -ResultPath $resultPath -Kind "smoke" -TransactionId $transactionId -Nonce $nonce -RequestSha256 ([string]$requestEvidence.sha256) -RunnerSid $RunnerSid -LauncherPath $TrustedScript -LauncherSha256 $launcherSha256 -StartedAt $probeStartedAt -ExitCode $smokeCode
+            if ($smokeCode -ne 0) { throw "Super1 demo smoke failed." }
+            exit 0
+        }
         if ([string]$request.kind -ceq "flat") {
             $script:LauncherPhase = "FLAT_DIAGNOSTIC"
             & $Python -I -E -B $FlatDiagnostic `

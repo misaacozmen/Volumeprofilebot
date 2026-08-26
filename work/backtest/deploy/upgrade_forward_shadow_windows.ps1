@@ -265,7 +265,7 @@ try {
     $WatchdogHealth = [IO.Path]::GetFullPath((Join-Path $CanonicalState "health.json"))
     $WatchdogStatus = [IO.Path]::GetFullPath((Join-Path $Root "watchdog_status.json"))
     $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
-    $ExpectedIntegrityScriptSha256 = "1218c82972f8ad0a93286eabd1f30e2c68c85f59eb7a716f699ba1077db8a7fc"
+    $ExpectedIntegrityScriptSha256 = "aa28a9fa7e810f1277de4e2eb929a321b003ca59515073a51e3de99e63842a14"
     $ExpectedTerminalSha256 = $ExpectedTerminalSha256.ToLowerInvariant()
     $RunId = [Guid]::NewGuid().ToString("N")
     $RunnerProbeTerminalConfig = [IO.Path]::GetFullPath(
@@ -2853,7 +2853,8 @@ try {
 
     $ExternalReleaseManifest = Assert-SignedReleaseArchive `
         -Archive $ArchivePath `
-        -ExpectedProfile "forward-shadow"
+        -ExpectedProfile "forward-shadow" `
+        -RequireProvenance
     if ([string]$ExternalReleaseManifest.archive_file -ne [IO.Path]::GetFileName($ArchivePath)) {
         throw "Signed manifest archive name does not match the requested archive path."
     }
@@ -2960,7 +2961,8 @@ try {
     $VerifiedArchivePath = Join-Path $SignedReleaseRoot ([IO.Path]::GetFileName($ArchivePath))
     $ReleaseManifest = Assert-SignedReleaseArchive `
         -Archive $VerifiedArchivePath `
-        -ExpectedProfile "forward-shadow"
+        -ExpectedProfile "forward-shadow" `
+        -RequireProvenance
     if (
         [string]$ReleaseManifest.archive_sha256 -cne
             [string]$ExternalReleaseManifest.archive_sha256 -or

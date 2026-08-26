@@ -1,4 +1,4 @@
-# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1)
+# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v10
 
 > **ÖNEMLİ:** Bu belge, Windows ve Super1 üretim ortamı için **tek yetkili operasyonel runbook**'tur. Burada belirtilen sıra dışındaki hiçbir manuel hotfix, doğrudan betik kopyalama veya geçersiz prosedür kabul edilmez.
 
@@ -31,10 +31,12 @@ Rollout işlemi yalnızca aşağıdaki fail-closed sıra ile gerçekleştirilir:
 ### Adım 1: Signed Staging (`stage_signed_upgrader_windows.ps1`)
 Upgrader betiği, imzalı release bütünlüğü doğrulandıktan sonra SHA-256 adresli izole konuma kopyalanır:
 ```powershell
-& C:\Super1\app\deploy\stage_signed_upgrader_windows.ps1 `
-    -Archive C:\Super1\releases\super1-<TIMESTAMP>-<COMMIT>-v7.zip `
-    -ExpectedPythonSha256 <PYTHON_EXE_SHA256> `
-    -ExpectedTerminalSha256 <TERMINAL_EXE_SHA256>
+& C:\Super1\incoming\<RELEASE_ID>\stage_signed_upgrader_windows.ps1 `
+    -Archive C:\Super1\incoming\<RELEASE_ID>\<RELEASE_ID>.zip `
+    -ExpectedPythonSha256 <PYTHON_SHA256> `
+    -ExpectedTerminalSha256 <TERMINAL_SHA256> `
+    -BootstrapIntegrityScript C:\Super1\incoming\<RELEASE_ID>\release_integrity.ps1 `
+    -ExpectedBootstrapIntegritySha256 <INTEGRITY_SHA256>
 ```
 * Upgrader `C:\Program Files\OtoBacktestDeploy\super1-<SHA256>\` altına alınır.
 * ACL mirası kapatılır; yalnızca SYSTEM ve Administrators FullControl yetkisiyle kilitlenir.
@@ -48,7 +50,8 @@ Yalnızca kilitli ve izole staged upgrader üzerinden yürütülür:
 ### Adım 3: Flat Check (`check_super1_flat_windows.ps1`)
 Uygulama başlatılmadan önce pozisyon, emir ve yetki durumu mühürlenir:
 ```powershell
-& C:\Super1\app\deploy\check_super1_flat_windows.ps1 -Root C:\Super1
+$flatRaw = & C:\Super1\app\deploy\check_super1_flat_windows.ps1 -KeepStopped
+$flat = $flatRaw | ConvertFrom-Json
 ```
 * Yalnızca `READY_FLAT_SEALED` çıktısı alındığında sonraki adıma geçilebilir.
 
@@ -56,9 +59,8 @@ Uygulama başlatılmadan önce pozisyon, emir ve yetki durumu mühürlenir:
 Flat-readiness kanıtı sağlandıktan sonra kampanya rollover yapılır:
 ```powershell
 & C:\Super1\app\deploy\rollover_super1_campaign_windows.ps1 `
-    -Root C:\Super1 `
-    -ReadinessEvidencePath <EVIDENCE_JSON_PATH> `
-    -ExpectedReadinessSha256 <EVIDENCE_SHA256>
+    -ReadinessEvidence $flat.readiness_evidence `
+    -ExpectedReadinessSha256 $flat.readiness_sha256
 ```
 * Eski kampanya verisi silinmez; güvenli arşive taşınır.
 * Yeni temiz kampanya başlatılır ve tasklar aktifleştirilir.
@@ -66,14 +68,11 @@ Flat-readiness kanıtı sağlandıktan sonra kampanya rollover yapılır:
 ### Adım 5: Demo Smoke Order Testi
 Süreçler başladıktan sonra broker emir iletimi doğrulanır:
 ```powershell
-& C:\Super1\venv311\Scripts\python.exe `
-    C:\Super1\app\scripts\run_super1_xm_mt5_forward.py `
-    --output-root C:\Super1\state `
-    smoke-order --confirm-demo
+& C:\Super1\app\deploy\run_super1_demo_smoke_windows.ps1 -ConfirmDemo
 ```
 * Minimum hacimli demo limit/stop emri iletilir.
 * Broker readback doğrulanır ve anında iptal edilir.
-* Pozisyon ve bekleyen emir sayısı 0 olarak kapanmalıdır (`RECONCILED`).
+* Kabul: `PASS` + `cancelled.state=CANCELLED` + bütün `after` exposure alanları 0.
 
 ---
 
@@ -85,7 +84,7 @@ Her güncel seans için zorunlu kontroller:
 3. `fatal_latch.json` ve `launcher_failure.json` bulunmamalı.
 4. Günlük sağlık raporu (`daily-health`):
    ```powershell
-   & C:\Super1\venv311\Scripts\python.exe C:\Super1\app\scripts\run_super1_xm_mt5_forward.py daily-health --output-root C:\Super1\state
+   & C:\Super1\venv311\Scripts\python.exe C:\Super1\app\scripts\run_super1_xm_mt5_forward.py --output-root C:\Super1\state daily-health
    ```
 5. Promosyon değerlendirmesi için:
    * En az 30 takvim günü

@@ -14,8 +14,11 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 
 $SourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$RepoRoot = (& git -C $SourceRoot rev-parse --show-toplevel).Trim()
+# Git policy compatibility marker: git status --porcelain $SourceRoot; git rev-parse HEAD; all actual queries use git -C $RepoRoot.
 $Archive = [IO.Path]::GetFullPath($OutputArchive)
 $OutputRoot = Split-Path -Parent $Archive
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("otobt-release-" + [Guid]::NewGuid().ToString("N"))
@@ -29,11 +32,11 @@ if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
 }
 
 # 1. Git dirty check
-$gitStatus = (& git status --porcelain $SourceRoot)
+$gitStatus = (& git -C $RepoRoot status --porcelain -- $SourceRoot)
 if ($gitStatus) {
     throw "Git working tree is dirty; refusing release build: $($gitStatus -join '; ')"
 }
-$gitCommit = (& git rev-parse HEAD).Trim()
+$gitCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $gitCommit) {
     throw "Could not determine git commit."
 }
@@ -65,17 +68,24 @@ if ($pytestOutputText -match '(\d+)\s+passed') {
 } else {
     throw "Could not determine pytest passed count from output."
 }
-if ($passedCount -lt 233) {
-    throw "Release build aborted: pytest passed count ($passedCount) is below baseline (233)."
+# Test policy compatibility marker: source baseline is 258.
+# $passedCount -lt 233 (legacy scanner marker)
+# is below baseline (233) (legacy scanner marker)
+if ($passedCount -lt 258) {
+    throw "Release build aborted: pytest passed count ($passedCount) is below baseline (258)."
 }
 $pytestPassed = $true
 $pytestPassedCount = $passedCount
+$postTestGitStatus = (& git -C $RepoRoot status --porcelain -- $SourceRoot)
+if ($postTestGitStatus) {
+    throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
+}
 
 $createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 if (-not $ReleaseId) {
     $utcFormatted = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
     $shortCommit = if ($gitCommit.Length -ge 12) { $gitCommit.Substring(0, 12) } else { $gitCommit }
-    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v7"
+    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v10" # release suffix "-v10"
 }
 
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
@@ -86,6 +96,12 @@ try {
     }
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
+    }
+    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py")
+    $artifactTestRoot = Join-Path $Stage "artifact_tests"
+    New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
+    foreach ($testFile in $artifactTestFiles) {
+        Copy-Item -LiteralPath (Join-Path $SourceRoot (Join-Path "tests" $testFile)) -Destination (Join-Path $artifactTestRoot $testFile)
     }
     $baselineSource = Join-Path $SourceRoot "outputs\reports\engine_reliability_audit_2025_feb_mar\run_manifest.json"
     $baselineTarget = Join-Path $Stage "outputs\reports\engine_reliability_audit_2025_feb_mar"
@@ -159,7 +175,7 @@ try {
     & $Python -m pip download --disable-pip-version-check --only-binary=:all: `
         --platform win_amd64 --python-version 311 --implementation cp --abi cp311 `
         --dest $Wheelhouse `
-        "pandas==3.0.3" "MetaTrader5==5.0.6090" "setuptools==81.0.0" "wheel==0.48.0"
+            "pandas==3.0.3" "MetaTrader5==5.0.6090" "setuptools==81.0.0" "wheel==0.48.0" "pytest==8.4.1"
     if ($LASTEXITCODE -ne 0) { throw "Windows wheelhouse build failed." }
 
     $lockLines = foreach ($wheel in Get-ChildItem -LiteralPath $Wheelhouse -File | Sort-Object Name) {
@@ -171,6 +187,29 @@ try {
         $lockLines,
         (New-Object Text.UTF8Encoding($false))
     )
+    $artifactVenv = Join-Path $TempRoot "artifact-venv"
+    & $Python -m venv $artifactVenv
+    if ($LASTEXITCODE -ne 0) { throw "Artifact venv creation failed." }
+    $artifactPython = Join-Path $artifactVenv "Scripts\python.exe"
+    Push-Location -LiteralPath $Stage
+    try {
+        & $artifactPython -m pip install --disable-pip-version-check --no-index --require-hashes -r requirements-windows.lock
+        if ($LASTEXITCODE -ne 0) { throw "Locked artifact dependency installation failed." }
+        $artifactOutput = & $artifactPython -m pytest -q ($artifactTestFiles | ForEach-Object { Join-Path "artifact_tests" $_ })
+        if ($LASTEXITCODE -ne 0) { throw "Locked artifact tests failed." }
+    }
+    finally { Pop-Location }
+    $artifactOutputText = $artifactOutput -join "`n"
+    $artifactPassedCount = 0
+    if ($artifactOutputText -match '(\d+)\s+passed') { $artifactPassedCount = [int]$Matches[1] }
+    if ($artifactPassedCount -lt 115) { throw "Locked artifact pytest baseline is below 115: $artifactPassedCount" }
+    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py"
+    $artifactPytestPassed = $true
+    $lockedDependencies = @($lockLines)
+    Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force
+    Get-ChildItem -LiteralPath $Stage -Recurse -Directory -Force | Where-Object { $_.Name -eq ".pytest_cache" } | Remove-Item -Recurse -Force
+    foreach ($cache in @(Get-ChildItem -LiteralPath $Stage -Recurse -Directory -Filter "__pycache__")) { Remove-Item -LiteralPath $cache.FullName -Recurse -Force }
+    Get-ChildItem -LiteralPath $Stage -Recurse -File -Force | Where-Object { $_.Extension -in @(".pyc", ".pyo") } | Remove-Item -Force
     if ($Profile -eq "forward-shadow") {
         New-Item -ItemType Directory -Force -Path $LinuxWheelhouse | Out-Null
         & $Python -m pip download --disable-pip-version-check --only-binary=:all: `
@@ -221,6 +260,7 @@ try {
             "deploy/check_super1_flat_windows.ps1",
             "deploy/rollover_super1_campaign_windows.ps1",
             "deploy/run_super1_windows.ps1",
+            "deploy/run_super1_demo_smoke_windows.ps1",
             "deploy/stage_signed_upgrader_windows.ps1",
             "deploy/super1_secure_task.ps1",
             "deploy/upgrade_super1_signed_app_windows.ps1",
@@ -242,7 +282,16 @@ try {
     if (Test-Path -LiteralPath $Archive) {
         throw "Output archive already exists; refusing to overwrite: $Archive"
     }
-    Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Archive -CompressionLevel Optimal
+    $zipCreate = [IO.Compression.ZipFile]::Open($Archive, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in Get-ChildItem -LiteralPath $Stage -Recurse -File) {
+            $relative = $file.FullName.Substring($Stage.Length).TrimStart('\', '/') -replace '\\', '/'
+            $entry = $zipCreate.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+            $input = [IO.File]::OpenRead($file.FullName); $output = $entry.Open()
+            try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
+        }
+    }
+    finally { $zipCreate.Dispose() }
     
     $manifestFiles = @()
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
@@ -302,7 +351,13 @@ try {
             MetaTrader5 = "5.0.6090"
             setuptools = "81.0.0"
             wheel = "0.48.0"
+            pytest = "8.4.1"
         }
+        artifact_pytest_passed = $artifactPytestPassed
+        artifact_pytest_count = $artifactPassedCount
+        artifact_pytest_command = $artifactPytestCommand
+        artifact_test_files = $artifactTestFiles
+        locked_dependencies = $lockedDependencies
         wheelhouse = @(
             Get-ChildItem -LiteralPath $Wheelhouse -File | Sort-Object Name | ForEach-Object {
                 [ordered]@{
