@@ -106,9 +106,9 @@ Tek yetkili Windows ve Super1 operasyonel prosedürü için [docs/LIVE_OPERATION
 * Eski yükleme betikleri (`install_super1_windows.ps1`, `finalize_super1_fresh_windows.ps1`, `repair_super1_task_s4u_windows.ps1`) **`LEGACY — DO NOT USE`** olarak işaretlenmiştir.
 
 ### Komut Satırı / Runner Kullanımı:
-Forward runner komutları her zaman geçerli bir alt komut (`status`, `doctor`, `daily-health`, `run-once`, `smoke-order`) ile çağrılmalıdır:
+Forward runner komutları her zaman geçerli bir alt komut (`status`, `doctor`, `daily-health`, `smoke-order`) ile çağrılmalıdır:
 ```powershell
-python scripts/run_super1_xm_mt5_forward.py status --output-root C:\Super1\state
+python scripts/run_super1_xm_mt5_forward.py --output-root C:\Super1\state status
 ```
 
 ---
