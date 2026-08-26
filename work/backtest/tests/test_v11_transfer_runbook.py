@@ -13,3 +13,7 @@ def test_runbook_has_single_v11_private_s3_transfer_contract() -> None:
     assert "900" in text
     assert "BucketOwnerEnforced" in text
     assert "SSE-S3" in text
+    assert "Block Public Access" in text
+    assert "public website" in text.lower()
+    assert "RDP drive redirection" in text
+    assert "BLOCKED_S3_TRANSFER_PERMISSION" in text
