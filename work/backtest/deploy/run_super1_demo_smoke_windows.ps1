@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([switch]$ConfirmDemo, [switch]$ContractTestOnly)
+param(
+    [Parameter(Mandatory = $true)]
+    [switch]$ConfirmDemo
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -17,6 +20,8 @@ $mainXml = $null
 $watchdogXml = $null
 $success = $false
 $runtimeReady = $false
+$requestLockReleaseAuthorized = $false
+$stoppedConfirmed = $false
 $cleanupErrors = [Collections.Generic.List[string]]::new()
 $primaryError = $null
 $bufferedSummaryJson = $null
@@ -32,24 +37,27 @@ function Invoke-Super1SmokeCleanup {
         [Parameter(Mandatory = $true)][AllowNull()][string]$Transaction,
         [Parameter(Mandatory = $true)][AllowNull()][ref]$TransactionRequestEvidence,
         [Parameter(Mandatory = $true)][AllowNull()][ref]$ActiveRequestEvidence,
+        [Parameter(Mandatory = $true)][ref]$RequestLockReleaseAuthorized,
+        [Parameter(Mandatory = $true)][ref]$StoppedConfirmed,
         [Parameter(Mandatory = $true)][AllowNull()][string]$SavedMainXml,
         [Parameter(Mandatory = $true)][AllowNull()][string]$SavedWatchdogXml
     )
     $stopped = $false
+    $StoppedConfirmed.Value = $false
     try { Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "runtime stop: $($_.Exception.Message)" }
-    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true } catch { Add-SmokeCleanupError "stopped-state verification: $($_.Exception.Message)" }
+    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "stopped-state verification: $($_.Exception.Message)" }
     try { Assert-Super1SecureTaskBindings -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask | Out-Null } catch { Add-SmokeCleanupError "task binding: $($_.Exception.Message)" }
     try { if ($SavedMainXml -and (Get-Super1SecureTaskXml -TaskName $MainTask) -cne $SavedMainXml) { throw "main XML changed" } } catch { Add-SmokeCleanupError "main XML restore check: $($_.Exception.Message)" }
     try { if ($SavedWatchdogXml -and (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $SavedWatchdogXml) { throw "watchdog XML changed" } } catch { Add-SmokeCleanupError "watchdog XML restore check: $($_.Exception.Message)" }
     if (-not $stopped) {
-        try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+        try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
         return
     }
     try { if ($TransactionRequestEvidence.Value) { $TransactionRequestEvidence.Value.lock.Dispose(); $TransactionRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "transaction request lock: $($_.Exception.Message)" }
     try { if ($ActiveRequestEvidence.Value) { $ActiveRequestEvidence.Value.lock.Dispose(); $ActiveRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "active request lock: $($_.Exception.Message)" }
     try { if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { Remove-Item -LiteralPath $ActiveRequest -Force }; if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { throw "active request remains" } } catch { Add-SmokeCleanupError "active request removal: $($_.Exception.Message)" }
     try { if ($Transaction -and (Test-Path -LiteralPath $Transaction)) { Seal-Super1SecureEvidenceTree -Path $Transaction; Assert-Super1SecureSealedTree -Path $Transaction } } catch { Add-SmokeCleanupError "transaction seal: $($_.Exception.Message)" }
-    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
 }
 
 function New-Super1SmokeSummary {
@@ -113,7 +121,7 @@ try {
     $mainBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "main.xml") -Content ($mainXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $mainBackup.lock.Dispose()
     $watchdogBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "watchdog.xml") -Content ($watchdogXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $watchdogBackup.lock.Dispose()
     if (Test-Path -LiteralPath $activeRequest) { throw "Super1 active request already exists." }
-    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask
+    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $true; $requestLockReleaseAuthorized = $true
     $flat = (& (Join-Path $Deploy "check_super1_flat_windows.ps1") -KeepStopped | Select-Object -Last 1 | ConvertFrom-Json); if ([string]$flat.state -cne "READY_FLAT_SEALED") { throw "Sealed pre-flat check failed." }
     $requestedAt = [DateTimeOffset]::UtcNow; $launcherSha256 = [string](Get-Super1SecureSha256 -Path $launcher); $requestPayload = [ordered]@{ schema_version = 1; kind = "smoke"; transaction_id = $runId; nonce = $nonce; requested_at_utc = $requestedAt.ToString("o"); expected_runner_sid = $RunnerSid; expected_launcher_sha256 = $launcherSha256; result_path = $resultPath; producer_path = $producerPath; request_path = $requestPath }; $requestJson = $requestPayload | ConvertTo-Json -Compress
     $transactionRequestEvidence = New-Super1SecureLockedFile -Path $requestPath -Content ($requestJson + [Environment]::NewLine) -RunnerSid $RunnerSid; $activeRequestEvidence = New-Super1SecureLockedFile -Path $activeRequest -Content ($requestJson + [Environment]::NewLine) -RunnerSid $RunnerSid
@@ -138,16 +146,11 @@ try {
 }
 catch {
     $primaryError = $_
-    if ($runtimeReady) { Invoke-Super1SmokeCleanup -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask -ActiveRequest $activeRequest -Transaction $transaction -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -SavedMainXml $mainXml -SavedWatchdogXml $watchdogXml }
+    if ($runtimeReady) { Invoke-Super1SmokeCleanup -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask -ActiveRequest $activeRequest -Transaction $transaction -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -RequestLockReleaseAuthorized ([ref]$requestLockReleaseAuthorized) -StoppedConfirmed ([ref]$stoppedConfirmed) -SavedMainXml $mainXml -SavedWatchdogXml $watchdogXml }
 }
 finally {
-    foreach ($name in @("transactionRequestEvidence", "activeRequestEvidence")) {
-        try {
-            $evidence = Get-Variable -Name $name -ValueOnly
-            if ($evidence) { $evidence.lock.Dispose(); Set-Variable -Name $name -Value $null }
-        }
-        catch { Add-SmokeCleanupError "outer lock disposal ($name): $($_.Exception.Message)" }
-    }
+    try { if ($requestLockReleaseAuthorized -and $transactionRequestEvidence) { $transactionRequestEvidence.lock.Dispose(); $transactionRequestEvidence = $null } elseif ($transactionRequestEvidence) { Add-SmokeCleanupError "unauthorized transaction request lock release" } } catch { Add-SmokeCleanupError "outer transaction lock disposal: $($_.Exception.Message)" }
+    try { if ($requestLockReleaseAuthorized -and $activeRequestEvidence) { $activeRequestEvidence.lock.Dispose(); $activeRequestEvidence = $null } elseif ($activeRequestEvidence) { Add-SmokeCleanupError "unauthorized active request lock release" } } catch { Add-SmokeCleanupError "outer active lock disposal: $($_.Exception.Message)" }
     try { $env:PSModulePath = $OriginalPSModulePath } catch { Add-SmokeCleanupError "PSModulePath restore: $($_.Exception.Message)" }
 }
 

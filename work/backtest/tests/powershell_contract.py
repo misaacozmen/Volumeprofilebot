@@ -16,8 +16,16 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:OTOBT_AST_PATH, [ref]$tokens, [ref]$errors)
 $facts = @()
-$params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-$facts += [ordered]@{ kind = "param_block"; params = $params; start = $ast.ParamBlock.Extent.StartOffset; end = $ast.ParamBlock.Extent.EndOffset; scope = "top-level" }
+$paramNodes = if ($null -ne $ast.ParamBlock) { @($ast.ParamBlock.Parameters) } else { @() }
+$params = @($paramNodes | ForEach-Object { $_.Name.VariablePath.UserPath })
+$paramDetails = @($paramNodes | ForEach-Object {
+    $parameterAttribute = @($_.Attributes | Where-Object { $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -eq "Parameter" }) | Select-Object -First 1
+    $mandatoryArgument = @($parameterAttribute.NamedArguments | Where-Object { $_.ArgumentName -eq "Mandatory" }) | Select-Object -First 1
+    [ordered]@{ name = $_.Name.VariablePath.UserPath; mandatory = ($null -ne $mandatoryArgument -and [string]$mandatoryArgument.Argument.Extent.Text -eq "`$true") }
+})
+$paramStart = if ($null -ne $ast.ParamBlock) { $ast.ParamBlock.Extent.StartOffset } else { 0 }
+$paramEnd = if ($null -ne $ast.ParamBlock) { $ast.ParamBlock.Extent.EndOffset } else { 0 }
+$facts += [ordered]@{ kind = "param_block"; params = $params; param_details = $paramDetails; start = $paramStart; end = $paramEnd; scope = "top-level" }
 function Get-Scope($node) {
     $parent = $node.Parent
     while ($null -ne $parent) {
@@ -26,27 +34,65 @@ function Get-Scope($node) {
     }
     return "top-level"
 }
+function Get-Ancestors($node) {
+    $result = @()
+    $parent = $node.Parent
+    while ($null -ne $parent) { $result += $parent.GetType().Name; $parent = $parent.Parent }
+    return $result
+}
+function Get-IfBranches($node) {
+    $result = @()
+    $parent = $node.Parent
+    while ($null -ne $parent) {
+        if ($parent -is [System.Management.Automation.Language.IfStatementAst]) {
+            $branch = $null; $condition = $null
+            foreach ($clause in $parent.Clauses) {
+                if ($node.Extent.StartOffset -ge $clause.Item2.Extent.StartOffset -and $node.Extent.EndOffset -le $clause.Item2.Extent.EndOffset) { $branch = "true"; $condition = [string]$clause.Item1.Extent.Text; break }
+            }
+            if ($null -eq $branch -and $null -ne $parent.ElseClause -and $node.Extent.StartOffset -ge $parent.ElseClause.Extent.StartOffset -and $node.Extent.EndOffset -le $parent.ElseClause.Extent.EndOffset) { $branch = "else" }
+            if ($null -ne $branch) { $result += [ordered]@{ condition = $condition; branch = $branch; start = $parent.Extent.StartOffset; end = $parent.Extent.EndOffset } }
+        }
+        $parent = $parent.Parent
+    }
+    return $result
+}
+function Get-TryRegions($node) {
+    $result = @(); $parent = $node.Parent
+    while ($null -ne $parent) {
+        if ($parent -is [System.Management.Automation.Language.TryStatementAst]) { $result += [ordered]@{ start = $parent.Extent.StartOffset; end = $parent.Extent.EndOffset; has_catch = ($null -ne $parent.CatchClauses); has_finally = ($null -ne $parent.Finally) } }
+        $parent = $parent.Parent
+    }
+    return $result
+}
 function Test-Unreachable($node) {
     $parent = $node.Parent
     while ($null -ne $parent) {
-        if ($parent -is [System.Management.Automation.Language.IfStatementAst] -and [string]$parent.Clauses[0].Item1.Extent.Text -match '^\$false$') { return $true }
+        if ($parent -is [System.Management.Automation.Language.IfStatementAst]) {
+            $condition = ([string]$parent.Clauses[0].Item1.Extent.Text).Trim()
+            if ($condition -match '^\$(?i:false)$' -or $condition -match '^0$' -or $condition -match '^\$(?i:false)\s*-eq\s*\$(?i:true)$') { return $true }
+        }
         $parent = $parent.Parent
     }
     return $false
 }
     $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true) | ForEach-Object {
-    $facts += [ordered]@{ kind = "assignment"; left = $_.Left.Extent.Text; right_type = $_.Right.GetType().Name; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+    $facts += [ordered]@{ kind = "assignment"; left = $_.Left.Extent.Text; right_type = $_.Right.GetType().Name; right_text = $_.Right.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] }, $true) | ForEach-Object {
     $facts += [ordered]@{ kind = "try"; has_finally = ($null -ne $_.Finally); has_catch = ($null -ne $_.CatchClauses); start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
+$ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true) | ForEach-Object {
+    $clauses = @($_.Clauses | ForEach-Object { [ordered]@{ condition = [string]$_.Item1.Extent.Text; branch = "true"; start = $_.Item2.Extent.StartOffset; end = $_.Item2.Extent.EndOffset } })
+    if ($null -ne $_.ElseClause) { $clauses += [ordered]@{ condition = $null; branch = "else"; start = $_.ElseClause.Extent.StartOffset; end = $_.ElseClause.Extent.EndOffset } }
+    $facts += [ordered]@{ kind = "if"; clauses = $clauses; condition_text = [string]$_.Clauses[0].Item1.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+}
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object {
-    $facts += [ordered]@{ kind = "function"; name = $_.Name; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = $_.Name }
+$facts += [ordered]@{ kind = "function"; name = $_.Name; extent_text = $_.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = $_.Name }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
     $name = if ($_.CommandElements.Count) { [string]$_.CommandElements[0].Value } else { "" }
     $args = @($_.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text })
-    $facts += [ordered]@{ kind = "command"; name = $name; args = $args; text = $_.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_); unreachable = (Test-Unreachable $_) }
+    $facts += [ordered]@{ kind = "command"; name = $name; args = $args; text = $_.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_); ancestors = @(Get-Ancestors $_); if_branches = @(Get-IfBranches $_); try_regions = @(Get-TryRegions $_); unreachable = (Test-Unreachable $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object {
     $facts += [ordered]@{ kind = "member"; member = [string]$_.Member.Value; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }

@@ -69,8 +69,8 @@ if ($pytestOutputText -match '(\d+)\s+passed') {
 } else {
     throw "Could not determine pytest passed count from output."
 }
-if ($passedCount -lt 267) {
-    throw "Release build aborted: pytest passed count ($passedCount) is below baseline (267)."
+if ($passedCount -ne 267) {
+    throw "Release build aborted: pytest count must equal 267: $passedCount."
 }
 $pytestPassed = $true
 $pytestPassedCount = $passedCount
@@ -83,7 +83,7 @@ $createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 if (-not $ReleaseId) {
     $utcFormatted = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
     $shortCommit = if ($gitCommit.Length -ge 12) { $gitCommit.Substring(0, 12) } else { $gitCommit }
-    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v13"
+    $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v14"
 }
 
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
@@ -95,7 +95,7 @@ try {
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
     }
-    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v13_deployment_contract.py")
+    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v14_deployment_contract.py")
     $artifactTestRoot = Join-Path $Stage "artifact_tests"
     New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
     foreach ($testFile in $artifactTestFiles) {
@@ -201,8 +201,8 @@ try {
     $artifactOutputText = $artifactOutput -join "`n"
     $artifactPassedCount = 0
     if ($artifactOutputText -match '(\d+)\s+passed') { $artifactPassedCount = [int]$Matches[1] }
-    if ($artifactPassedCount -lt 138) { throw "Locked artifact pytest baseline is below 138: $artifactPassedCount" }
-    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v13_deployment_contract.py"
+    if ($artifactPassedCount -ne 138) { throw "Locked artifact pytest count must equal 138: $artifactPassedCount" }
+    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v14_deployment_contract.py"
     $artifactPytestPassed = $true
     $lockedDependencies = @($lockLines)
     Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force

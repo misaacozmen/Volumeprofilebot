@@ -21,6 +21,15 @@ $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
 $SelfScriptLock = $null
 $PowerShellHostLock = $null
+$TerminalLock = $null
+$BootstrapPythonLock = $null
+$IntegrityScriptLock = $null
+$RuntimeConfigEvidence = @()
+$Result = $null
+$primaryError = $null
+$cleanupErrors = New-Object Collections.Generic.List[string]
+$runtimeHelpersReady = $false
+$runtimeControlEntered = $false
 $ExpectedPSHome = [IO.Path]::GetFullPath(
     (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0")
 )
@@ -218,7 +227,7 @@ if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([str
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "74349cfd4afe7683d17d59430e6c1349feb0a2190fe4c6668d231bf68784f585"
+$ExpectedIntegrityScriptSha256 = "43a05fb9e26be1faee74e3fcda2cce7a8d4145d4671b46eceb8ebd16e5da8732"
 
 function Test-PathWithin {
     param(
@@ -1751,8 +1760,6 @@ $Python = $null
 $TerminalPointer = $null
 $TerminalRoot = $null
 $TerminalEvidence = $null
-$TerminalLock = $null
-$RuntimeConfigEvidence = @()
 $UpgradeReadiness = $null
 $ProbeControl = $null
 $ArchivePath = $null
@@ -1770,13 +1777,10 @@ $SignedReleaseRoot = $null
 $VerifiedArchive = $null
 $BootstrapPython = $null
 $BootstrapPythonEvidence = $null
-$BootstrapPythonLock = $null
-$IntegrityScriptLock = $null
 $ReleaseManifest = $null
 $OfflineValidation = $null
 $FinalOfflineValidation = $null
 $DependencyValidation = $null
-$Result = $null
 $originalAppArchived = $false
 $originalVenvArchived = $false
 $appPromoted = $false
@@ -1791,8 +1795,8 @@ $CandidateTempPaths = New-Object Collections.Generic.List[string]
 $CreatedCandidates = New-Object Collections.Generic.List[string]
 $CandidateResults = New-Object Collections.Generic.List[object]
 $transactionEntered = $false
-$primaryError = $null
-$cleanupErrors = New-Object Collections.Generic.List[string]
+
+$runtimeHelpersReady = $true
 
 try {
     $Stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
@@ -1958,6 +1962,7 @@ try {
         throw "Protected Super1 upgrader changed while its self read lock was held."
     }
 
+    $runtimeControlEntered = $true
     Stop-Super1RuntimeForRollback
 
     $CandidateSpecs = @(
@@ -2383,7 +2388,7 @@ catch {
         Stop-Super1RuntimeForRollback
     }
     catch {
-        throw "Super1 signed app/venv upgrade failed ($($failure.Exception.Message)); rollback was not attempted because the stopped-runtime gate failed: $($_.Exception.Message)"
+        throw [Exception]::new("Super1 signed app/venv upgrade failed ($($failure.Exception.Message)); rollback was not attempted because the stopped-runtime gate failed: $($_.Exception.Message)", $failure.Exception)
     }
 
     if ($watchdogActionChanged) {
@@ -2506,9 +2511,9 @@ catch {
         }
     }
     if ($rollbackErrors.Count -ne 0) {
-        throw "Super1 signed app/venv upgrade failed ($($failure.Exception.Message)); rollback incomplete: $($rollbackErrors -join '; ')"
+        throw [Exception]::new("Super1 signed app/venv upgrade failed ($($failure.Exception.Message)); rollback incomplete: $($rollbackErrors -join '; ')", $failure.Exception)
     }
-    throw "Super1 signed app/venv upgrade failed; app/venv rollback complete and tasks stopped: $($failure.Exception.Message)"
+    throw [Exception]::new("Super1 signed app/venv upgrade failed; app/venv rollback complete and tasks stopped: $($failure.Exception.Message)", $failure.Exception)
 }
 finally { }
 }
@@ -2516,42 +2521,20 @@ catch {
     $primaryError = $_
 }
 finally {
-    if ($transactionEntered) {
+    if ($runtimeHelpersReady -and $runtimeControlEntered) {
         try { Stop-Super1Tasks } catch { $cleanupErrors.Add("runtime stop: $($_.Exception.Message)") }
+        try { Wait-Super1Stopped } catch { $cleanupErrors.Add("stopped-state verification: $($_.Exception.Message)") }
     }
-    try { Wait-Super1Stopped } catch { $cleanupErrors.Add("stopped-state verification: $($_.Exception.Message)") }
     foreach ($configEvidence in @($RuntimeConfigEvidence)) {
-        try { if ($configEvidence -and $configEvidence.lock) { $configEvidence.lock.Dispose() } } catch { $cleanupErrors.Add("runtime config lock: $($_.Exception.Message)") }
-    }
-    $RuntimeConfigEvidence = @()
-    foreach ($entry in @(
-        @{ Name = "TerminalLock"; Ref = "TerminalLock" },
-        @{ Name = "BootstrapPythonLock"; Ref = "BootstrapPythonLock" },
-        @{ Name = "IntegrityScriptLock"; Ref = "IntegrityScriptLock" },
-        @{ Name = "PowerShellHostLock"; Ref = "PowerShellHostLock" },
-        @{ Name = "SelfScriptLock"; Ref = "SelfScriptLock" }
-    )) {
         try {
-            if ($entry.Ref -eq "IntegrityScriptLock" -and $IntegrityScriptLock) {
-                $IntegrityScriptLock.Dispose()
-                $IntegrityScriptLock = $null
-                continue
-            }
-            if ($entry.Ref -eq "BootstrapPythonLock" -and $BootstrapPythonLock) {
-                $BootstrapPythonLock.Dispose()
-                $BootstrapPythonLock = $null
-                continue
-            }
-            if ($entry.Ref -eq "SelfScriptLock" -and $SelfScriptLock) {
-                $SelfScriptLock.Dispose()
-                $SelfScriptLock = $null
-                continue
-            }
-            $handle = Get-Variable -Name $entry.Ref -ValueOnly
-            if ($handle) { $handle.Dispose(); Set-Variable -Name $entry.Ref -Value $null }
-        }
-        catch { $cleanupErrors.Add("$($entry.Name): $($_.Exception.Message)") }
+            if ($configEvidence -and $configEvidence.lock) { $configEvidence.lock.Dispose(); $configEvidence.lock = $null }
+        } catch { $cleanupErrors.Add("runtime config lock: $($_.Exception.Message)") }
     }
+    try { if ($TerminalLock) { $TerminalLock.Dispose(); $TerminalLock = $null } } catch { $cleanupErrors.Add("TerminalLock: $($_.Exception.Message)") }
+    try { if ($BootstrapPythonLock) { $BootstrapPythonLock.Dispose(); $BootstrapPythonLock = $null } } catch { $cleanupErrors.Add("BootstrapPythonLock: $($_.Exception.Message)") }
+    try { if ($IntegrityScriptLock) { $IntegrityScriptLock.Dispose(); $IntegrityScriptLock = $null } } catch { $cleanupErrors.Add("IntegrityScriptLock: $($_.Exception.Message)") }
+    try { if ($PowerShellHostLock) { $PowerShellHostLock.Dispose(); $PowerShellHostLock = $null } } catch { $cleanupErrors.Add("PowerShellHostLock: $($_.Exception.Message)") }
+    try { if ($SelfScriptLock) { $SelfScriptLock.Dispose(); $SelfScriptLock = $null } } catch { $cleanupErrors.Add("SelfScriptLock: $($_.Exception.Message)") }
     try { $env:PSModulePath = $OriginalPSModulePath } catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }
     try { $env:PYTHONHOME = $OriginalPythonHome } catch { $cleanupErrors.Add("PYTHONHOME restore: $($_.Exception.Message)") }
     try { $env:PYTHONPATH = $OriginalPythonPath } catch { $cleanupErrors.Add("PYTHONPATH restore: $($_.Exception.Message)") }
