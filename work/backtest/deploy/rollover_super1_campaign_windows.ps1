@@ -702,7 +702,7 @@ finally {
     internal_readiness_evidence = [string]$internalFlat.readiness_evidence
     internal_readiness_sha256 = [string]$internalFlat.readiness_sha256
     initialization_evidence = $initResult
-    initialization_sha256 = $initHash
+    initialization_sha256 = [string]$initProducerBinding.result_sha256
     task_xml_unchanged = (
         (Get-Super1SecureTaskXml -TaskName $MainTask) -ceq $originalTaskXml -and
         (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -ceq $originalWatchdogXml

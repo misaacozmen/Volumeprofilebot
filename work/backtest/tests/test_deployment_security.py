@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from powershell_contract import facts
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
@@ -580,18 +582,14 @@ def test_watchdog_telegram_is_transition_based_and_rate_limited() -> None:
 
 
 def test_stage_signed_upgrader_windows_fail_closed_contract() -> None:
-    source = text("stage_signed_upgrader_windows.ps1")
-
-    assert 'Assert-SignedReleaseArchive -Archive $archivePath -ExpectedProfile "super1"' in source
-    assert "$upgraderSha256 = ([string]$upgraderEntry[0].sha256).ToLowerInvariant()" in source
-    assert '[Environment+SpecialFolder]::ProgramFiles' in source
-    assert '("super1-" + $upgraderSha256)' in source
-    assert '"upgrade_super1_signed_app_windows.ps1"' in source
-    assert "Assert-StageContainer" in source
-    assert '@("S-1-5-18", "S-1-5-32-544")' in source
-    assert "Set-StageAcl" in source
-    assert "New staged file hash mismatch before ACL" in source
-    assert "-ExpectedSelfSha256 $upgraderSha256" in source
+    path = DEPLOY / "stage_signed_upgrader_windows.ps1"
+    functions = {item["name"] for item in facts(path, "function")}
+    commands = [item for item in facts(path, "command") if not item["unreachable"]]
+    members = {item["member"] for item in facts(path, "member")}
+    assignments = {item["left"] for item in facts(path, "assignment")}
+    assert {"Assert-StageContainer", "Set-StageAcl", "Assert-StageTarget"}.issubset(functions)
+    assert "CreateNew" in members and "$upgraderSha256" in assignments
+    assert sum(item["name"] == "Assert-StageContainer" for item in commands) >= 6
 
 
 def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> None:

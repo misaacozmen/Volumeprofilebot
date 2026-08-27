@@ -168,6 +168,9 @@ foreach ($trustedDependency in @(
     if (-not (Test-Path -LiteralPath $trustedDependency -PathType Leaf)) {
         throw "Trusted Windows dependency is missing: $trustedDependency"
     }
+    if ((Get-Item -LiteralPath $trustedDependency -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Trusted Windows dependency is a reparse point: $trustedDependency"
+    }
 }
 if ((Get-Item -LiteralPath $script:Super1PowerShellExe -Force).Attributes -band
     [IO.FileAttributes]::ReparsePoint) {
@@ -177,6 +180,12 @@ $loadedSecurityModule = @(Import-Module -Name $SecurityModule -Force -PassThru -
 if ($loadedSecurityModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$loadedSecurityModule[0].Path).Equals($SecurityModule, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unexpected Microsoft.PowerShell.Security module path."
 }
+$PowerShellHostLock = [IO.File]::Open(
+    $script:Super1PowerShellExe,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+)
 $PowerShellSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
     -LiteralPath $script:Super1PowerShellExe
 if ([string]$PowerShellSignature.Status -cne "Valid" -or
@@ -185,12 +194,6 @@ if ([string]$PowerShellSignature.Status -cne "Valid" -or
         '^CN=Microsoft Windows, O=Microsoft Corporation,') {
     throw "Trusted Windows PowerShell signature/publisher validation failed."
 }
-$PowerShellHostLock = [IO.File]::Open(
-    $script:Super1PowerShellExe,
-    [IO.FileMode]::Open,
-    [IO.FileAccess]::Read,
-    [IO.FileShare]::Read
-)
 $PowerShellHasher = [Security.Cryptography.SHA256]::Create()
 try {
     $PowerShellHostSha256 = [BitConverter]::ToString(
@@ -212,19 +215,6 @@ $loadedScheduledTasksModule = @(Import-Module -Name $ScheduledTasksModule -Force
 if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$loadedScheduledTasksModule[0].Path).Equals($ScheduledTasksModule, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unexpected ScheduledTasks module path."
 }
-}
-catch {
-    $preflightFailure = $_
-    try { if ($SelfScriptLock) { $SelfScriptLock.Dispose() } } catch { }
-    $SelfScriptLock = $null
-    try { if ($PowerShellHostLock) { $PowerShellHostLock.Dispose() } } catch { }
-    $PowerShellHostLock = $null
-    $env:PSModulePath = $OriginalPSModulePath
-    $env:PYTHONHOME = $OriginalPythonHome
-    $env:PYTHONPATH = $OriginalPythonPath
-    throw $preflightFailure
-}
-
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
@@ -1800,6 +1790,9 @@ $originalWatchdogSettings = $null
 $CandidateTempPaths = New-Object Collections.Generic.List[string]
 $CreatedCandidates = New-Object Collections.Generic.List[string]
 $CandidateResults = New-Object Collections.Generic.List[object]
+$transactionEntered = $false
+$primaryError = $null
+$cleanupErrors = New-Object Collections.Generic.List[string]
 
 try {
     $Stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
@@ -2013,6 +2006,7 @@ try {
         -Path $UpgradeArchive `
         -CallerSid $callerSid `
         -RunnerSid $runnerSid
+    $transactionEntered = $true
     New-Item -ItemType Directory -Path $SignedReleaseRoot | Out-Null
     foreach ($component in $sourceComponents) {
         $leaf = [IO.Path]::GetFileName($component)
@@ -2516,36 +2510,56 @@ catch {
     }
     throw "Super1 signed app/venv upgrade failed; app/venv rollback complete and tasks stopped: $($failure.Exception.Message)"
 }
+finally { }
+}
+catch {
+    $primaryError = $_
+}
 finally {
-    $env:PSModulePath = $OriginalPSModulePath
-    $env:PYTHONHOME = $OriginalPythonHome
-    $env:PYTHONPATH = $OriginalPythonPath
-    if ($BootstrapPythonLock) {
-        $BootstrapPythonLock.Dispose()
-        $BootstrapPythonLock = $null
+    if ($transactionEntered) {
+        try { Stop-Super1Tasks } catch { $cleanupErrors.Add("runtime stop: $($_.Exception.Message)") }
     }
-    if ($IntegrityScriptLock) {
-        $IntegrityScriptLock.Dispose()
-        $IntegrityScriptLock = $null
-    }
-    if ($TerminalLock) {
-        $TerminalLock.Dispose()
-        $TerminalLock = $null
-    }
-    if ($PowerShellHostLock) {
-        $PowerShellHostLock.Dispose()
-        $PowerShellHostLock = $null
-    }
-    if ($SelfScriptLock) {
-        $SelfScriptLock.Dispose()
-        $SelfScriptLock = $null
-    }
+    try { Wait-Super1Stopped } catch { $cleanupErrors.Add("stopped-state verification: $($_.Exception.Message)") }
     foreach ($configEvidence in @($RuntimeConfigEvidence)) {
-        if ($configEvidence -and $configEvidence.lock) { $configEvidence.lock.Dispose() }
+        try { if ($configEvidence -and $configEvidence.lock) { $configEvidence.lock.Dispose() } } catch { $cleanupErrors.Add("runtime config lock: $($_.Exception.Message)") }
     }
     $RuntimeConfigEvidence = @()
-    Stop-Super1Tasks
-    Wait-Super1Stopped
+    foreach ($entry in @(
+        @{ Name = "TerminalLock"; Ref = "TerminalLock" },
+        @{ Name = "BootstrapPythonLock"; Ref = "BootstrapPythonLock" },
+        @{ Name = "IntegrityScriptLock"; Ref = "IntegrityScriptLock" },
+        @{ Name = "PowerShellHostLock"; Ref = "PowerShellHostLock" },
+        @{ Name = "SelfScriptLock"; Ref = "SelfScriptLock" }
+    )) {
+        try {
+            if ($entry.Ref -eq "IntegrityScriptLock" -and $IntegrityScriptLock) {
+                $IntegrityScriptLock.Dispose()
+                $IntegrityScriptLock = $null
+                continue
+            }
+            if ($entry.Ref -eq "BootstrapPythonLock" -and $BootstrapPythonLock) {
+                $BootstrapPythonLock.Dispose()
+                $BootstrapPythonLock = $null
+                continue
+            }
+            if ($entry.Ref -eq "SelfScriptLock" -and $SelfScriptLock) {
+                $SelfScriptLock.Dispose()
+                $SelfScriptLock = $null
+                continue
+            }
+            $handle = Get-Variable -Name $entry.Ref -ValueOnly
+            if ($handle) { $handle.Dispose(); Set-Variable -Name $entry.Ref -Value $null }
+        }
+        catch { $cleanupErrors.Add("$($entry.Name): $($_.Exception.Message)") }
+    }
+    try { $env:PSModulePath = $OriginalPSModulePath } catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }
+    try { $env:PYTHONHOME = $OriginalPythonHome } catch { $cleanupErrors.Add("PYTHONHOME restore: $($_.Exception.Message)") }
+    try { $env:PYTHONPATH = $OriginalPythonPath } catch { $cleanupErrors.Add("PYTHONPATH restore: $($_.Exception.Message)") }
 }
 
+if ($primaryError) {
+    if ($cleanupErrors.Count -gt 0) { throw [Exception]::new("Super1 upgrade failed; cleanup incomplete: $($cleanupErrors -join '; ')", $primaryError.Exception) }
+    throw $primaryError
+}
+if ($cleanupErrors.Count -gt 0) { throw "Super1 upgrade cleanup incomplete: $($cleanupErrors -join '; ')" }
 $Result | ConvertTo-Json -Depth 8

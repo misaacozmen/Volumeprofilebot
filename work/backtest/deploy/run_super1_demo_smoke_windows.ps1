@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][switch]$ConfirmDemo)
+param([switch]$ConfirmDemo, [switch]$ContractTestOnly)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -18,8 +18,10 @@ $watchdogXml = $null
 $success = $false
 $runtimeReady = $false
 $cleanupErrors = [Collections.Generic.List[string]]::new()
+$primaryError = $null
+$bufferedSummaryJson = $null
 
-function Add-SmokeCleanupError([string]$Message) { [void]$cleanupErrors.Add($Message) }
+function Add-SmokeCleanupError([string]$Message) { [void]$cleanupErrors.Add("cleanup: " + $Message) }
 
 function Invoke-Super1SmokeCleanup {
     param(
@@ -28,22 +30,25 @@ function Invoke-Super1SmokeCleanup {
         [Parameter(Mandatory = $true)][string]$WatchdogTask,
         [Parameter(Mandatory = $true)][AllowNull()][string]$ActiveRequest,
         [Parameter(Mandatory = $true)][AllowNull()][string]$Transaction,
-        [Parameter(Mandatory = $true)][AllowNull()][object]$TransactionRequestEvidence,
-        [Parameter(Mandatory = $true)][AllowNull()][object]$ActiveRequestEvidence,
+        [Parameter(Mandatory = $true)][AllowNull()][ref]$TransactionRequestEvidence,
+        [Parameter(Mandatory = $true)][AllowNull()][ref]$ActiveRequestEvidence,
         [Parameter(Mandatory = $true)][AllowNull()][string]$SavedMainXml,
         [Parameter(Mandatory = $true)][AllowNull()][string]$SavedWatchdogXml
     )
     $stopped = $false
     try { Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "runtime stop: $($_.Exception.Message)" }
     try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true } catch { Add-SmokeCleanupError "stopped-state verification: $($_.Exception.Message)" }
-    if (-not $stopped) { return }
-    try { if ($TransactionRequestEvidence) { $TransactionRequestEvidence.lock.Dispose() } } catch { Add-SmokeCleanupError "transaction request lock: $($_.Exception.Message)" }
-    try { if ($ActiveRequestEvidence) { $ActiveRequestEvidence.lock.Dispose() } } catch { Add-SmokeCleanupError "active request lock: $($_.Exception.Message)" }
-    try { if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { Remove-Item -LiteralPath $ActiveRequest -Force }; if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { throw "active request remains" } } catch { Add-SmokeCleanupError "active request removal: $($_.Exception.Message)" }
-    try { if ($Transaction -and (Test-Path -LiteralPath $Transaction)) { Seal-Super1SecureEvidenceTree -Path $Transaction; Assert-Super1SecureSealedTree -Path $Transaction } } catch { Add-SmokeCleanupError "transaction seal: $($_.Exception.Message)" }
     try { Assert-Super1SecureTaskBindings -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask | Out-Null } catch { Add-SmokeCleanupError "task binding: $($_.Exception.Message)" }
     try { if ($SavedMainXml -and (Get-Super1SecureTaskXml -TaskName $MainTask) -cne $SavedMainXml) { throw "main XML changed" } } catch { Add-SmokeCleanupError "main XML restore check: $($_.Exception.Message)" }
     try { if ($SavedWatchdogXml -and (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $SavedWatchdogXml) { throw "watchdog XML changed" } } catch { Add-SmokeCleanupError "watchdog XML restore check: $($_.Exception.Message)" }
+    if (-not $stopped) {
+        try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+        return
+    }
+    try { if ($TransactionRequestEvidence.Value) { $TransactionRequestEvidence.Value.lock.Dispose(); $TransactionRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "transaction request lock: $($_.Exception.Message)" }
+    try { if ($ActiveRequestEvidence.Value) { $ActiveRequestEvidence.Value.lock.Dispose(); $ActiveRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "active request lock: $($_.Exception.Message)" }
+    try { if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { Remove-Item -LiteralPath $ActiveRequest -Force }; if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { throw "active request remains" } } catch { Add-SmokeCleanupError "active request removal: $($_.Exception.Message)" }
+    try { if ($Transaction -and (Test-Path -LiteralPath $Transaction)) { Seal-Super1SecureEvidenceTree -Path $Transaction; Assert-Super1SecureSealedTree -Path $Transaction } } catch { Add-SmokeCleanupError "transaction seal: $($_.Exception.Message)" }
     try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
 }
 
@@ -73,6 +78,8 @@ function New-Super1SmokeSummary {
         watchdog_checked_at = $WatchdogCheckedAt.ToString("o")
     }
 }
+
+if ($ContractTestOnly) { return }
 
 try {
     if (-not $ConfirmDemo) { throw "Demo smoke requires -ConfirmDemo." }
@@ -127,18 +134,28 @@ try {
     $finalRunnerSid = [string](Assert-Super1SecureTaskBindings -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask); if ($finalRunnerSid -cne $RunnerSid -or (Get-Super1SecureTaskXml -TaskName $MainTask) -cne $mainXml -or (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $watchdogXml) { throw "Super1 task bindings or XML changed after smoke." }
     $summary = New-Super1SmokeSummary -Result $result -Producer $producer -PreFlat $flat -PostFlat $postFlat -Transaction $transaction -HealthCheckedAt $healthCheckedAt -WatchdogCheckedAt $watchdogCheckedAt
     $summaryJson = $summary | ConvertTo-Json -Depth 8
-    $success = $true
-    $summaryJson
+    $bufferedSummaryJson = $summary | ConvertTo-Json -Depth 8
 }
 catch {
-    $originalException = $_
-    if ($runtimeReady) { Invoke-Super1SmokeCleanup -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask -ActiveRequest $activeRequest -Transaction $transaction -TransactionRequestEvidence $transactionRequestEvidence -ActiveRequestEvidence $activeRequestEvidence -SavedMainXml $mainXml -SavedWatchdogXml $watchdogXml }
-    if ($cleanupErrors.Count -gt 0) { throw "$($originalException.Exception.Message); cleanup: $($cleanupErrors -join '; ')" }
-    throw $originalException
+    $primaryError = $_
+    if ($runtimeReady) { Invoke-Super1SmokeCleanup -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask -ActiveRequest $activeRequest -Transaction $transaction -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -SavedMainXml $mainXml -SavedWatchdogXml $watchdogXml }
 }
 finally {
-    foreach ($evidence in @($transactionRequestEvidence, $activeRequestEvidence)) {
-        try { if ($evidence) { $evidence.lock.Dispose() } } catch { Add-SmokeCleanupError "outer lock disposal: $($_.Exception.Message)" }
+    foreach ($name in @("transactionRequestEvidence", "activeRequestEvidence")) {
+        try {
+            $evidence = Get-Variable -Name $name -ValueOnly
+            if ($evidence) { $evidence.lock.Dispose(); Set-Variable -Name $name -Value $null }
+        }
+        catch { Add-SmokeCleanupError "outer lock disposal ($name): $($_.Exception.Message)" }
     }
     try { $env:PSModulePath = $OriginalPSModulePath } catch { Add-SmokeCleanupError "PSModulePath restore: $($_.Exception.Message)" }
 }
+
+if ($primaryError) {
+    if ($cleanupErrors.Count -gt 0) { throw [Exception]::new("Super1 smoke failed; cleanup incomplete: $($cleanupErrors -join '; ')", $primaryError.Exception) }
+    throw $primaryError
+}
+if ($cleanupErrors.Count -gt 0) { throw "Super1 smoke cleanup incomplete: $($cleanupErrors -join '; ')" }
+if (-not $bufferedSummaryJson) { throw "Super1 smoke did not produce a successful result." }
+$success = $true
+$bufferedSummaryJson

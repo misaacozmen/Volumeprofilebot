@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "contract_id": "SUPER1_PRIVATE_S3_TRANSFER",
+  "release_generation": "v13",
+  "region": "eu-central-1",
+  "identity": {
+    "account_id_pattern": "^[0-9]{12}$",
+    "commit_sha12_pattern": "^[0-9a-f]{12}$"
+  },
+  "bucket": {
+    "template": "otobacktest-transfer-{account_id}-{commit_sha12}",
+    "ownership": "BucketOwnerEnforced",
+    "versioning": { "status": "disabled", "MFADelete": "absent" },
+    "default_encryption": "AES256",
+    "bucket_policy": "absent",
+    "website_configuration": "absent",
+    "public_access_block": {
+      "block_public_acls": true,
+      "ignore_public_acls": true,
+      "block_public_policy": true,
+      "restrict_public_buckets": true
+    }
+  },
+  "upload": {
+    "put_object_count": 1,
+    "multipart_allowed": false,
+    "object_key": "{release_id}.transfer.zip",
+    "acl_header_allowed": false,
+    "server_side_encryption": "AES256",
+    "checksum_algorithm": "SHA256",
+    "checksum_source": "bundle_sha256_base64",
+    "content_type": "application/zip",
+    "head_object_readback": ["key", "content_length", "checksum_sha256", "server_side_encryption"],
+    "list_objects_v2_exact_count": 1,
+    "multipart_upload_exact_count": 0
+  },
+  "bundle": {
+    "entries": 5,
+    "directory_entries": false,
+    "outer_sha_before_open": true,
+    "inner_sha_before_extract": true,
+    "extraction": "CreateNew_contained_no_overwrite",
+    "members": {
+      "{release_id}.zip": "archive_sha256",
+      "{release_id}.manifest.json": "manifest_sha256",
+      "{release_id}.manifest.sig": "signature_sha256",
+      "stage_signed_upgrader_windows.ps1": "stage_helper_sha256",
+      "release_integrity.ps1": "bootstrap_integrity_sha256",
+      "manifest.upgrader_sha256": "upgrader_sha256"
+    },
+    "unsafe_paths": ["case_insensitive_duplicate", "directory", "backslash", "rooted", "UNC", "drive_qualified", "empty_segment", "dot_segment", "dotdot_segment", "ADS_colon", "trailing_dot_space", "reserved_device"]
+  },
+  "presigned_get": {
+    "expiry_seconds": 900,
+    "url_storage": false,
+    "read_method": "Read-Host",
+    "psreadline_removed": true,
+    "clipboard_cleared_in_finally": true
+  },
+  "remote_receive": {
+    "rdp_drive_redirection_allowed": false,
+    "incoming_acl": "SYSTEM_only_SYSTEM_Administrators_explicit_FullControl_inheritance_disabled_reparse_free",
+    "readonly_after_validation": true,
+    "directory_readonly_is_security_gate": false,
+    "aws_api_readback_before_upload_or_presign": true,
+    "download_object_delete_after_remote_validation": true
+  },
+  "evidence_return": {
+    "presigned_put": {
+      "expiry_seconds": 900,
+      "method": "PUT",
+      "unique_new_key": true,
+      "signed_headers": ["Content-Type", "ServerSideEncryption", "ChecksumSHA256"]
+    },
+    "inventory_required": true,
+    "inventory_fields": ["path", "bytes", "sha256", "source_command", "redacted"],
+    "redacted_required": true,
+    "content_exclusions": ["credential", "credentials", "password", "passwd", "secret", "token", "api-key", "authorization", "cookie", "presigned URL", "DPAPI", ".env", "terminal profile"],
+    "validation_before_cleanup": ["evidence_head_object", "local_download_sha256", "safe_zip", "evidence_inventory"]
+  },
+  "cleanup": {
+    "download_object_delete_after_remote_validation": true,
+    "evidence_object_delete_after_local_validation": true,
+    "bucket_delete_after_local_validation": true,
+    "final_api_readback": ["download_404", "evidence_404", "bucket_absent"]
+  },
+  "blockers": [
+    { "code": "WAITING_USER_AWS_LOGIN", "exact_trigger": "AWS session is not authenticated", "required_cleanup": "preserve local V13 evidence and create no AWS resource", "allowed_next_action": "wait for user login" },
+    { "code": "BLOCKED_S3_TRANSFER_PERMISSION", "exact_trigger": "required S3 API permission or readback is denied", "required_cleanup": "no upload, presign, or resource mutation", "allowed_next_action": "stop and report blocker" },
+    { "code": "BLOCKED_RDP_TEXT_CLIPBOARD", "exact_trigger": "RDP text or clipboard channel is unsafe", "required_cleanup": "clear URL and clipboard in finally", "allowed_next_action": "stop and report blocker" },
+    { "code": "BLOCKED_TRANSFER_HASH_MISMATCH", "exact_trigger": "remote or inner SHA256 differs from checkpoint", "required_cleanup": "delete no object until validated and preserve evidence", "allowed_next_action": "stop and report blocker" },
+    { "code": "BLOCKED_EVIDENCE_RETURN", "exact_trigger": "evidence object or inventory cannot be safely validated and read back", "required_cleanup": "do not delete object or bucket", "allowed_next_action": "stop and report blocker" }
+  ]
+}
