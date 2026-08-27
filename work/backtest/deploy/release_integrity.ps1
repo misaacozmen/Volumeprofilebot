@@ -119,10 +119,10 @@ function Assert-SignedReleaseArchive {
             [bool]$manifest.git_dirty -ne $false -or
             [string]$manifest.python_version -notmatch '^3\.11' -or
             [bool]$manifest.pytest_passed -ne $true -or
-            [int]$manifest.pytest_passed_count -lt 267 -or
+            [int]$manifest.pytest_passed_count -ne 267 -or
             [bool]$manifest.artifact_pytest_passed -ne $true -or
             $null -eq $manifest.artifact_pytest_count -or
-            [int]$manifest.artifact_pytest_count -lt 138 -or
+            [int]$manifest.artifact_pytest_count -ne 138 -or
             $null -eq $manifest.files -or @($manifest.files).Count -eq 0) {
             throw "Release manifest provenance is incomplete or below the required test baseline."
         }
