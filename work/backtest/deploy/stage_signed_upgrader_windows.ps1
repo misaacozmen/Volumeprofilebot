@@ -32,7 +32,10 @@ foreach ($inputPath in @($archivePath, $manifestPath, $signaturePath, $bootstrap
 }
 
 $inputLocks = [Collections.Generic.List[IO.FileStream]]::new()
+$targetLocks = [Collections.Generic.List[IO.FileStream]]::new()
 $lockErrors = [Collections.Generic.List[string]]::new()
+$primaryError = $null
+$upgraderOutput = @()
 try {
     foreach ($inputPath in @($archivePath, $manifestPath, $signaturePath, $bootstrapPath)) {
         try {
@@ -90,6 +93,18 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "icacls owner update failed: $Path" }
         Assert-StageAcl $Path
     }
+    function Get-StageStreamSha256([IO.Stream]$Stream) {
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $Stream.Position = 0; $bytes = $hasher.ComputeHash($Stream); $Stream.Position = 0; return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+    }
+    function Assert-StageTarget([string]$Path, [IO.FileStream]$Stream, [string]$ManifestHash) {
+        $item = Get-Item -LiteralPath $Path -Force
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Staged target is missing or unsafe: $Path" }
+        if ((Get-StageStreamSha256 $Stream) -cne $ManifestHash.ToLowerInvariant()) { throw "Staged target hash mismatch: $Path" }
+        Assert-StageAcl $Path
+        if (-not $item.IsReadOnly) { throw "Staged target is not ReadOnly: $Path" }
+    }
 
     $programFiles = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles))
     $deployRoot = [IO.Path]::GetFullPath((Join-Path $programFiles "OtoBacktestDeploy"))
@@ -125,12 +140,11 @@ try {
             $target = $pair[1]
             $manifestEntry = @($manifest.files | Where-Object { [string]$_.path -eq $pair[0] })[0]
             if (Test-Path -LiteralPath $target) {
+                $targetHandle = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                [void]$targetLocks.Add($targetHandle)
                 $targetItem = Get-Item -LiteralPath $target -Force
                 if ($targetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing staged reparse point: $target" }
-                $existingHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($existingHash -cne ([string]$manifestEntry.sha256).ToLowerInvariant()) { throw "Refusing to overwrite staged file: $target" }
-                Assert-StageAcl $target
-                if (-not $targetItem.IsReadOnly) { throw "Existing staged file is not ReadOnly: $target" }
+                Assert-StageTarget $target $targetHandle ([string]$manifestEntry.sha256)
                 continue
             }
             Assert-StageContainer $deployRoot
@@ -141,11 +155,17 @@ try {
                 try { $stream.CopyTo($outputStream); $outputStream.Flush($true) } finally { $outputStream.Dispose() }
             }
             finally { $stream.Dispose() }
-            $writtenHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($writtenHash -cne ([string]$manifestEntry.sha256).ToLowerInvariant()) { throw "New staged file hash mismatch before ACL: $target" }
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$manifestEntry.sha256).ToLowerInvariant()) { throw "New staged file hash mismatch before ACL: $target" }
             if ((Get-Item -LiteralPath $target -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "New staged file is a reparse point: $target" }
+            Assert-StageContainer $deployRoot
+            Assert-StageContainer $shaDir
             Set-StageAcl $target $false
+            Assert-StageContainer $deployRoot
+            Assert-StageContainer $shaDir
             (Get-Item -LiteralPath $target -Force).IsReadOnly = $true
+            $targetHandle = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            [void]$targetLocks.Add($targetHandle)
+            Assert-StageTarget $target $targetHandle ([string]$manifestEntry.sha256)
         }
     }
     finally { $zip.Dispose() }
@@ -155,11 +175,23 @@ try {
     if (-not (Get-Item -LiteralPath $targetUpgrader -Force).IsReadOnly -or -not (Get-Item -LiteralPath $targetIntegrity -Force).IsReadOnly) { throw "Staged files must be ReadOnly." }
     Assert-StageAcl $targetUpgrader
     Assert-StageAcl $targetIntegrity
-    & $targetUpgrader -Archive $archivePath -ExpectedPythonSha256 $ExpectedPythonSha256 -ExpectedTerminalSha256 $ExpectedTerminalSha256 -ExpectedSelfSha256 $upgraderSha256
+    $upgraderOutput = @(& $targetUpgrader -Archive $archivePath -ExpectedPythonSha256 $ExpectedPythonSha256 -ExpectedTerminalSha256 $ExpectedTerminalSha256 -ExpectedSelfSha256 $upgraderSha256 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Staged upgrader failed: $($upgraderOutput -join ' | ')" }
+}
+catch {
+    $primaryError = $_
 }
 finally {
-    foreach ($lock in $inputLocks) {
-        try { $lock.Dispose() } catch { $lockErrors.Add($_.Exception.Message) }
+    foreach ($lock in $targetLocks) {
+        try { $lock.Dispose() } catch { $lockErrors.Add("target lock: $($_.Exception.Message)") }
     }
-    if ($lockErrors.Count -gt 0) { throw "Input lock cleanup failed: $($lockErrors -join '; ')" }
+    foreach ($lock in $inputLocks) {
+        try { $lock.Dispose() } catch { $lockErrors.Add("input lock: $($_.Exception.Message)") }
+    }
 }
+if ($primaryError) {
+    if ($lockErrors.Count -gt 0) { throw [Exception]::new("Signed staging failed; lock cleanup incomplete: $($lockErrors -join '; ')", $primaryError.Exception) }
+    throw $primaryError
+}
+if ($lockErrors.Count -gt 0) { throw "Signed staging lock cleanup incomplete: $($lockErrors -join '; ')" }
+$upgraderOutput
