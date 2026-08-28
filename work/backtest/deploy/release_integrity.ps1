@@ -13,6 +13,25 @@ function Get-ReleaseSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Assert-ReleaseArtifactTestFiles {
+    param([Parameter(Mandatory = $true)][object]$Manifest)
+    $expected = @(
+        "test_deployment_security.py",
+        "test_xm_mt5_forward.py",
+        "test_super1_xm_forward.py",
+        "test_check_mt5_flat.py",
+        "test_v15_deployment_contract.py"
+    )
+    $propertyNames = @($Manifest.PSObject.Properties | ForEach-Object Name)
+    if ($propertyNames -notcontains "artifact_test_files") {
+        throw "Release manifest artifact_test_files is missing."
+    }
+    $actual = @($Manifest.artifact_test_files | ForEach-Object { [string]$_ })
+    if ($actual.Count -ne $expected.Count -or (($actual -join "`n") -cne ($expected -join "`n"))) {
+        throw "Release manifest artifact_test_files does not match the exact required list."
+    }
+}
+
 function Assert-SignedReleaseArchive {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,
@@ -126,6 +145,7 @@ function Assert-SignedReleaseArchive {
             $null -eq $manifest.files -or @($manifest.files).Count -eq 0) {
             throw "Release manifest provenance is incomplete or below the required test baseline."
         }
+        Assert-ReleaseArtifactTestFiles -Manifest $manifest
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
             $path = [string]$f.path

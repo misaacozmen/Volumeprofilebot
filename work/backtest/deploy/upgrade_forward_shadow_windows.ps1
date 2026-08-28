@@ -265,7 +265,7 @@ try {
     $WatchdogHealth = [IO.Path]::GetFullPath((Join-Path $CanonicalState "health.json"))
     $WatchdogStatus = [IO.Path]::GetFullPath((Join-Path $Root "watchdog_status.json"))
     $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
-    $ExpectedIntegrityScriptSha256 = "43a05fb9e26be1faee74e3fcda2cce7a8d4145d4671b46eceb8ebd16e5da8732"
+    $ExpectedIntegrityScriptSha256 = "caf6b244e41cdb819d07fcbaa6517d309d2b01c3e78748472c2bc09c410863e0"
     $ExpectedTerminalSha256 = $ExpectedTerminalSha256.ToLowerInvariant()
     $RunId = [Guid]::NewGuid().ToString("N")
     $RunnerProbeTerminalConfig = [IO.Path]::GetFullPath(
