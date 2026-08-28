@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_id": "SUPER1_PRIVATE_S3_TRANSFER",
-  "release_generation": "v14",
+  "release_generation": "v15",
   "region": "eu-central-1",
   "identity": {
     "account_id_source": "STS.GetCallerIdentity.Account",
@@ -15,15 +15,26 @@
     "public_access_block": {"block_public_acls": true, "ignore_public_acls": true, "block_public_policy": true, "restrict_public_buckets": true},
     "encryption": {"rule_count": 1, "algorithm": "AES256"},
     "readback_before_upload_or_presign": {
-      "GetBucketLocation": {"LocationConstraint": "eu-central-1"},
-      "GetBucketOwnershipControls": {"rule_count": 1, "object_ownership": "BucketOwnerEnforced"},
-      "GetPublicAccessBlock": {"block_public_acls": true, "ignore_public_acls": true, "block_public_policy": true, "restrict_public_buckets": true},
-      "GetBucketVersioning": {"Status": "absent", "MFADelete": "absent"},
-      "GetBucketEncryption": {"rule_count": 1, "algorithm": "AES256"},
-      "GetBucketPolicy": {"http_status": 404, "error": "NoSuchBucketPolicy"},
-      "GetBucketWebsite": {"http_status": 404, "error": "NoSuchWebsiteConfiguration"},
-      "ListObjectsV2": {"count": 0},
-      "ListMultipartUploads": {"count": 0}
+      "common": {
+        "GetBucketLocation": {"LocationConstraint": "eu-central-1"},
+        "GetBucketOwnershipControls": {"rule_count": 1, "object_ownership": "BucketOwnerEnforced"},
+        "GetPublicAccessBlock": {"block_public_acls": true, "ignore_public_acls": true, "block_public_policy": true, "restrict_public_buckets": true},
+        "GetBucketVersioning": {"Status": "absent", "MFADelete": "absent"},
+        "GetBucketEncryption": {"rule_count": 1, "algorithm": "AES256"},
+        "GetBucketPolicy": {"http_status": 404, "error": "NoSuchBucketPolicy"},
+        "GetBucketWebsite": {"http_status": 404, "error": "NoSuchWebsiteConfiguration"},
+        "ListMultipartUploads": {"count": 0}
+      },
+      "before_transfer_upload": {"ListObjectsV2": {"count": 0}},
+      "before_transfer_get": {
+        "ListObjectsV2": {"count": 1, "key": "{release_id}.transfer.zip", "size": "checkpoint.bundle_bytes"},
+        "HeadObject": {"ChecksumMode": "ENABLED", "ContentLength": "checkpoint.bundle_bytes", "ContentType": "application/zip", "ChecksumSHA256": "calculated_base64", "ServerSideEncryption": "AES256"}
+      },
+      "before_evidence_put": {
+        "transfer_object": "validated_then_deleted",
+        "ListObjectsV2": {"count": 0},
+        "HeadObject": {"http_status": 404, "error": "NotFound", "key": "unique_evidence_key"}
+      }
     },
     "expected_bucket_owner": "{account_id}"
   },
@@ -35,7 +46,7 @@
     "content_type": "application/zip",
     "server_side_encryption": "AES256",
     "checksum_algorithm": "SHA256",
-    "checksum_sha256": "base64(raw_sha256(checkpoint.bundle_bytes))",
+    "checksum_sha256": "base64(raw_sha256(file_bytes(checkpoint.bundle_path)))",
     "sha256_precondition": "lowercase_hex(raw_sha256(bundle)) == checkpoint.bundle_sha256",
     "expected_bucket_owner": "{account_id}",
     "if_none_match": "*",
@@ -83,7 +94,7 @@
     "method": "GET",
     "expiry_seconds": 900,
     "bearer_secret": true,
-    "url_storage": ["argument", "environment", "disk", "history", "log", "checkpoint", "report"],
+    "url_storage_forbidden": ["argument", "environment", "disk", "history", "log", "checkpoint", "report"],
     "url_variables_null_in_finally": true,
     "clipboard_cleared_in_finally": true,
     "remote_input": "Read-Host",
@@ -99,7 +110,7 @@
   },
   "evidence_return": {
     "key": "evidence/{release_id}-{32_lower_hex_nonce}.evidence.zip",
-    "presign_before_head": {"http_status": 404, "error": "NotFound"},
+    "head_before_presign": {"http_status": 404, "error": "NotFound"},
     "presigned_put": {"signature": "SigV4", "expiry_seconds": 900, "if_none_match": "*", "signed_headers": {"Content-Type": "application/zip", "x-amz-server-side-encryption": "AES256", "x-amz-checksum-sha256": "base64(raw_evidence_sha256)", "x-amz-expected-bucket-owner": "{account_id}"}},
     "hash_source": "remote_file_bytes",
     "post_upload_head_object": {"ChecksumMode": "ENABLED", "validate": ["bytes", "type", "SSE", "checksum"]},

@@ -8,6 +8,8 @@ from powershell_contract import facts, powershell_ast, powershell_harness
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_BASE_ROOT = Path(os.environ.get("CONTRACT_BASE_ROOT", str(ROOT))).resolve()
 CONTRACT_REPO_ROOT = Path(os.environ.get("CONTRACT_REPO_ROOT", str(ROOT.parents[1]))).resolve()
+RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v15")
+RELEASE_NUMBER = RELEASE_GENERATION[1:]
 DEPLOY = CONTRACT_BASE_ROOT / "deploy"
 
 
@@ -53,46 +55,108 @@ def test_smoke_output_uses_modify_runner_rights() -> None:
 def test_smoke_stop_unconfirmed_retains_request_locks() -> None:
     path = DEPLOY / "run_super1_demo_smoke_windows.ps1"
     fn = next(item for item in ast("run_super1_demo_smoke_windows.ps1")["facts"] if item["kind"] == "function" and item["name"] == "Invoke-Super1SmokeCleanup")
-    text = fn["extent_text"]
-    assert "requestlockreleaseauthorized" in text.lower()
-    assert "Dispose" in text and "if (-not $stopped)" in text
-    assert "TransactionRequestEvidence.Value = $null" not in text.split("if (-not $stopped)", 1)[1].split("}", 1)[0]
+    cleanup_text = fn["extent_text"]
+    outer = max((item for item in facts(path, "try") if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]), key=lambda item: item["end"] - item["start"])
+    outer_finally = "finally " + outer["finally_text"]
+    assert "requestlockreleaseauthorized" in cleanup_text.lower()
+    assert "Dispose" in cleanup_text and "if (-not $stopped)" in cleanup_text
+    assert "TransactionRequestEvidence.Value = $null" not in cleanup_text.split("if (-not $stopped)", 1)[1].split("}", 1)[0]
     completed = powershell_harness(
         "$cleanupErrors=[Collections.Generic.List[string]]::new();"
         "function Add-SmokeCleanupError([string]$Message){[void]$cleanupErrors.Add($Message)};"
-        + text + r'''
-$events=[Collections.Generic.List[string]]::new(); $directory=Join-Path $env:TEMP ('otobt-lock-' + [Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $directory | Out-Null
-try {
-  function Stop-Super1SecureRuntime { [void]$events.Add('stop'); throw 'stop failure' }
-  function Assert-Super1SecureStopped { [void]$events.Add('stopped'); throw 'not stopped' }
-  function Assert-Super1SecureTaskBindings { [void]$events.Add('bindings') }
-  function Get-Super1SecureTaskXml { param([string]$TaskName); [void]$events.Add("xml:$TaskName"); return 'xml' }
-  $txPath=Join-Path $directory 'tx'; $activePath=Join-Path $directory 'active'; $txLock=[IO.File]::Open($txPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read); $activeLock=[IO.File]::Open($activePath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
-  $tx=[pscustomobject]@{lock=$txLock}; $active=[pscustomobject]@{lock=$activeLock}; $authorized=$false; $confirmed=$false
-  Invoke-Super1SmokeCleanup -Root 'C:Super1' -MainTask 'Super1XM' -WatchdogTask 'Super1Watchdog' -ActiveRequest (Join-Path $directory 'missing-active') -Transaction (Join-Path $directory 'missing-tx') -TransactionRequestEvidence ([ref]$tx) -ActiveRequestEvidence ([ref]$active) -RequestLockReleaseAuthorized ([ref]$authorized) -StoppedConfirmed ([ref]$confirmed) -SavedMainXml 'xml' -SavedWatchdogXml 'xml'
-  if ($authorized -or $confirmed -or $tx.lock.IsClosed -or $active.lock.IsClosed) { exit 2 }
-} finally { if($txLock){$txLock.Dispose()}; if($activeLock){$activeLock.Dispose()}; Remove-Item $directory -Recurse -Force }
+        + cleanup_text + r'''
+function Invoke-Scenario([bool]$StaleAuthorization) {
+  $events=[Collections.Generic.List[string]]::new(); $directory=Join-Path $env:TEMP ('otobt-lock-' + [Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $directory | Out-Null
+  $txLock=$null; $activeLock=$null
+  try {
+    function Stop-Super1SecureRuntime { [void]$events.Add('stop'); throw 'stop failure' }
+    function Assert-Super1SecureStopped { [void]$events.Add('stopped'); throw 'not stopped' }
+    function Assert-Super1SecureTaskBindings { [void]$events.Add('bindings') }
+    function Get-Super1SecureTaskXml { param([string]$TaskName); [void]$events.Add("xml:$TaskName"); return 'xml' }
+    $txPath=Join-Path $directory 'tx'; $activePath=Join-Path $directory 'active'; $txLock=[IO.File]::Open($txPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read); $activeLock=[IO.File]::Open($activePath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+    $tx=[pscustomobject]@{lock=$txLock}; $active=[pscustomobject]@{lock=$activeLock}; $authorized=$StaleAuthorization; $confirmed=$StaleAuthorization; $transactionRequestEvidence=$tx; $activeRequestEvidence=$active
+    $OriginalPSModulePath='before'; $env:PSModulePath='trusted'
+    try { Invoke-Super1SmokeCleanup -Root 'C:Super1' -MainTask 'Super1XM' -WatchdogTask 'Super1Watchdog' -ActiveRequest (Join-Path $directory 'missing-active') -Transaction (Join-Path $directory 'missing-tx') -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -RequestLockReleaseAuthorized ([ref]$authorized) -StoppedConfirmed ([ref]$confirmed) -SavedMainXml 'xml' -SavedWatchdogXml 'xml' }
+'''
+        + outer_finally + r'''
+    if ($authorized -or $confirmed -or $txLock.SafeFileHandle.IsClosed -or $activeLock.SafeFileHandle.IsClosed -or $transactionRequestEvidence -ne $tx -or $activeRequestEvidence -ne $active) { throw 'failed closed-state protection' }
+    try { [IO.File]::Open($txPath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::Read); throw 'second writer unexpectedly opened' } catch [IO.IOException] { }
+  } finally { if($txLock){$txLock.Dispose()}; if($activeLock){$activeLock.Dispose()}; Remove-Item $directory -Recurse -Force }
+}
+Invoke-Scenario $false
+Invoke-Scenario $true
+function Invoke-RecoveryScenario {
+  $events=[Collections.Generic.List[string]]::new(); $directory=Join-Path $env:TEMP ('otobt-recovery-' + [Guid]::NewGuid().ToString('N')); $transactionDirectory=Join-Path $directory 'transaction'; New-Item -ItemType Directory -Path $transactionDirectory | Out-Null
+  $txLock=$null; $activeLock=$null; $script:sealed=0; $script:stoppedCalls=0
+  try {
+    function Stop-Super1SecureRuntime { [void]$events.Add('stop'); throw 'stop failure' }
+    function Assert-Super1SecureStopped { $script:stoppedCalls++; [void]$events.Add("stopped:$script:stoppedCalls"); if($script:stoppedCalls -eq 1){throw 'first check failed'} }
+    function Assert-Super1SecureTaskBindings { [void]$events.Add('bindings') }
+    function Get-Super1SecureTaskXml { param([string]$TaskName); return 'xml' }
+    function Seal-Super1SecureEvidenceTree { param([string]$Path); $script:sealed++ }
+    function Assert-Super1SecureSealedTree { param([string]$Path) }
+    $txPath=Join-Path $directory 'tx'; $activePath=Join-Path $directory 'active'; [IO.File]::WriteAllText($activePath,'active'); $txLock=[IO.File]::Open($txPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read); $activeLock=[IO.File]::Open($activePath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+    $txHandle=$txLock.SafeFileHandle; $activeHandle=$activeLock.SafeFileHandle; $tx=[pscustomobject]@{lock=$txLock}; $active=[pscustomobject]@{lock=$activeLock}; $authorized=$false; $confirmed=$false; $transactionRequestEvidence=$tx; $activeRequestEvidence=$active; $OriginalPSModulePath='before'; $env:PSModulePath='trusted'
+    try { Invoke-Super1SmokeCleanup -Root 'C:Super1' -MainTask 'Super1XM' -WatchdogTask 'Super1Watchdog' -ActiveRequest $activePath -Transaction $transactionDirectory -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -RequestLockReleaseAuthorized ([ref]$authorized) -StoppedConfirmed ([ref]$confirmed) -SavedMainXml 'xml' -SavedWatchdogXml 'xml' }
+'''
+        + outer_finally + r'''
+    if ($transactionRequestEvidence -ne $null -or $activeRequestEvidence -ne $null -or -not $authorized -or -not $confirmed -or (Test-Path $activePath) -or $sealed -ne 1 -or -not $txHandle.IsClosed -or -not $activeHandle.IsClosed) { throw 'successful second stopped check did not complete cleanup' }
+  } finally { if($txLock){$txLock.Dispose()}; if($activeLock){$activeLock.Dispose()}; Remove-Item $directory -Recurse -Force }
+}
+Invoke-RecoveryScenario
 ''',
     )
     assert completed.returncode == 0, completed.stderr
 
 
 def test_smoke_cleanup_error_blocks_pass_output() -> None:
+    path = DEPLOY / "run_super1_demo_smoke_windows.ps1"
     nodes = ast("run_super1_demo_smoke_windows.ps1")
     cleanup = next(item for item in nodes["facts"] if item["kind"] == "function" and item["name"] == "Invoke-Super1SmokeCleanup")
     result = next(item for item in nodes["facts"] if item["kind"] == "command" and item["name"] == "ConvertTo-Json")
     successes = [item for item in nodes["facts"] if item["kind"] == "assignment" and item["left"] == "$success"]
     assert any(item["start"] > cleanup["end"] for item in successes)
     assert any(item["start"] > result["start"] for item in successes)
+    outer = max((item for item in facts(path, "try") if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]), key=lambda item: item["end"] - item["start"])
+    outer_finally = "finally " + outer["finally_text"]
+    completed = powershell_harness(
+        "$cleanupErrors=[Collections.Generic.List[string]]::new();"
+        "function Add-SmokeCleanupError([string]$Message){[void]$cleanupErrors.Add($Message)};"
+        + r'''
+$script:activeDisposed=0; $OriginalPSModulePath='before'; $env:PSModulePath='trusted'; $requestLockReleaseAuthorized=$true; $stoppedConfirmed=$true
+$txLock=[pscustomobject]@{}; Add-Member -InputObject $txLock -MemberType ScriptMethod -Name Dispose -Value { throw 'transaction dispose failure' }
+$activeLock=[pscustomobject]@{}; Add-Member -InputObject $activeLock -MemberType ScriptMethod -Name Dispose -Value { $script:activeDisposed++ }
+$transactionRequestEvidence=[pscustomobject]@{lock=$txLock}; $activeRequestEvidence=[pscustomobject]@{lock=$activeLock}
+try { $bufferedSummaryJson=$null }
+'''
+        + outer_finally + r'''
+if ($transactionRequestEvidence -eq $null -or $activeRequestEvidence -ne $null -or $script:activeDisposed -ne 1 -or $env:PSModulePath -ne 'before' -or $cleanupErrors.Count -eq 0 -or $bufferedSummaryJson) { exit 1 }
+''',
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_smoke_production_has_no_test_bypass_and_requires_confirm_demo() -> None:
+    path = DEPLOY / "run_super1_demo_smoke_windows.ps1"
     nodes = ast("run_super1_demo_smoke_windows.ps1")
     params = next(item for item in nodes["facts"] if item["kind"] == "param_block")
     details = {item["name"]: item["mandatory"] for item in params["param_details"]}
     assert details.get("ConfirmDemo") is True
     assert "ContractTestOnly" not in params["params"]
-    assert not any(item["name"] == "return" and item["scope"] == "top-level" for item in nodes["facts"] if item["kind"] == "command")
+    assert not any(item["user_path"].lower() == "contracttestonly" for item in nodes["facts"] if item["kind"] == "variable")
+    assert not any(item["scope"] == "top-level" for item in nodes["facts"] if item["kind"] == "return")
+    bypass = powershell_harness(
+        "$ContractTestOnly=$true; & $env:OTOBT_HARNESS_ARG0 -ConfirmDemo:$false",
+        str(path),
+    )
+    assert bypass.returncode != 0
+    assert "Demo smoke requires -ConfirmDemo." in (bypass.stdout + bypass.stderr)
+    real = powershell_harness("& $env:OTOBT_HARNESS_ARG0 -ConfirmDemo", str(path))
+    real_output = real.stdout + real.stderr
+    assert real.returncode != 0
+    assert "VariableIsUndefined" not in real_output
+    assert "did not produce a successful result" not in real_output
+    assert "Demo smoke requires -ConfirmDemo." not in real_output
 
 
 def test_smoke_binds_launcher_scalar_and_result_hash_to_producer() -> None:
@@ -116,20 +180,20 @@ def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
     assert "main_task" in conditions
 
 
-def test_builder_and_integrity_use_v14_baselines() -> None:
+def test_builder_and_integrity_use_v15_baselines() -> None:
     builder = ast("build_signed_windows_release.ps1")
     integrity = ast("release_integrity.ps1")
     builder_text = "\n".join(item["text"] for item in builder["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in builder["facts"] if item["kind"] == "assignment")
     integrity_text = "\n".join(item["text"] for item in integrity["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in integrity["facts"] if item["kind"] == "assignment") + "\n" + "\n".join(item["condition_text"] for item in integrity["facts"] if item["kind"] == "if")
-    assert "-v14" in builder_text
-    assert "test_v14_deployment_contract.py" in builder_text
+    assert f"-{RELEASE_GENERATION}" in builder_text
+    assert f"test_{RELEASE_GENERATION}_deployment_contract.py" in builder_text
     assert "$passedCount" in builder_text and "$artifactPassedCount" in builder_text
     assert "267" in integrity_text and "138" in integrity_text
 
 
-def test_builder_uses_only_v14_default() -> None:
+def test_builder_uses_only_v15_default() -> None:
     text = "\n".join(item["text"] for item in commands("build_signed_windows_release.ps1")) + "\n" + "\n".join(item["right_text"] for item in facts(DEPLOY / "build_signed_windows_release.ps1", "assignment"))
-    assert all(f"-v{version}" not in text for version in (7, 8, 9, 10, 11, 12, 13))
+    assert all(f"-v{version}" not in text for version in (7, 8, 9, 10, 11, 12, 13, 14) if f"v{version}" != RELEASE_GENERATION)
 
 
 def test_stage_never_uses_helper_hash_for_upgrader_directory_or_self_pin() -> None:
@@ -156,8 +220,27 @@ def test_smoke_preserves_transaction_on_failure() -> None:
 def test_release_integrity_requires_provenance_and_normalized_manifest_paths() -> None:
     path = DEPLOY / "release_integrity.ps1"
     verifier = next(item for item in facts(path, "function") if item["name"] == "Assert-SignedReleaseArchive")
+    artifact_validator = next(item for item in facts(path, "function") if item["name"] == "Assert-ReleaseArtifactTestFiles")
     assert "RequireProvenance" in verifier["extent_text"]
     assert "files" in {item["member"] for item in facts(path, "member")}
+    assert "test_v15_deployment_contract.py" in artifact_validator["extent_text"]
+    assert any(item["name"] == "Assert-ReleaseArtifactTestFiles" and item["scope"] == "function:Assert-SignedReleaseArchive" for item in facts(path, "command"))
+    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py')}"
+    cases = [
+        (correct, 0),
+        ("@{}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py','extra.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py','test_v15_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','TEST_V15_DEPLOYMENT_CONTRACT.PY')}", 1),
+        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py')}", 1),
+    ]
+    script = "function Assert-ReleaseArtifactTestFiles" + artifact_validator["extent_text"].split("function Assert-ReleaseArtifactTestFiles", 1)[1] + "\n"
+    script += "function Invoke-ArtifactCase([object]$m){try{Assert-ReleaseArtifactTestFiles -Manifest $m; return 0}catch{return 1}}\n"
+    script += "$results=@();\n" + "\n".join(f"$results += Invoke-ArtifactCase ([pscustomobject]{value})" for value, _ in cases) + "\n$results -join ','"
+    result = powershell_harness(script)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == ",".join(str(expected) for _, expected in cases)
 
 
 def test_smoke_trusts_exact_process_and_module_manifest() -> None:

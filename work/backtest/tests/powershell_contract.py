@@ -79,7 +79,7 @@ function Test-Unreachable($node) {
     $facts += [ordered]@{ kind = "assignment"; left = $_.Left.Extent.Text; right_type = $_.Right.GetType().Name; right_text = $_.Right.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] }, $true) | ForEach-Object {
-    $facts += [ordered]@{ kind = "try"; has_finally = ($null -ne $_.Finally); has_catch = ($null -ne $_.CatchClauses); start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+    $facts += [ordered]@{ kind = "try"; has_finally = ($null -ne $_.Finally); has_catch = ($null -ne $_.CatchClauses); finally_text = if ($null -ne $_.Finally) { $_.Finally.Extent.Text } else { $null }; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true) | ForEach-Object {
     $clauses = @($_.Clauses | ForEach-Object { [ordered]@{ condition = [string]$_.Item1.Extent.Text; branch = "true"; start = $_.Item2.Extent.StartOffset; end = $_.Item2.Extent.EndOffset } })
@@ -96,6 +96,12 @@ $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAs
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] }, $true) | ForEach-Object {
     $facts += [ordered]@{ kind = "member"; member = [string]$_.Member.Value; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+}
+$ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object {
+    $facts += [ordered]@{ kind = "variable"; variable = $_.Extent.Text; user_path = $_.VariablePath.UserPath; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+}
+$ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true) | ForEach-Object {
+    $facts += [ordered]@{ kind = "return"; text = $_.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 [ordered]@{ errors = @($errors | ForEach-Object Message); facts = $facts } | ConvertTo-Json -Depth 8 -Compress
 '''
@@ -114,7 +120,7 @@ $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExp
 def powershell_harness(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="otobt-ps-contract-") as directory:
         path = Path(directory) / "harness.ps1"
-        path.write_text(script, encoding="utf-8")
+        path.write_text("$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n" + script, encoding="utf-8")
         environment = dict(__import__("os").environ)
         for index, argument in enumerate(args):
             environment[f"OTOBT_HARNESS_ARG{index}"] = argument

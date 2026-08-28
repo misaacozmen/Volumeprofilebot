@@ -44,20 +44,26 @@ function Invoke-Super1SmokeCleanup {
     )
     $stopped = $false
     $StoppedConfirmed.Value = $false
+    $RequestLockReleaseAuthorized.Value = $false
     try { Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask } catch { Add-SmokeCleanupError "runtime stop: $($_.Exception.Message)" }
+    $StoppedConfirmed.Value = $false; $RequestLockReleaseAuthorized.Value = $false; $stopped = $false
     try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "stopped-state verification: $($_.Exception.Message)" }
     try { Assert-Super1SecureTaskBindings -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask | Out-Null } catch { Add-SmokeCleanupError "task binding: $($_.Exception.Message)" }
     try { if ($SavedMainXml -and (Get-Super1SecureTaskXml -TaskName $MainTask) -cne $SavedMainXml) { throw "main XML changed" } } catch { Add-SmokeCleanupError "main XML restore check: $($_.Exception.Message)" }
     try { if ($SavedWatchdogXml -and (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $SavedWatchdogXml) { throw "watchdog XML changed" } } catch { Add-SmokeCleanupError "watchdog XML restore check: $($_.Exception.Message)" }
     if (-not $stopped) {
-        try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+        $StoppedConfirmed.Value = $false; $RequestLockReleaseAuthorized.Value = $false; $stopped = $false
+        try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+    }
+    if (-not $stopped) {
         return
     }
     try { if ($TransactionRequestEvidence.Value) { $TransactionRequestEvidence.Value.lock.Dispose(); $TransactionRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "transaction request lock: $($_.Exception.Message)" }
     try { if ($ActiveRequestEvidence.Value) { $ActiveRequestEvidence.Value.lock.Dispose(); $ActiveRequestEvidence.Value = $null } } catch { Add-SmokeCleanupError "active request lock: $($_.Exception.Message)" }
     try { if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { Remove-Item -LiteralPath $ActiveRequest -Force }; if ($ActiveRequest -and (Test-Path -LiteralPath $ActiveRequest)) { throw "active request remains" } } catch { Add-SmokeCleanupError "active request removal: $($_.Exception.Message)" }
     try { if ($Transaction -and (Test-Path -LiteralPath $Transaction)) { Seal-Super1SecureEvidenceTree -Path $Transaction; Assert-Super1SecureSealedTree -Path $Transaction } } catch { Add-SmokeCleanupError "transaction seal: $($_.Exception.Message)" }
-    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
+    $StoppedConfirmed.Value = $false; $RequestLockReleaseAuthorized.Value = $false; $stopped = $false
+    try { Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stopped = $true; $StoppedConfirmed.Value = $true; $RequestLockReleaseAuthorized.Value = $true } catch { Add-SmokeCleanupError "final stopped-state verification: $($_.Exception.Message)" }
 }
 
 function New-Super1SmokeSummary {
@@ -86,8 +92,6 @@ function New-Super1SmokeSummary {
         watchdog_checked_at = $WatchdogCheckedAt.ToString("o")
     }
 }
-
-if ($ContractTestOnly) { return }
 
 try {
     if (-not $ConfirmDemo) { throw "Demo smoke requires -ConfirmDemo." }
@@ -121,13 +125,13 @@ try {
     $mainBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "main.xml") -Content ($mainXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $mainBackup.lock.Dispose()
     $watchdogBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "watchdog.xml") -Content ($watchdogXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $watchdogBackup.lock.Dispose()
     if (Test-Path -LiteralPath $activeRequest) { throw "Super1 active request already exists." }
-    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $true; $requestLockReleaseAuthorized = $true
+    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $false; $requestLockReleaseAuthorized = $false; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $true; $requestLockReleaseAuthorized = $true
     $flat = (& (Join-Path $Deploy "check_super1_flat_windows.ps1") -KeepStopped | Select-Object -Last 1 | ConvertFrom-Json); if ([string]$flat.state -cne "READY_FLAT_SEALED") { throw "Sealed pre-flat check failed." }
     $requestedAt = [DateTimeOffset]::UtcNow; $launcherSha256 = [string](Get-Super1SecureSha256 -Path $launcher); $requestPayload = [ordered]@{ schema_version = 1; kind = "smoke"; transaction_id = $runId; nonce = $nonce; requested_at_utc = $requestedAt.ToString("o"); expected_runner_sid = $RunnerSid; expected_launcher_sha256 = $launcherSha256; result_path = $resultPath; producer_path = $producerPath; request_path = $requestPath }; $requestJson = $requestPayload | ConvertTo-Json -Compress
     $transactionRequestEvidence = New-Super1SecureLockedFile -Path $requestPath -Content ($requestJson + [Environment]::NewLine) -RunnerSid $RunnerSid; $activeRequestEvidence = New-Super1SecureLockedFile -Path $activeRequest -Content ($requestJson + [Environment]::NewLine) -RunnerSid $RunnerSid
-    Start-ScheduledTask -TaskName $MainTask; $deadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
+    $requestLockReleaseAuthorized = $false; $stoppedConfirmed = $false; Start-ScheduledTask -TaskName $MainTask; $deadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
     do { $mainState = [string](Get-ScheduledTask -TaskName $MainTask).State; $watchdogState = [string](Get-ScheduledTask -TaskName $WatchdogTask).State; if ($mainState -notin @("Running", "Queued") -and $watchdogState -notin @("Running", "Queued") -and (Test-Path -LiteralPath $resultPath)) { break }; if ([DateTimeOffset]::UtcNow -ge $deadline) { throw "Super1 smoke task timed out." }; Start-Sleep -Seconds 1 } while ($true)
-    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask
+    Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $false; $requestLockReleaseAuthorized = $false; Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask; $stoppedConfirmed = $true; $requestLockReleaseAuthorized = $true
     if ([int](Get-ScheduledTaskInfo -TaskName $MainTask).LastTaskResult -ne 0) { throw "Super1 smoke LastTaskResult was not 0." }
     if ((Get-Super1SecureTaskXml -TaskName $MainTask) -cne $mainXml) { throw "Super1 main task XML changed during smoke." }; if ((Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $watchdogXml) { throw "Super1 watchdog task XML changed during smoke." }
     $transactionRequestEvidence.lock.Dispose(); $transactionRequestEvidence = $null; $activeRequestEvidence.lock.Dispose(); $activeRequestEvidence = $null; Remove-Item -LiteralPath $activeRequest -Force
@@ -137,7 +141,7 @@ try {
     if ([string]$result.state -cne "PASS" -or $result.demo_verified -ne $true -or [string]$result.cancelled.state -cne "CANCELLED" -or [int]$result.open_orders_after -ne 0 -or [int]$result.open_positions_after -ne 0 -or [int]$result.unknown_exposure_after -ne 0) { throw "Smoke acceptance criteria failed." }
     $postFlat = (& (Join-Path $Deploy "check_super1_flat_windows.ps1") -KeepStopped | Select-Object -Last 1 | ConvertFrom-Json); if ([string]$postFlat.state -cne "READY_FLAT_SEALED") { throw "Sealed post-flat check failed." }
     $restartStarted = [DateTimeOffset]::UtcNow; Start-ScheduledTask -TaskName $MainTask; $healthDeadline = [DateTimeOffset]::UtcNow.AddSeconds(90); do { $healthPath=Join-Path $State "health.json"; $healthPayload=if(Test-Path $healthPath){Get-Content -Raw $healthPath|ConvertFrom-Json}else{$null}; if ((Get-ScheduledTask -TaskName $MainTask).State -eq "Running" -and (Test-Path $healthPath) -and (Get-Item $healthPath).LastWriteTimeUtc -ge $restartStarted.UtcDateTime -and [string]$healthPayload.updated_at -and [DateTimeOffset]::Parse([string]$healthPayload.updated_at) -ge $restartStarted -and [string]$healthPayload.state -eq "RUNNING") { break }; if ([DateTimeOffset]::UtcNow -ge $healthDeadline) { throw "Fresh main health was not observed." }; Start-Sleep -Seconds 1 } while ($true); $healthCheckedAt = [DateTimeOffset]::UtcNow
-    $watchdogRestartStarted = [DateTimeOffset]::UtcNow; Start-ScheduledTask -TaskName $WatchdogTask; $watchdogDeadline = [DateTimeOffset]::UtcNow.AddSeconds(90); do { $watchdogPath=Join-Path $Root "watchdog_status.json"; $watchdogRecord = if(Test-Path $watchdogPath){Get-Content -Raw $watchdogPath | ConvertFrom-Json}else{$null}; if ((Get-ScheduledTask -TaskName $WatchdogTask).State -eq "Running" -and (Test-Path $watchdogPath) -and (Get-Item $watchdogPath).LastWriteTimeUtc -ge $watchdogRestartStarted.UtcDateTime -and [string]$watchdogRecord.observed_at_utc -and [DateTimeOffset]::Parse([string]$watchdogRecord.observed_at_utc) -ge $watchdogRestartStarted -and [string]$watchdogRecord.state -eq "HEALTHY" -and [string]$watchdogRecord.main_task -ceq $MainTask) { break }; if ([DateTimeOffset]::UtcNow -ge $watchdogDeadline) { throw "Fresh watchdog health was not observed." }; Start-Sleep -Seconds 1 } while ($true); $watchdogCheckedAt = [DateTimeOffset]::UtcNow
+    $watchdogRestartStarted = [DateTimeOffset]::UtcNow; $requestLockReleaseAuthorized = $false; $stoppedConfirmed = $false; Start-ScheduledTask -TaskName $WatchdogTask; $watchdogDeadline = [DateTimeOffset]::UtcNow.AddSeconds(90); do { $watchdogPath=Join-Path $Root "watchdog_status.json"; $watchdogRecord = if(Test-Path $watchdogPath){Get-Content -Raw $watchdogPath | ConvertFrom-Json}else{$null}; if ((Get-ScheduledTask -TaskName $WatchdogTask).State -eq "Running" -and (Test-Path $watchdogPath) -and (Get-Item $watchdogPath).LastWriteTimeUtc -ge $watchdogRestartStarted.UtcDateTime -and [string]$watchdogRecord.observed_at_utc -and [DateTimeOffset]::Parse([string]$watchdogRecord.observed_at_utc) -ge $watchdogRestartStarted -and [string]$watchdogRecord.state -eq "HEALTHY" -and [string]$watchdogRecord.main_task -ceq $MainTask) { break }; if ([DateTimeOffset]::UtcNow -ge $watchdogDeadline) { throw "Fresh watchdog health was not observed." }; Start-Sleep -Seconds 1 } while ($true); $watchdogCheckedAt = [DateTimeOffset]::UtcNow
     if (-not (Test-Path (Join-Path $State "campaign_lock.json")) -or (Test-Path (Join-Path $State "fatal_latch.json")) -or (Test-Path (Join-Path $State "launcher_failure.json"))) { throw "Campaign lock/fatal-latch/launcher-failure contract failed." }
     $finalRunnerSid = [string](Assert-Super1SecureTaskBindings -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask); if ($finalRunnerSid -cne $RunnerSid -or (Get-Super1SecureTaskXml -TaskName $MainTask) -cne $mainXml -or (Get-Super1SecureTaskXml -TaskName $WatchdogTask) -cne $watchdogXml) { throw "Super1 task bindings or XML changed after smoke." }
     $summary = New-Super1SmokeSummary -Result $result -Producer $producer -PreFlat $flat -PostFlat $postFlat -Transaction $transaction -HealthCheckedAt $healthCheckedAt -WatchdogCheckedAt $watchdogCheckedAt
@@ -149,8 +153,8 @@ catch {
     if ($runtimeReady) { Invoke-Super1SmokeCleanup -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask -ActiveRequest $activeRequest -Transaction $transaction -TransactionRequestEvidence ([ref]$transactionRequestEvidence) -ActiveRequestEvidence ([ref]$activeRequestEvidence) -RequestLockReleaseAuthorized ([ref]$requestLockReleaseAuthorized) -StoppedConfirmed ([ref]$stoppedConfirmed) -SavedMainXml $mainXml -SavedWatchdogXml $watchdogXml }
 }
 finally {
-    try { if ($requestLockReleaseAuthorized -and $transactionRequestEvidence) { $transactionRequestEvidence.lock.Dispose(); $transactionRequestEvidence = $null } elseif ($transactionRequestEvidence) { Add-SmokeCleanupError "unauthorized transaction request lock release" } } catch { Add-SmokeCleanupError "outer transaction lock disposal: $($_.Exception.Message)" }
-    try { if ($requestLockReleaseAuthorized -and $activeRequestEvidence) { $activeRequestEvidence.lock.Dispose(); $activeRequestEvidence = $null } elseif ($activeRequestEvidence) { Add-SmokeCleanupError "unauthorized active request lock release" } } catch { Add-SmokeCleanupError "outer active lock disposal: $($_.Exception.Message)" }
+    try { if ($requestLockReleaseAuthorized -and $stoppedConfirmed -and $transactionRequestEvidence) { $transactionRequestEvidence.lock.Dispose(); $transactionRequestEvidence = $null } elseif ($transactionRequestEvidence) { Add-SmokeCleanupError "unauthorized transaction request lock release" } } catch { Add-SmokeCleanupError "outer transaction lock disposal: $($_.Exception.Message)" }
+    try { if ($requestLockReleaseAuthorized -and $stoppedConfirmed -and $activeRequestEvidence) { $activeRequestEvidence.lock.Dispose(); $activeRequestEvidence = $null } elseif ($activeRequestEvidence) { Add-SmokeCleanupError "unauthorized active request lock release" } } catch { Add-SmokeCleanupError "outer active lock disposal: $($_.Exception.Message)" }
     try { $env:PSModulePath = $OriginalPSModulePath } catch { Add-SmokeCleanupError "PSModulePath restore: $($_.Exception.Message)" }
 }
 

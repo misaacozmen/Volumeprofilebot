@@ -1,18 +1,24 @@
 import json
 import os
+import base64
+import hashlib
+import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 REPO_ROOT = Path(os.environ.get("CONTRACT_REPO_ROOT", str(Path(__file__).resolve().parents[3]))).resolve()
 DOCS_ROOT = REPO_ROOT / "docs"
+RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v15")
+RELEASE_NUMBER = RELEASE_GENERATION[1:]
 
 
-def test_v14_transfer_contract_is_exact_and_stateful() -> None:
-    contract = json.loads((DOCS_ROOT / "SUPER1_PRIVATE_S3_TRANSFER_V14.json").read_text(encoding="utf-8"))
+def test_v15_transfer_contract_is_exact_and_stateful() -> None:
+    contract = json.loads((DOCS_ROOT / f"SUPER1_PRIVATE_S3_TRANSFER_V{RELEASE_NUMBER}.json").read_text(encoding="utf-8"))
     expected = {
         "schema_version": 1,
         "contract_id": "SUPER1_PRIVATE_S3_TRANSFER",
-        "release_generation": "v14",
+        "release_generation": RELEASE_GENERATION,
         "region": "eu-central-1",
         "identity": {
             "account_id_source": "STS.GetCallerIdentity.Account",
@@ -26,15 +32,26 @@ def test_v14_transfer_contract_is_exact_and_stateful() -> None:
             "public_access_block": {"block_public_acls": True, "ignore_public_acls": True, "block_public_policy": True, "restrict_public_buckets": True},
             "encryption": {"rule_count": 1, "algorithm": "AES256"},
             "readback_before_upload_or_presign": {
-                "GetBucketLocation": {"LocationConstraint": "eu-central-1"},
-                "GetBucketOwnershipControls": {"rule_count": 1, "object_ownership": "BucketOwnerEnforced"},
-                "GetPublicAccessBlock": {"block_public_acls": True, "ignore_public_acls": True, "block_public_policy": True, "restrict_public_buckets": True},
-                "GetBucketVersioning": {"Status": "absent", "MFADelete": "absent"},
-                "GetBucketEncryption": {"rule_count": 1, "algorithm": "AES256"},
-                "GetBucketPolicy": {"http_status": 404, "error": "NoSuchBucketPolicy"},
-                "GetBucketWebsite": {"http_status": 404, "error": "NoSuchWebsiteConfiguration"},
-                "ListObjectsV2": {"count": 0},
-                "ListMultipartUploads": {"count": 0},
+                "common": {
+                    "GetBucketLocation": {"LocationConstraint": "eu-central-1"},
+                    "GetBucketOwnershipControls": {"rule_count": 1, "object_ownership": "BucketOwnerEnforced"},
+                    "GetPublicAccessBlock": {"block_public_acls": True, "ignore_public_acls": True, "block_public_policy": True, "restrict_public_buckets": True},
+                    "GetBucketVersioning": {"Status": "absent", "MFADelete": "absent"},
+                    "GetBucketEncryption": {"rule_count": 1, "algorithm": "AES256"},
+                    "GetBucketPolicy": {"http_status": 404, "error": "NoSuchBucketPolicy"},
+                    "GetBucketWebsite": {"http_status": 404, "error": "NoSuchWebsiteConfiguration"},
+                    "ListMultipartUploads": {"count": 0},
+                },
+                "before_transfer_upload": {"ListObjectsV2": {"count": 0}},
+                "before_transfer_get": {
+                    "ListObjectsV2": {"count": 1, "key": "{release_id}.transfer.zip", "size": "checkpoint.bundle_bytes"},
+                    "HeadObject": {"ChecksumMode": "ENABLED", "ContentLength": "checkpoint.bundle_bytes", "ContentType": "application/zip", "ChecksumSHA256": "calculated_base64", "ServerSideEncryption": "AES256"},
+                },
+                "before_evidence_put": {
+                    "transfer_object": "validated_then_deleted",
+                    "ListObjectsV2": {"count": 0},
+                    "HeadObject": {"http_status": 404, "error": "NotFound", "key": "unique_evidence_key"},
+                },
             },
             "expected_bucket_owner": "{account_id}",
         },
@@ -46,7 +63,7 @@ def test_v14_transfer_contract_is_exact_and_stateful() -> None:
             "content_type": "application/zip",
             "server_side_encryption": "AES256",
             "checksum_algorithm": "SHA256",
-            "checksum_sha256": "base64(raw_sha256(checkpoint.bundle_bytes))",
+            "checksum_sha256": "base64(raw_sha256(file_bytes(checkpoint.bundle_path)))",
             "sha256_precondition": "lowercase_hex(raw_sha256(bundle)) == checkpoint.bundle_sha256",
             "expected_bucket_owner": "{account_id}",
             "if_none_match": "*",
@@ -78,7 +95,7 @@ def test_v14_transfer_contract_is_exact_and_stateful() -> None:
         },
         "presigned_get": {
             "signature": "SigV4", "method": "GET", "expiry_seconds": 900, "bearer_secret": True,
-            "url_storage": ["argument", "environment", "disk", "history", "log", "checkpoint", "report"],
+            "url_storage_forbidden": ["argument", "environment", "disk", "history", "log", "checkpoint", "report"],
             "url_variables_null_in_finally": True, "clipboard_cleared_in_finally": True, "remote_input": "Read-Host", "psreadline_removed_before_read": True,
         },
         "remote_receive": {
@@ -89,7 +106,7 @@ def test_v14_transfer_contract_is_exact_and_stateful() -> None:
         },
         "evidence_return": {
             "key": "evidence/{release_id}-{32_lower_hex_nonce}.evidence.zip",
-            "presign_before_head": {"http_status": 404, "error": "NotFound"},
+            "head_before_presign": {"http_status": 404, "error": "NotFound"},
             "presigned_put": {"signature": "SigV4", "expiry_seconds": 900, "if_none_match": "*", "signed_headers": {"Content-Type": "application/zip", "x-amz-server-side-encryption": "AES256", "x-amz-checksum-sha256": "base64(raw_evidence_sha256)", "x-amz-expected-bucket-owner": "{account_id}"}},
             "hash_source": "remote_file_bytes",
             "post_upload_head_object": {"ChecksumMode": "ENABLED", "validate": ["bytes", "type", "SSE", "checksum"]},
@@ -120,6 +137,26 @@ def test_v14_transfer_contract_is_exact_and_stateful() -> None:
     }
     assert contract == expected
     runbook = (DOCS_ROOT / "LIVE_OPERATIONS_TR.md").read_text(encoding="utf-8")
-    assert "SUPER1_PRIVATE_S3_TRANSFER_V14.json" in runbook
+    assert f"SUPER1_PRIVATE_S3_TRANSFER_V{RELEASE_NUMBER}.json" in runbook
     forbidden_versions = tuple(f"{prefix}{number}" for prefix in ("v", "V") for number in range(11, 14))
     assert not any(token in runbook for token in forbidden_versions)
+
+    with TemporaryDirectory(prefix="otobt-transfer-contract-") as directory:
+        fixture = Path(directory) / "bundle.bin"
+        fixture.write_bytes(b"v15-local-bundle-fixture\x00\x01")
+        digest = hashlib.sha256(fixture.read_bytes()).digest()
+        checkpoint = {"bundle_path": str(fixture), "bundle_bytes": fixture.stat().st_size, "bundle_sha256": digest.hex(), "bundle_sha256_base64": base64.b64encode(digest).decode("ascii")}
+        assert checkpoint["bundle_bytes"] == len(fixture.read_bytes())
+        assert checkpoint["bundle_sha256"] == hashlib.sha256(Path(checkpoint["bundle_path"]).read_bytes()).hexdigest()
+        assert contract["upload"]["body"] == "checkpoint.bundle_path"
+        assert contract["upload"]["checksum_sha256"] == "base64(raw_sha256(file_bytes(checkpoint.bundle_path)))"
+        assert base64.b64encode(bytes.fromhex(checkpoint["bundle_sha256"])).decode("ascii") == checkpoint["bundle_sha256_base64"]
+        missing = dict(checkpoint)
+        del missing["bundle_path"]
+        assert "bundle_path" not in missing
+        assert contract["upload"]["content_length"] == "checkpoint.bundle_bytes"
+        assert contract["bucket"]["readback_before_upload_or_presign"]["before_transfer_upload"]["ListObjectsV2"]["count"] == 0
+        assert contract["bucket"]["readback_before_upload_or_presign"]["before_transfer_get"]["ListObjectsV2"]["count"] == 1
+        assert contract["bucket"]["readback_before_upload_or_presign"]["before_evidence_put"]["ListObjectsV2"]["count"] == 0
+        assert contract["evidence_return"]["head_before_presign"]["http_status"] == 404
+        assert contract["presigned_get"]["url_storage_forbidden"] == ["argument", "environment", "disk", "history", "log", "checkpoint", "report"]
