@@ -9,11 +9,11 @@ from tempfile import TemporaryDirectory
 
 REPO_ROOT = Path(os.environ.get("CONTRACT_REPO_ROOT", str(Path(__file__).resolve().parents[3]))).resolve()
 DOCS_ROOT = REPO_ROOT / "docs"
-RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v15")
+RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v16")
 RELEASE_NUMBER = RELEASE_GENERATION[1:]
 
 
-def test_v15_transfer_contract_is_exact_and_stateful() -> None:
+def test_v16_transfer_contract_is_exact_and_stateful() -> None:
     contract = json.loads((DOCS_ROOT / f"SUPER1_PRIVATE_S3_TRANSFER_V{RELEASE_NUMBER}.json").read_text(encoding="utf-8"))
     expected = {
         "schema_version": 1,
@@ -143,7 +143,7 @@ def test_v15_transfer_contract_is_exact_and_stateful() -> None:
 
     with TemporaryDirectory(prefix="otobt-transfer-contract-") as directory:
         fixture = Path(directory) / "bundle.bin"
-        fixture.write_bytes(b"v15-local-bundle-fixture\x00\x01")
+        fixture.write_bytes(b"v16-local-bundle-fixture\x00\x01")
         digest = hashlib.sha256(fixture.read_bytes()).digest()
         checkpoint = {"bundle_path": str(fixture), "bundle_bytes": fixture.stat().st_size, "bundle_sha256": digest.hex(), "bundle_sha256_base64": base64.b64encode(digest).decode("ascii")}
         assert checkpoint["bundle_bytes"] == len(fixture.read_bytes())

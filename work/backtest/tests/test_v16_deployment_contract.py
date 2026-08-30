@@ -8,7 +8,7 @@ from powershell_contract import facts, powershell_ast, powershell_harness
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_BASE_ROOT = Path(os.environ.get("CONTRACT_BASE_ROOT", str(ROOT))).resolve()
 CONTRACT_REPO_ROOT = Path(os.environ.get("CONTRACT_REPO_ROOT", str(ROOT.parents[1]))).resolve()
-RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v15")
+RELEASE_GENERATION = os.environ.get("CONTRACT_RELEASE_GENERATION", "v16")
 RELEASE_NUMBER = RELEASE_GENERATION[1:]
 DEPLOY = CONTRACT_BASE_ROOT / "deploy"
 
@@ -180,7 +180,7 @@ def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
     assert "main_task" in conditions
 
 
-def test_builder_and_integrity_use_v15_baselines() -> None:
+def test_builder_and_integrity_use_v16_baselines() -> None:
     builder = ast("build_signed_windows_release.ps1")
     integrity = ast("release_integrity.ps1")
     builder_text = "\n".join(item["text"] for item in builder["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in builder["facts"] if item["kind"] == "assignment")
@@ -188,10 +188,10 @@ def test_builder_and_integrity_use_v15_baselines() -> None:
     assert f"-{RELEASE_GENERATION}" in builder_text
     assert f"test_{RELEASE_GENERATION}_deployment_contract.py" in builder_text
     assert "$passedCount" in builder_text and "$artifactPassedCount" in builder_text
-    assert "267" in integrity_text and "138" in integrity_text
+    assert "268" in integrity_text and "139" in integrity_text
 
 
-def test_builder_uses_only_v15_default() -> None:
+def test_builder_uses_only_v16_default() -> None:
     text = "\n".join(item["text"] for item in commands("build_signed_windows_release.ps1")) + "\n" + "\n".join(item["right_text"] for item in facts(DEPLOY / "build_signed_windows_release.ps1", "assignment"))
     assert all(f"-v{version}" not in text for version in (7, 8, 9, 10, 11, 12, 13, 14) if f"v{version}" != RELEASE_GENERATION)
 
@@ -223,17 +223,17 @@ def test_release_integrity_requires_provenance_and_normalized_manifest_paths() -
     artifact_validator = next(item for item in facts(path, "function") if item["name"] == "Assert-ReleaseArtifactTestFiles")
     assert "RequireProvenance" in verifier["extent_text"]
     assert "files" in {item["member"] for item in facts(path, "member")}
-    assert "test_v15_deployment_contract.py" in artifact_validator["extent_text"]
+    assert "test_v16_deployment_contract.py" in artifact_validator["extent_text"]
     assert any(item["name"] == "Assert-ReleaseArtifactTestFiles" and item["scope"] == "function:Assert-SignedReleaseArchive" for item in facts(path, "command"))
-    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py')}"
+    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}"
     cases = [
         (correct, 0),
         ("@{}", 1),
         ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py','extra.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py','test_v15_deployment_contract.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','TEST_V15_DEPLOYMENT_CONTRACT.PY')}", 1),
-        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v15_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','extra.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','test_v16_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','TEST_V16_DEPLOYMENT_CONTRACT.PY')}", 1),
+        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}", 1),
     ]
     script = "function Assert-ReleaseArtifactTestFiles" + artifact_validator["extent_text"].split("function Assert-ReleaseArtifactTestFiles", 1)[1] + "\n"
     script += "function Invoke-ArtifactCase([object]$m){try{Assert-ReleaseArtifactTestFiles -Manifest $m; return 0}catch{return 1}}\n"
@@ -391,3 +391,144 @@ def test_contract_validators_reject_all_nonexecuting_spoof_fixtures() -> None:
     assert "ContractTestOnly" not in smoke_params["params"]
     params = next(item for item in facts_for_fixture["facts"] if item["kind"] == "param_block")
     assert "ContractTestOnly" in params["params"]
+
+
+def test_probe_control_acl_contract_is_ast_bound_to_task_runner_sid() -> None:
+    def exact_call(nodes: dict, name: str, args: list[str], scope: str = "top-level") -> dict:
+        matches = [
+            item
+            for item in nodes["facts"]
+            if item["kind"] == "command"
+            and item["name"] == name
+            and item["scope"] == scope
+            and item["args"] == args
+            and not item["unreachable"]
+        ]
+        assert len(matches) == 1, (name, args, scope, matches)
+        return matches[0]
+
+    def assignment_binds_call(nodes: dict, left: str, call: dict) -> None:
+        matches = [
+            item
+            for item in nodes["facts"]
+            if item["kind"] == "assignment"
+            and item["left"] == left
+            and item["start"] <= call["start"] <= item["end"]
+        ]
+        assert len(matches) == 1, (left, call, matches)
+
+    def bound_task_runner_call(nodes: dict, args: list[str], runner_name: str) -> dict:
+        calls = [
+            item
+            for item in nodes["facts"]
+            if item["kind"] == "command"
+            and item["name"] == "Assert-Super1SecureTaskBindings"
+            and item["scope"] == "top-level"
+            and item["args"] == args
+            and not item["unreachable"]
+        ]
+        bound = [
+            call
+            for call in calls
+            if any(
+                item["kind"] == "assignment"
+                and item["left"] == runner_name
+                and item["start"] <= call["start"] <= item["end"]
+                for item in nodes["facts"]
+            )
+        ]
+        assert len(bound) == 1, (args, runner_name, calls, bound)
+        assignment_binds_call(nodes, runner_name, bound[0])
+        return bound[0]
+
+    smoke = ast("run_super1_demo_smoke_windows.ps1")
+    bound_task_runner_call(
+        smoke,
+        ["-Root", "$Root", "-MainTask", "$MainTask", "-WatchdogTask", "$WatchdogTask"],
+        "$RunnerSid",
+    )
+    exact_call(smoke, "Assert-Super1SecureDirectoryAcl", ["-Path", "$Archive"])
+    exact_call(
+        smoke,
+        "Assert-Super1SecureDirectoryAcl",
+        ["-Path", "$Control", "-RunnerSid", "$RunnerSid"],
+    )
+    control_calls = [
+        item
+        for item in smoke["facts"]
+        if item["kind"] == "command"
+        and item["name"] == "Assert-Super1SecureDirectoryAcl"
+        and item["args"][:2] == ["-Path", "$Control"]
+        and not item["unreachable"]
+    ]
+    assert all("-RunnerRights" not in item["args"] and "Modify" not in item["args"] for item in control_calls)
+
+    for script, binding_args, runner_name in (
+        (
+            "check_super1_flat_windows.ps1",
+            ["-Root", "$Root", "-MainTask", "$Task", "-WatchdogTask", "$WatchdogTask"],
+            "$runnerSid",
+        ),
+        (
+            "rollover_super1_campaign_windows.ps1",
+            ["-Root", "$Root", "-MainTask", "$MainTask", "-WatchdogTask", "$WatchdogTask"],
+            "$runnerSid",
+        ),
+    ):
+        nodes = ast(script)
+        bound_task_runner_call(nodes, binding_args, runner_name)
+
+    flat = ast("check_super1_flat_windows.ps1")
+    exact_call(flat, "Assert-Super1SecureDirectoryAcl", ["-Path", "$ArchiveRoot"])
+    exact_call(flat, "Assert-Super1SecureDirectoryAcl", ["-Path", "$ProbeControl", "-RunnerSid", "$runnerSid"])
+    rollover = ast("rollover_super1_campaign_windows.ps1")
+    exact_call(rollover, "Assert-Super1SecureDirectoryAcl", ["-Path", "$ArchiveRoot"])
+    exact_call(rollover, "Assert-Super1SecureDirectoryAcl", ["-Path", "$ProbeControl", "-RunnerSid", "$runnerSid"])
+    runtime = ast("run_super1_windows.ps1")
+    exact_call(runtime, "Assert-Super1SecureDirectoryAcl", ["-Path", "$ProbeControl", "-RunnerSid", "$RunnerSid"])
+
+    upgrader = ast("upgrade_super1_signed_app_windows.ps1")
+    exact_call(upgrader, "Initialize-Super1ProbeControl", ["-Path", "$ProbeControl", "-RunnerSid", "$runnerSid"])
+    exact_call(
+        upgrader,
+        "Protect-Super1RuntimeConfigFiles",
+        ["-Paths", "@($ServerConfigPath, $PasswordConfigPath)", "-RunnerSid", "$runnerSid"],
+    )
+    exact_call(
+        upgrader,
+        "Protect-Super1TerminalRuntime",
+        [
+            "-PointerPath",
+            "$TerminalPointer",
+            "-ExpectedRoot",
+            "$TerminalRoot",
+            "-ExpectedSha256",
+            "$ExpectedTerminalSha256",
+            "-RunnerSid",
+            "$runnerSid",
+            "-CallerSid",
+            "$callerSid",
+        ],
+    )
+    exact_call(
+        upgrader,
+        "Set-ExactSuper1DirectoryAcl",
+        ["-Path", "$Path", "-RightsBySid", "$rights"],
+        "function:Initialize-Super1ProbeControl",
+    )
+    exact_call(
+        upgrader,
+        "Assert-ExactSuper1DirectoryAcl",
+        ["-Path", "$Path", "-RightsBySid", "$rights"],
+        "function:Initialize-Super1ProbeControl",
+    )
+    runtime_config_calls = [
+        item
+        for item in upgrader["facts"]
+        if item["kind"] == "command"
+        and item["name"] in {"Set-ExactSuper1FileAcl", "Assert-ExactSuper1FileAcl"}
+        and item["scope"] == "function:Protect-Super1RuntimeConfigFiles"
+        and not item["unreachable"]
+    ]
+    assert [item["name"] for item in runtime_config_calls] == ["Set-ExactSuper1FileAcl", "Assert-ExactSuper1FileAcl"]
+    assert all(item["args"] == ["-Path", "$path", "-RightsBySid", "$rights"] for item in runtime_config_calls)

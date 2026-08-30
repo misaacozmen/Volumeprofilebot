@@ -120,7 +120,7 @@ try {
     $State = Join-Path $Root "state"; $Archive = Join-Path $Root "archive"; $Control = Join-Path $Root "probe-control"; $launcher = Join-Path $Deploy "run_super1_windows.ps1"
     $runId = [Guid]::NewGuid().ToString("N"); $nonce = [Guid]::NewGuid().ToString("N"); $transaction = Join-Path $Archive ("readiness-" + $runId); $output = Join-Path $transaction "output"; $requestPath = Join-Path $transaction "request.json"; $resultPath = Join-Path $output "result.json"; $producerPath = Join-Path $output "producer.json"; $activeRequest = Join-Path $Control "active.json"
     $mainXml = Get-Super1SecureTaskXml -TaskName $MainTask; $watchdogXml = Get-Super1SecureTaskXml -TaskName $WatchdogTask; $runtimeReady = $true
-    Assert-Super1SecureDirectoryAcl -Path $Archive; Assert-Super1SecureDirectoryAcl -Path $Control
+    Assert-Super1SecureDirectoryAcl -Path $Archive; Assert-Super1SecureDirectoryAcl -Path $Control -RunnerSid $RunnerSid
     New-Super1SecureDirectory -Path $transaction -RunnerSid $RunnerSid | Out-Null; New-Super1SecureDirectory -Path $output -RunnerSid $RunnerSid -RunnerRights ([Security.AccessControl.FileSystemRights]::Modify) | Out-Null
     $mainBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "main.xml") -Content ($mainXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $mainBackup.lock.Dispose()
     $watchdogBackup = New-Super1SecureLockedFile -Path (Join-Path $transaction "watchdog.xml") -Content ($watchdogXml + [Environment]::NewLine) -RunnerSid $RunnerSid; $watchdogBackup.lock.Dispose()
