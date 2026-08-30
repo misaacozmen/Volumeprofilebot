@@ -1,4 +1,4 @@
-# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v15
+# Canlı Operasyonlar ve Rollout Prosedürü (Windows / Super1) v16
 
 > **ÖNEMLİ:** Bu belge, Windows ve Super1 üretim ortamı için **tek yetkili operasyonel runbook**'tur. Burada belirtilen sıra dışındaki hiçbir manuel hotfix, doğrudan betik kopyalama veya geçersiz prosedür kabul edilmez.
 
@@ -28,11 +28,11 @@ Rollout işlemi yalnızca aşağıdaki fail-closed sıra ile gerçekleştirilir:
 [1. Signed Staging] ➔ [2. Signed Upgrade] ➔ [3. Flat Check] ➔ [4. Sealed Rollover] ➔ [5. Demo Smoke]
 ```
 
-### Tek Seferlik Private S3 Transferi (v15)
+### Tek Seferlik Private S3 Transferi (v16)
 
-Normatif makine sözleşmesi: `docs/SUPER1_PRIVATE_S3_TRANSFER_V15.json`.
+Normatif makine sözleşmesi: `docs/SUPER1_PRIVATE_S3_TRANSFER_V16.json`.
 
-Transfer yalnız `eu-central-1` bölgesinde, `otobacktest-transfer-<12_DIGIT_ACCOUNT_ID>-<V15_SHA12>` adlı geçici private bucket üzerinden yapılır. BucketOwnerEnforced, ACL disabled, Block Public Access dört ayarı açık, versioning disabled ve varsayılan şifreleme SSE-S3 olmalıdır. Bucket policy, public ACL, public URL ve static website yasaktır. Bucket içinde yalnız tek v15 transfer bundle nesnesi bulunabilir.
+Transfer yalnız `eu-central-1` bölgesinde, `otobacktest-transfer-<12_DIGIT_ACCOUNT_ID>-<V16_SHA12>` adlı geçici private bucket üzerinden yapılır. BucketOwnerEnforced, ACL disabled, Block Public Access dört ayarı açık, versioning disabled ve varsayılan şifreleme SSE-S3 olmalıdır. Bucket policy, public ACL, public URL ve static website yasaktır. Bucket içinde yalnız tek v16 transfer bundle nesnesi bulunabilir.
 
 Presigned GET ve evidence için presigned PUT süresi 900 saniyedir. GET URL bearer secret’tır; checkpoint, log veya rapora yazılmaz. Remote URL `Read-Host` ile alınır; `PSReadLine` kaldırılır, işlem bitince URL değişkeni ve clipboard temizlenir.
 

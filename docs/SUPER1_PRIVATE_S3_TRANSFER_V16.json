@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_id": "SUPER1_PRIVATE_S3_TRANSFER",
-  "release_generation": "v15",
+  "release_generation": "v16",
   "region": "eu-central-1",
   "identity": {
     "account_id_source": "STS.GetCallerIdentity.Account",

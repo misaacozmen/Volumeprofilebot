@@ -20,7 +20,7 @@ function Assert-ReleaseArtifactTestFiles {
         "test_xm_mt5_forward.py",
         "test_super1_xm_forward.py",
         "test_check_mt5_flat.py",
-        "test_v15_deployment_contract.py"
+        "test_v16_deployment_contract.py"
     )
     $propertyNames = @($Manifest.PSObject.Properties | ForEach-Object Name)
     if ($propertyNames -notcontains "artifact_test_files") {
@@ -138,10 +138,10 @@ function Assert-SignedReleaseArchive {
             [bool]$manifest.git_dirty -ne $false -or
             [string]$manifest.python_version -notmatch '^3\.11' -or
             [bool]$manifest.pytest_passed -ne $true -or
-            [int]$manifest.pytest_passed_count -ne 267 -or
+            [int]$manifest.pytest_passed_count -ne 268 -or
             [bool]$manifest.artifact_pytest_passed -ne $true -or
             $null -eq $manifest.artifact_pytest_count -or
-            [int]$manifest.artifact_pytest_count -ne 138 -or
+            [int]$manifest.artifact_pytest_count -ne 139 -or
             $null -eq $manifest.files -or @($manifest.files).Count -eq 0) {
             throw "Release manifest provenance is incomplete or below the required test baseline."
         }

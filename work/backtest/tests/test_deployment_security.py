@@ -602,8 +602,8 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert "Release build requires CPython 3.11" in source
     assert '$pytestCmd = "$Python -m pytest $SourceRoot"' in source
     assert "Release build aborted: pytest test suite failed" in source
-    assert "$passedCount -ne 267" in source
-    assert "must equal 267" in source
+    assert "$passedCount -ne 268" in source
+    assert "must equal 268" in source
     assert "deploy/stage_signed_upgrader_windows.ps1" in source
     for key in (
         "release_id",
