@@ -1,0 +1,4 @@
+# Preserve the frozen V16 source/report hashes across Windows checkouts.
+20260830/v16-audit/operator/*.ps1 -text
+20260831/v16-day-close/V16_DAY_CLOSE_20260831.md -text
+20260831/v16-day-close/today_operator_validation/file_hash_manifest.json -text

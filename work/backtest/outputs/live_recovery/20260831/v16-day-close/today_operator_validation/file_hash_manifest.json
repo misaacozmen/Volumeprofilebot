@@ -1,0 +1,15 @@
+{
+  "scope": "today_operator_validation",
+  "source_operator_directory": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi\\work\\backtest\\outputs\\live_recovery\\20260830\\v16-audit\\operator",
+  "files": [
+    {"path":"v16_operator_guard.ps1","bytes":9011,"sha256":"8bf26c052cc59d77fb768aad8e54c254550e38f9d894ef03e34ed6afb71491c8"},
+    {"path":"v16_child_executor.ps1","bytes":9993,"sha256":"e087abf1bdd341715b8f6ab4d332635d39aeec139f8266fd29a4dd4f9f79f1f5"},
+    {"path":"v16_operation_adapters.ps1","bytes":16804,"sha256":"237b69ca1b396b4f80d3c4a4aaf5317ec953c23dd011f17f86875cf3c31f68cf"},
+    {"path":"v16_recovery_controller.ps1","bytes":51364,"sha256":"d8b7c1bb41577d0025ca25029f0af1829693041d1ddd038fdc606437e8d6d351"},
+    {"path":"test_v16_operator.ps1","bytes":6670,"sha256":"b519171e0b701529bbf7620f77808b2079fbc319c8dfdc67c78eda6a375dd082"},
+    {"path":"test_v16_recovery_controller.ps1","bytes":19534,"sha256":"f86878f1a75fc593ecd3730e4fbd6a5b6621bcd6f3e4b0fed6d3b30b66de0f91"},
+    {"path":"v16_controller_clean_process_e2e.ps1","bytes":8554,"sha256":"193471b6f11d603c8016c3ea4ec2a6f79e308675c340a2ea54206c1a245d6024"}
+  ],
+  "self_hash": "NOT_APPLICABLE_SELF_REFERENTIAL_MANIFEST",
+  "verification_status": "LOCAL_FREEZE_RECORDED_SERVER_MATCH_NOT_VERIFIED"
+}
