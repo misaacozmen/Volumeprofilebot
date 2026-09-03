@@ -1306,11 +1306,14 @@ def place_candidate(client, output_root, decision=None, reward=2.0):
     )
 
 
-def claim_intent_in_process(database_path: str, start_event: object, results: object) -> None:
+def claim_intent_in_process(output_root_str: str, start_event: object, results: object) -> None:
     start_event.wait()
-    connection = sqlite3.connect(database_path, timeout=10.0, isolation_level=None)
+    output_root = Path(output_root_str)
+    client = object.__new__(MODULE.XmMt5DemoOrderClient)
+    client._initialize_order_db(output_root)
+    connection = sqlite3.connect(client._order_db(output_root), timeout=30.0, isolation_level=None)
     try:
-        connection.execute("PRAGMA busy_timeout = 10000")
+        connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("BEGIN IMMEDIATE")
         inserted = connection.execute(
             "INSERT OR IGNORE INTO order_intents "
@@ -1425,7 +1428,7 @@ def test_final_guard_expiry_after_send_arm_is_terminal_without_sdk_call(tmp_path
     client = demo_client(mt5)
     opened = pd.Timestamp("2026-07-29T14:28:00Z")
     expired = pd.Timestamp("2026-07-29T14:31:00Z")
-    guard_times = iter([opened, opened, expired])
+    guard_times = iter([opened, expired])
     monkeypatch.setattr(MODULE.core, "utc_now", lambda: opened)
 
     result = client._place_candidate(
@@ -1447,6 +1450,76 @@ def test_final_guard_expiry_after_send_arm_is_terminal_without_sdk_call(tmp_path
     assert result["state"] == "WINDOW_EXPIRED_NO_SEND"
     assert mt5.pending_send_count == 0
     assert client._intent_state(tmp_path, "order-1")["status"] == "WINDOW_EXPIRED"
+
+
+def test_check_passed_crash_is_retried_on_restart(tmp_path, monkeypatch) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    original_arm = MODULE.XmMt5DemoOrderClient._arm_send
+
+    def crash_after_check(*args, **kwargs):
+        raise RuntimeError("crash after CHECK_PASSED")
+
+    monkeypatch.setattr(MODULE.XmMt5DemoOrderClient, "_arm_send", crash_after_check)
+    with pytest.raises(RuntimeError, match="crash after CHECK_PASSED"):
+        place_candidate(client, tmp_path)
+
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "INTENT"
+    assert [event["event"] for event in client._events(tmp_path)] == [
+        "INTENT", "CHECK_PASSED"
+    ]
+
+    monkeypatch.setattr(MODULE.XmMt5DemoOrderClient, "_arm_send", original_arm)
+    result = place_candidate(demo_client(mt5), tmp_path)
+    assert result["state"] == "SUBMITTED"
+    assert mt5.pending_send_count == 1
+
+
+def test_permission_drop_cannot_arm_and_recovers_without_duplicate_send(tmp_path) -> None:
+    class DropPermissionMt5(FakeOrderMt5):
+        def __init__(self):
+            super().__init__()
+            self.drop_next = True
+
+        def order_check(self, request):
+            if self.drop_next:
+                self.terminal_trade_allowed = False
+                self.drop_next = False
+            return super().order_check(request)
+
+    mt5 = DropPermissionMt5()
+    client = demo_client(mt5)
+
+    blocked = place_candidate(client, tmp_path)
+
+    assert blocked["state"] == "ORDER_PERMISSION_DISABLED_NO_SEND"
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "INTENT"
+    assert not any(event["event"] == "SEND_ARMED" for event in client._events(tmp_path))
+
+    mt5.terminal_trade_allowed = True
+    result = place_candidate(client, tmp_path)
+    assert result["state"] == "SUBMITTED"
+    assert mt5.pending_send_count == 1
+
+
+def test_send_armed_crash_is_reconciled_without_resend(tmp_path, monkeypatch) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    original_send = mt5.order_send
+    monkeypatch.setattr(mt5, "order_send", lambda request: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    with pytest.raises(KeyboardInterrupt):
+        place_candidate(client, tmp_path)
+
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "SEND_ARMED"
+
+    monkeypatch.setattr(mt5, "order_send", original_send)
+    result = place_candidate(demo_client(mt5), tmp_path)
+    assert result["state"] == "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED"
+    assert mt5.pending_send_count == 0
 
 
 def test_sdk_unknown_result_is_persistent_and_never_replayed(tmp_path) -> None:
@@ -3012,6 +3085,73 @@ def test_sqlite_intent_allows_only_one_parallel_send(tmp_path, monkeypatch) -> N
     )
 
 
+@pytest.mark.parametrize("seed_state", ["CHECK_RETRYABLE", "PRE_SEND_DEFERRED"])
+def test_parallel_retryable_lifecycle_states_arm_and_send_once(seed_state, tmp_path, monkeypatch) -> None:
+    class RetryCheckMt5(FakeOrderMt5):
+        def __init__(self):
+            super().__init__()
+            self.check_count = 0
+
+        def order_check(self, request):
+            self.check_count += 1
+            if seed_state == "CHECK_RETRYABLE" and self.check_count == 1:
+                return SimpleNamespace(retcode=10021, comment="No quotes")
+            return super().order_check(request)
+
+    mt5 = RetryCheckMt5()
+    seed_client = demo_client(mt5)
+    if seed_state == "CHECK_RETRYABLE":
+        assert place_candidate(seed_client, tmp_path)["state"] == "CHECK_RETRYABLE_NO_SEND"
+    else:
+        stale = {
+            "date": "2026-07-29",
+            "recorded_at": "2026-07-29T14:25:00Z",
+            "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+        }
+        assert seed_client._place_candidate(
+            tmp_path, order_candidate(), "US100Cash", 2.0, prefix_record=stale,
+            send_now=pd.Timestamp("2026-07-29T14:28:00Z"),
+        )["state"] == "STALE_PREFIX_NO_SEND"
+
+    barrier = threading.Barrier(2)
+    original_state = MODULE.XmMt5DemoOrderClient._intent_state
+
+    def synchronized_state(self, output_root, order_id):
+        state = original_state(self, output_root, order_id)
+        barrier.wait(timeout=5)
+        return state
+
+    monkeypatch.setattr(MODULE.XmMt5DemoOrderClient, "_intent_state", synchronized_state)
+    clients = [demo_client(mt5), demo_client(mt5)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda item: place_candidate(item, tmp_path), clients))
+
+    assert mt5.pending_send_count == 1
+    assert sum(result["state"] == "SUBMITTED" for result in results) == 1
+    assert all(result["state"] == "SUBMITTED" or result["state"].startswith("IDEMPOTENT_") for result in results)
+
+
+def test_sqlite_initializer_is_idempotent_and_verifies_wal_schema(tmp_path) -> None:
+    client = demo_client(FakeOrderMt5())
+
+    first = client._initialize_order_db(tmp_path)
+    second = client._initialize_order_db(tmp_path)
+
+    assert first == {"state": "READY", "journal_mode": "wal", "wrote": True}
+    assert second == {"state": "READY", "journal_mode": "wal", "wrote": False}
+    connection = sqlite3.connect(client._order_db(tmp_path))
+    try:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        for table, columns in MODULE.ORDER_SCHEMA.items():
+            actual = {
+                row[1]
+                for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+            }
+            assert set(columns).issubset(actual)
+    finally:
+        connection.close()
+
+
 def test_cancel_acknowledgement_requires_empty_broker_readback(tmp_path) -> None:
     class StuckOrderMt5(FakeOrderMt5):
         def order_send(self, request):
@@ -3138,15 +3278,13 @@ def test_pending_remove_blocks_unprotected_order_specific_position(tmp_path, req
 
 def test_sqlite_unique_intent_is_process_safe(tmp_path) -> None:
     client = demo_client(FakeOrderMt5())
-    connection = client._order_connection(tmp_path)
-    connection.close()
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     results = context.Queue()
     processes = [
         context.Process(
             target=claim_intent_in_process,
-            args=(str(client._order_db(tmp_path)), start, results),
+            args=(str(tmp_path), start, results),
         )
         for _ in range(2)
     ]

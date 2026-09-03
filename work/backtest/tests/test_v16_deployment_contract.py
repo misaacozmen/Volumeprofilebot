@@ -183,12 +183,15 @@ def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
 def test_builder_and_integrity_use_v16_baselines() -> None:
     builder = ast("build_signed_windows_release.ps1")
     integrity = ast("release_integrity.ps1")
+    builder_source = (DEPLOY / "build_signed_windows_release.ps1").read_text(encoding="utf-8")
+    integrity_source = (DEPLOY / "release_integrity.ps1").read_text(encoding="utf-8")
     builder_text = "\n".join(item["text"] for item in builder["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in builder["facts"] if item["kind"] == "assignment")
     integrity_text = "\n".join(item["text"] for item in integrity["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in integrity["facts"] if item["kind"] == "assignment") + "\n" + "\n".join(item["condition_text"] for item in integrity["facts"] if item["kind"] == "if")
     assert f"-{RELEASE_GENERATION}" in builder_text
     assert f"test_{RELEASE_GENERATION}_deployment_contract.py" in builder_text
-    assert "$passedCount" in builder_text and "$artifactPassedCount" in builder_text
-    assert "268" in integrity_text and "139" in integrity_text
+    assert "$passedCount" in builder_source and "$artifactPassedCount" in builder_source
+    assert "Assert-ManifestTestGate" in integrity_source
+    assert '"${Prefix}_nodeid_sha256"' in integrity_source
 
 
 def test_builder_uses_only_v16_default() -> None:

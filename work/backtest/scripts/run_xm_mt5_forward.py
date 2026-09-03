@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import time
+from contextlib import contextmanager
 from typing import Any
 
 import pandas as pd
@@ -52,6 +54,51 @@ CANCEL_CONTROL_STATES = {
     "CANCEL_ACKNOWLEDGED",
     "CANCEL_UNKNOWN",
     "CANCEL_REJECTED",
+}
+
+
+ORDER_SCHEMA: dict[str, tuple[str, ...]] = {
+    "order_intents": (
+        "order_id",
+        "status",
+        "comment",
+        "request_json",
+        "broker_ticket",
+        "created_at",
+        "updated_at",
+    ),
+    "order_event_outbox": ("sequence", "order_id", "event_json", "delivered_at"),
+    "broker_execution_states": (
+        "order_id",
+        "account_login",
+        "strategy_order_id",
+        "broker_order_ticket",
+        "deal_ticket",
+        "position_id",
+        "state",
+        "requested_volume",
+        "filled_volume",
+        "fill_price",
+        "protection_state",
+        "details_json",
+        "checked_at",
+        "updated_at",
+    ),
+    "strategy_filter_evidence": (
+        "strategy",
+        "order_id",
+        "state",
+        "trade_date",
+        "targeted_cutoff",
+        "full_cutoff",
+        "full_cutoffs_json",
+        "observed_at",
+        "raw_byte_count",
+        "raw_sha256",
+        "filter_evidence_sha256",
+        "created_at",
+        "updated_at",
+    ),
 }
 
 
@@ -380,6 +427,226 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
     def _order_db(output_root: Path) -> Path:
         return output_root / "orders" / "idempotency.sqlite3"
 
+    @staticmethod
+    @contextmanager
+    def _order_schema_lock(lock_path: Path):
+        """Serialize first-use SQLite schema work across threads and processes."""
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        acquired = False
+        deadline = time.monotonic() + 30.0
+        try:
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out acquiring SQLite schema lock: {lock_path}"
+                        )
+                    time.sleep(0.05)
+            yield
+        finally:
+            if acquired:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+    @staticmethod
+    def _order_schema_snapshot(connection: sqlite3.Connection) -> dict[str, set[str]]:
+        snapshot: dict[str, set[str]] = {}
+        for table in ORDER_SCHEMA:
+            rows = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchall()
+            if not rows:
+                snapshot[table] = set()
+                continue
+            snapshot[table] = {
+                str(row[1])
+                for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+            }
+        return snapshot
+
+    def _initialize_order_db(self, output_root: Path) -> dict[str, object]:
+        """Create and validate the order ledger once under a cross-process lock."""
+        path = self._order_db(output_root)
+        lock_path = path.with_name("schema.lock")
+        with self._order_schema_lock(lock_path):
+            connection: sqlite3.Connection | None = None
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+                connection.execute("PRAGMA busy_timeout = 30000")
+                journal_row = connection.execute("PRAGMA journal_mode").fetchone()
+                journal_mode = "" if journal_row is None else str(journal_row[0]).lower()
+                snapshot = self._order_schema_snapshot(connection)
+                complete = all(
+                    set(columns).issubset(snapshot.get(table, set()))
+                    for table, columns in ORDER_SCHEMA.items()
+                )
+                if journal_mode == "wal" and complete:
+                    return {"state": "READY", "journal_mode": journal_mode, "wrote": False}
+
+                enabled = connection.execute("PRAGMA journal_mode=WAL").fetchone()
+                if enabled is None or str(enabled[0]).lower() != "wal":
+                    raise core.CriticalLiveError("SQLite WAL could not be enabled for order ledger.")
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS order_intents (
+                        order_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        comment TEXT NOT NULL,
+                        request_json TEXT,
+                        broker_ticket INTEGER,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS order_event_outbox (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        order_id TEXT NOT NULL,
+                        event_json TEXT NOT NULL,
+                        delivered_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS broker_execution_states (
+                        order_id TEXT PRIMARY KEY,
+                        account_login INTEGER,
+                        strategy_order_id TEXT NOT NULL,
+                        broker_order_ticket INTEGER,
+                        deal_ticket INTEGER,
+                        position_id INTEGER,
+                        state TEXT NOT NULL,
+                        requested_volume REAL,
+                        filled_volume REAL,
+                        fill_price REAL,
+                        protection_state TEXT,
+                        details_json TEXT NOT NULL,
+                        checked_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_filter_evidence (
+                        strategy TEXT NOT NULL,
+                        order_id TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        trade_date TEXT,
+                        targeted_cutoff TEXT,
+                        full_cutoff TEXT,
+                        full_cutoffs_json TEXT,
+                        observed_at TEXT,
+                        raw_byte_count INTEGER NOT NULL,
+                        raw_sha256 TEXT NOT NULL,
+                        filter_evidence_sha256 TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(strategy, order_id)
+                    )
+                    """
+                )
+                # Preserve legacy rows while completing a partially-created table.
+                definitions = {
+                    "order_intents": {
+                        "order_id": "TEXT",
+                        "status": "TEXT",
+                        "comment": "TEXT",
+                        "request_json": "TEXT",
+                        "broker_ticket": "INTEGER",
+                        "created_at": "TEXT",
+                        "updated_at": "TEXT",
+                    },
+                    "order_event_outbox": {
+                        "sequence": "INTEGER",
+                        "order_id": "TEXT",
+                        "event_json": "TEXT",
+                        "delivered_at": "TEXT",
+                    },
+                    "broker_execution_states": {
+                        "order_id": "TEXT",
+                        "account_login": "INTEGER",
+                        "strategy_order_id": "TEXT",
+                        "broker_order_ticket": "INTEGER",
+                        "deal_ticket": "INTEGER",
+                        "position_id": "INTEGER",
+                        "state": "TEXT",
+                        "requested_volume": "REAL",
+                        "filled_volume": "REAL",
+                        "fill_price": "REAL",
+                        "protection_state": "TEXT",
+                        "details_json": "TEXT",
+                        "checked_at": "TEXT",
+                        "updated_at": "TEXT",
+                    },
+                    "strategy_filter_evidence": {
+                        "strategy": "TEXT",
+                        "order_id": "TEXT",
+                        "state": "TEXT",
+                        "trade_date": "TEXT",
+                        "targeted_cutoff": "TEXT",
+                        "full_cutoff": "TEXT",
+                        "full_cutoffs_json": "TEXT",
+                        "observed_at": "TEXT",
+                        "raw_byte_count": "INTEGER",
+                        "raw_sha256": "TEXT",
+                        "filter_evidence_sha256": "TEXT",
+                        "created_at": "TEXT",
+                        "updated_at": "TEXT",
+                    },
+                }
+                snapshot = self._order_schema_snapshot(connection)
+                for table, table_definitions in definitions.items():
+                    for column, definition in table_definitions.items():
+                        if column not in snapshot.get(table, set()):
+                            connection.execute(
+                                f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'
+                            )
+                connection.commit()
+
+                verified_journal = connection.execute("PRAGMA journal_mode").fetchone()
+                verified_mode = "" if verified_journal is None else str(verified_journal[0]).lower()
+                verified_snapshot = self._order_schema_snapshot(connection)
+                if verified_mode != "wal" or any(
+                    set(columns).difference(verified_snapshot.get(table, set()))
+                    for table, columns in ORDER_SCHEMA.items()
+                ):
+                    raise core.CriticalLiveError("SQLite order ledger schema/WAL validation failed.")
+                return {"state": "READY", "journal_mode": verified_mode, "wrote": True}
+            except Exception:
+                if connection is not None and connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+
     def _mt5_collection(self, operation: str, *args: object, **kwargs: object) -> tuple[Any, ...]:
         self._ensure_demo()
         result = getattr(self.mt5, operation)(*args, **kwargs)
@@ -407,57 +674,23 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
     def _order_connection(self, output_root: Path) -> sqlite3.Connection:
         path = self._order_db(output_root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA wal_autocheckpoint=0")
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS order_intents (
-                order_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                comment TEXT NOT NULL,
-                request_json TEXT,
-                broker_ticket INTEGER,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS order_event_outbox (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id TEXT NOT NULL,
-                event_json TEXT NOT NULL,
-                delivered_at TEXT
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS broker_execution_states (
-                order_id TEXT PRIMARY KEY,
-                account_login INTEGER,
-                strategy_order_id TEXT NOT NULL,
-                broker_order_ticket INTEGER,
-                deal_ticket INTEGER,
-                position_id INTEGER,
-                state TEXT NOT NULL,
-                requested_volume REAL,
-                filled_volume REAL,
-                fill_price REAL,
-                protection_state TEXT,
-                details_json TEXT NOT NULL,
-                checked_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        return connection
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("PRAGMA wal_autocheckpoint=0")
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
+
+    def _ready_order_connection(self, output_root: Path) -> sqlite3.Connection:
+        self._initialize_order_db(output_root)
+        return self._order_connection(output_root)
 
     def _drain_order_outbox(self, output_root: Path) -> None:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
@@ -478,7 +711,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             connection.close()
 
     def _intent_state(self, output_root: Path, order_id: str) -> dict[str, Any] | None:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             row = connection.execute(
                 "SELECT status, comment, broker_ticket FROM order_intents WHERE order_id = ?",
@@ -491,7 +724,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return {"status": str(row[0]), "comment": str(row[1]), "broker_ticket": row[2]}
 
     def _intent_request(self, output_root: Path, order_id: str) -> dict[str, Any] | None:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             row = connection.execute(
                 "SELECT request_json FROM order_intents WHERE order_id = ?",
@@ -512,18 +745,29 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         event: dict[str, object],
     ) -> None:
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
-            updated = connection.execute(
-                "UPDATE order_intents SET status = 'INTENT', request_json = ?, updated_at = ? "
-                "WHERE order_id = ? AND status = 'PRE_SEND_DEFERRED'",
-                (core.canonical_json(request), now, order_id),
-            ).rowcount
-            if updated != 1:
+            row = connection.execute(
+                "SELECT status, request_json FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if row is None or str(row[0]) != "PRE_SEND_DEFERRED":
                 raise core.CriticalLiveError(
                     f"{order_id}: PRE_SEND_DEFERRED intent could not be atomically resumed."
                 )
+            stored = None
+            if row[1] is not None:
+                stored = json.loads(str(row[1]))
+            if stored is not None and core.canonical_json(stored) != core.canonical_json(request):
+                raise core.CriticalLiveError(
+                    f"{order_id}: reevaluated request differs from the registered request."
+                )
+            connection.execute(
+                "UPDATE order_intents SET request_json = COALESCE(request_json, ?), updated_at = ? "
+                "WHERE order_id = ? AND status = 'PRE_SEND_DEFERRED'",
+                (core.canonical_json(request), now, order_id),
+            )
             payload = {"recorded_at": now, "magic": self.magic, **event}
             connection.execute(
                 "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
@@ -536,6 +780,159 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         finally:
             connection.close()
         self._drain_order_outbox(output_root)
+
+    @staticmethod
+    def _outbox_event_exists(
+        connection: sqlite3.Connection, order_id: str, event_name: str
+    ) -> bool:
+        for (event_json,) in connection.execute(
+            "SELECT event_json FROM order_event_outbox WHERE order_id = ?",
+            (order_id,),
+        ).fetchall():
+            try:
+                if json.loads(str(event_json)).get("event") == event_name:
+                    return True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return False
+
+    def _record_intent_event(
+        self,
+        output_root: Path,
+        order_id: str,
+        event: dict[str, object],
+        *,
+        request: dict[str, object] | None = None,
+        allowed_statuses: set[str] | None = None,
+    ) -> dict[str, object]:
+        """Append an intent event without changing its durable lifecycle status."""
+        now = core.utc_now().isoformat()
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, request_json FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
+            status = str(row[0])
+            if allowed_statuses is not None and status not in allowed_statuses:
+                connection.commit()
+                return {"status": status, "recorded": False}
+            if request is not None and row[1] is not None:
+                stored = json.loads(str(row[1]))
+                if core.canonical_json(stored) != core.canonical_json(request):
+                    raise core.CriticalLiveError(
+                        f"{order_id}: event request differs from the registered request."
+                    )
+            event_name = str(event.get("event") or "")
+            if not self._outbox_event_exists(connection, order_id, event_name):
+                payload = {"recorded_at": now, "magic": self.magic, **event}
+                connection.execute(
+                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                    (order_id, core.canonical_json(payload)),
+                )
+                recorded = True
+            else:
+                recorded = False
+            connection.commit()
+            result = {"status": status, "recorded": recorded}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        if result["recorded"]:
+            self._drain_order_outbox(output_root)
+        return result
+
+    def _arm_send(
+        self,
+        output_root: Path,
+        order_id: str,
+        request: dict[str, object],
+        event: dict[str, object],
+    ) -> dict[str, object]:
+        """CAS an executable intent to SEND_ARMED before the sole SDK send."""
+        now = core.utc_now().isoformat()
+        allowed = {"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"}
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, request_json FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
+            status = str(row[0])
+            if status not in allowed:
+                connection.commit()
+                return {
+                    "armed": False,
+                    "status": status,
+                    "order_id": order_id,
+                    "reason": "CAS_LOST_OR_INTENT_ALREADY_TERMINAL",
+                }
+            if row[1] is None:
+                raise core.CriticalLiveError(f"{order_id}: registered request is missing.")
+            stored = json.loads(str(row[1]))
+            if core.canonical_json(stored) != core.canonical_json(request):
+                raise core.CriticalLiveError(
+                    f"{order_id}: send request differs from the registered request."
+                )
+            controls = connection.execute(
+                "SELECT order_id, status, comment, broker_ticket FROM order_intents "
+                "WHERE status IN ('CANCEL_ARMED', 'CANCEL_ACKNOWLEDGED', "
+                "'CANCEL_UNKNOWN', 'CANCEL_REJECTED') ORDER BY created_at"
+            ).fetchall()
+            if controls:
+                connection.commit()
+                return {
+                    "armed": False,
+                    "status": status,
+                    "order_id": order_id,
+                    "reason": "A durable cancellation attempt is unresolved.",
+                    "persistent_cancel_controls": [
+                        {
+                            "order_id": str(control[0]),
+                            "status": str(control[1]),
+                            "comment": str(control[2]),
+                            "broker_ticket": control[3],
+                        }
+                        for control in controls
+                    ],
+                }
+            updated = connection.execute(
+                "UPDATE order_intents SET status = 'SEND_ARMED', updated_at = ? "
+                "WHERE order_id = ? AND status IN ('INTENT', 'CHECK_RETRYABLE', 'PRE_SEND_DEFERRED')",
+                (now, order_id),
+            ).rowcount
+            if updated != 1:
+                current = connection.execute(
+                    "SELECT status FROM order_intents WHERE order_id = ?", (order_id,)
+                ).fetchone()
+                connection.commit()
+                return {
+                    "armed": False,
+                    "status": None if current is None else str(current[0]),
+                    "order_id": order_id,
+                    "reason": "CAS_LOST_OR_INTENT_ALREADY_TERMINAL",
+                }
+            if not self._outbox_event_exists(connection, order_id, "SEND_ARMED"):
+                payload = {"recorded_at": now, "magic": self.magic, **event}
+                connection.execute(
+                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                    (order_id, core.canonical_json(payload)),
+                )
+            connection.commit()
+            return {"armed": True, "status": "SEND_ARMED", "order_id": order_id}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _request_from_pending_order(self, order: Any) -> dict[str, object]:
         fields = {
@@ -566,7 +963,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         details: dict[str, object],
     ) -> None:
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute(
                 """
@@ -630,7 +1027,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         event: dict[str, object],
     ) -> dict[str, Any]:
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             inserted = connection.execute(
@@ -672,7 +1069,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         broker_ticket: int | None = None,
     ) -> None:
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             updated = connection.execute(
@@ -706,7 +1103,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         request: dict[str, object] | None = None,
     ) -> None:
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -1216,7 +1613,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         output_root: Path,
         now: pd.Timestamp,
     ) -> list[dict[str, object]]:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             rows = connection.execute(
                 "SELECT order_id, status, comment, request_json, broker_ticket "
@@ -1229,6 +1626,9 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "NOT_EXECUTABLE",
             "CHECK_RETRYABLE",
             "CHECK_REJECTED",
+            "FILTER_BLOCKED",
+            "FILTER_UNRESOLVED_DEFERRED",
+            "FILTER_EXPIRED_NO_SEND",
             "SEND_REJECTED",
             "WINDOW_EXPIRED",
             "WINDOW_NOT_OPEN",
@@ -1345,7 +1745,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return results
 
     def _persistent_cancel_controls(self, output_root: Path) -> list[dict[str, object]]:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             rows = connection.execute(
                 "SELECT order_id, status, comment, broker_ticket FROM order_intents "
@@ -1368,7 +1768,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         self, output_root: Path, order_id: str
     ) -> tuple[int | None, str | None]:
         """Recover a legacy cancellation ticket from immutable outbox evidence."""
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             rows = connection.execute(
                 "SELECT event_json FROM order_event_outbox "
@@ -1408,7 +1808,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         """Atomically record the one permitted REMOVE attempt before SDK I/O."""
         ticket = int(order.ticket)
         comment = str(getattr(order, "comment", ""))
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -1883,7 +2283,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
     def _stored_broker_state(
         self, output_root: Path, order_id: str
     ) -> tuple[str, dict[str, object]] | None:
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             row = connection.execute(
                 "SELECT state, details_json FROM broker_execution_states WHERE order_id = ?",
@@ -2202,6 +2602,18 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         context["expiration"] = int(end.tz_convert("UTC").timestamp())
         return {"state": "ALLOW", **context}
 
+    def _load_prefix_record(self, path: Path) -> tuple[dict[str, Any], bytes]:
+        cached_path = getattr(self, "_prefix_raw_path", None)
+        cached_raw = getattr(self, "_prefix_raw_bytes", None)
+        if cached_path == path and isinstance(cached_raw, bytes):
+            raw = cached_raw
+        else:
+            raw = path.read_bytes()
+        parsed = json.loads(raw.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise core.CriticalLiveError("Executable prefix JSON root must be an object.")
+        return parsed, raw
+
     def _cancel_candidate_pending(
         self,
         output_root: Path,
@@ -2232,12 +2644,13 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         order_id: str,
         comment: str,
         context: dict[str, object],
+        reason_code: str = "STALE_PREFIX",
     ) -> None:
         event = {
             "event": "PRE_SEND_DEFERRED",
             "order_id": order_id,
             "comment": comment,
-            "reason_code": "STALE_PREFIX",
+            "reason_code": reason_code,
             "send_started": False,
             **context,
         }
@@ -2266,6 +2679,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         reward_r: float,
         *,
         prefix_record: dict[str, Any] | None = None,
+        prefix_raw: bytes | None = None,
         send_now: pd.Timestamp | None = None,
     ) -> dict[str, object]:
         order_id = str(decision["order_id"])
@@ -2280,14 +2694,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             return core.utc_now() if send_now is None else send_now
 
         self._drain_order_outbox(output_root)
-
-
-        self._drain_order_outbox(output_root)
         intent = self._intent_state(output_root, order_id)
         events = [item for item in self._events(output_root) if item.get("order_id") == order_id]
-        broker = self._broker_objects(comment)
         retryable_check = False
         retryable_pre_send = False
+        retryable_intent = False
         if intent is not None:
             status = str(intent["status"])
             if status in {"SUBMITTED", "LINKED_EXISTING"}:
@@ -2296,7 +2707,41 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "order_id": order_id,
                     "ticket": intent.get("broker_ticket"),
                 }
-            if broker:
+            if status == "CHECK_RETRYABLE":
+                retryable_check = True
+            elif status == "PRE_SEND_DEFERRED":
+                retryable_pre_send = True
+            elif status == "SEND_ARMED":
+                return {
+                    "state": "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED",
+                    "order_id": order_id,
+                }
+            elif status == "INTENT":
+                retryable_intent = True
+            else:
+                return {
+                    "state": f"IDEMPOTENT_{status}_NO_SEND",
+                    "order_id": order_id,
+                }
+        broker: list[tuple[str, Any]] = []
+        try:
+            broker = self._broker_objects(comment)
+        except BrokerStateUnknownError as exc:
+            deferred_context = {
+                "state": "BROKER_SDK_UNAVAILABLE",
+                "observed_at": guard_now().isoformat(),
+                "reason": str(exc),
+            }
+            self._defer_pre_send(
+                output_root, order_id, comment, deferred_context, "BROKER_SDK_UNAVAILABLE"
+            )
+            return {
+                "state": "PRE_SEND_DEFERRED_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "BROKER_SDK_UNAVAILABLE",
+            }
+        if broker:
+            if intent is not None:
                 ticket = int(getattr(broker[0][1], "ticket", 0) or 0)
                 self._transition_order_intent(
                     output_root,
@@ -2311,21 +2756,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     broker_ticket=ticket or None,
                 )
                 return {"state": "IDEMPOTENT_LINKED_EXISTING", "order_id": order_id}
-            if status == "CHECK_RETRYABLE":
-                retryable_check = True
-            elif status == "PRE_SEND_DEFERRED":
-                retryable_pre_send = True
-            elif status == "SEND_ARMED":
-                return {
-                    "state": "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED",
-                    "order_id": order_id,
-                }
-            else:
-                return {
-                    "state": f"IDEMPOTENT_{status}_NO_SEND",
-                    "order_id": order_id,
-                }
-        if not retryable_check and not retryable_pre_send:
+            if not events:
+                raise core.CriticalLiveError(
+                    f"{order_id}: broker object exists without idempotency ledger."
+                )
+        if not retryable_check and not retryable_pre_send and not retryable_intent:
             submitted = [
                 item
                 for item in events
@@ -2503,7 +2938,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "fresh_cutoff": initial_context.get("fresh_cutoff"),
                 },
             )
-        if not retryable_check and not retryable_pre_send:
+        if not retryable_check and not retryable_pre_send and not retryable_intent:
             claimed = self._claim_order_intent(
                 output_root,
                 order_id,
@@ -2512,26 +2947,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 intent_event,
             )
             if not claimed["claimed"]:
-                broker = self._broker_objects(comment)
-                if broker:
-                    ticket = int(getattr(broker[0][1], "ticket", 0) or 0)
-                    self._transition_order_intent(
-                        output_root,
-                        order_id,
-                        "LINKED_EXISTING",
-                        {
-                            "event": "LINKED_EXISTING",
-                            "order_id": order_id,
-                            "comment": comment,
-                            "broker_kinds": [kind for kind, _ in broker],
-                        },
-                        broker_ticket=ticket or None,
-                    )
-                    return {"state": "IDEMPOTENT_LINKED_EXISTING", "order_id": order_id}
-                return {
-                    "state": f"IDEMPOTENT_{claimed['status']}_NO_SEND",
-                    "order_id": order_id,
-                }
+                if claimed["status"] not in {"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"}:
+                    return {
+                        "state": f"IDEMPOTENT_{claimed['status']}_NO_SEND",
+                        "order_id": order_id,
+                    }
         check_error: str | None = None
         try:
             check = self.mt5.order_check(request)
@@ -2611,72 +3031,28 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 "order_id": order_id,
                 "retcode": check_retcode,
             }
-        send_context = self._candidate_send_context(decision, prefix_record, guard_now())
-        if send_context["state"] == "STALE_PREFIX":
-            self._defer_pre_send(output_root, order_id, comment, send_context)
-            cancelled = self._cancel_candidate_pending(
-                output_root, comment, "STALE_PREFIX", order_id
+        try:
+            permission = self.order_permission_status()
+        except XmMt5Error as exc:
+            deferred_context = {
+                "state": "BROKER_SDK_UNAVAILABLE",
+                "observed_at": guard_now().isoformat(),
+                "reason": str(exc),
+            }
+            self._defer_pre_send(
+                output_root, order_id, comment, deferred_context, "BROKER_SDK_UNAVAILABLE"
             )
             return {
-                "state": "STALE_PREFIX_NO_SEND",
+                "state": "PRE_SEND_DEFERRED_NO_SEND",
                 "order_id": order_id,
-                "reason_code": "STALE_PREFIX",
-                "cancelled_pending": cancelled,
+                "reason_code": "BROKER_SDK_UNAVAILABLE",
             }
-        if send_context["state"] in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN"}:
-            reason_code = str(send_context["state"])
-            self._terminal_no_send(
-                output_root,
-                order_id,
-                comment,
-                reason_code,
-                {
-                    "event": reason_code,
-                    "order_id": order_id,
-                    "comment": comment,
-                    "send_started": False,
-                    **send_context,
-                },
-                request=request,
-            )
-            cancelled = self._cancel_candidate_pending(
-                output_root, comment, reason_code, order_id
-            )
+        if permission["state"] != "READY":
             return {
-                "state": f"{reason_code}_NO_SEND",
+                "state": "ORDER_PERMISSION_DISABLED_NO_SEND",
                 "order_id": order_id,
-                "reason_code": reason_code,
-                "cancelled_pending": cancelled,
+                "permission": permission,
             }
-        if send_context.get("expiration") is not None:
-            request["expiration"] = int(send_context["expiration"])
-        self._transition_order_intent(
-            output_root,
-            order_id,
-            "CHECK_PASSED",
-            {
-                "event": "CHECK_PASSED",
-                "order_id": order_id,
-                "comment": comment,
-                "retcode": check_retcode,
-                "send_guard": send_context,
-            },
-        )
-        self._transition_order_intent(
-            output_root,
-            order_id,
-            "SEND_ARMED",
-            {
-                "event": "SEND_ARMED",
-                "order_id": order_id,
-                "comment": comment,
-                "send_attempted": False,
-                "send_guard": send_context,
-            },
-        )
-        # Permission is checked before the final guard. Once the final guard
-        # allows transmission, no broker/disk operation may intervene.
-        self._require_order_permission()
         persistent_cancel_controls = self._persistent_cancel_controls(output_root)
         if persistent_cancel_controls:
             return {
@@ -2722,10 +3098,76 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 "reason_code": reason_code,
                 "cancelled_pending": cancelled,
             }
-        send_context = final_context
+        if final_context["state"] == "PREFIX_MISSING":
+            self._terminal_no_send(
+                output_root,
+                order_id,
+                comment,
+                "PREFIX_REQUIRED",
+                {
+                    "event": "PREFIX_REQUIRED",
+                    "order_id": order_id,
+                    "comment": comment,
+                    "send_started": False,
+                    **final_context,
+                },
+                request=request,
+            )
+            return {
+                "state": "PREFIX_REQUIRED_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "PREFIX_REQUIRED",
+            }
+        if final_context["state"] != "ALLOW":
+            raise core.CriticalLiveError(
+                f"{order_id}: final send guard returned an unsupported state: {final_context['state']}"
+            )
+        if final_context.get("expiration") is not None:
+            request["expiration"] = int(final_context["expiration"])
         send_started_at = pd.Timestamp(str(final_context["observed_at"]))
+        self._record_intent_event(
+            output_root,
+            order_id,
+            {
+                "event": "CHECK_PASSED",
+                "order_id": order_id,
+                "comment": comment,
+                "retcode": check_retcode,
+                "send_guard": final_context,
+            },
+            request=request,
+            allowed_statuses={"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"},
+        )
+        armed = self._arm_send(
+            output_root,
+            order_id,
+            request,
+            {
+                "event": "SEND_ARMED",
+                "order_id": order_id,
+                "comment": comment,
+                "send_attempted": False,
+                "send_guard": final_context,
+            },
+        )
+        if not armed.get("armed"):
+            if armed.get("persistent_cancel_controls"):
+                return {
+                    "state": "BLOCKED_BY_PERSISTENT_CANCEL_NO_SEND",
+                    "order_id": order_id,
+                    "reason": str(armed.get("reason")),
+                    "persistent_cancel_controls": armed["persistent_cancel_controls"],
+                }
+            status = str(armed.get("status") or "UNKNOWN")
+            return {
+                "state": f"IDEMPOTENT_{status}_NO_SEND",
+                "order_id": order_id,
+            }
+        # SEND_ARMED is the durable last-write-before-send boundary.  Do not
+        # drain the outbox, write files, read the broker, or recalculate time here.
+        send_context = final_context
         try:
-            result = self._order_send_checked(request, permission_checked=True)
+            result = self.mt5.order_send(request)
         except Exception as exc:
             self._transition_order_intent(
                 output_root,
@@ -2837,7 +3279,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         if status not in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN", "PREFIX_REQUIRED"}:
             raise core.CriticalLiveError(f"{order_id}: invalid terminal no-send state {status}.")
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             payload_request = None if request is None else core.canonical_json(request)
@@ -2895,7 +3337,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "comment": str(getattr(order, "comment", "")),
         }
         if order_id is None:
-            connection = self._order_connection(output_root)
+            connection = self._ready_order_connection(output_root)
             try:
                 row = connection.execute(
                     "SELECT order_id FROM order_intents WHERE comment = ? "
@@ -3213,7 +3655,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 "prefix_state": prefix.get("state"),
                 "cancelled": cancelled_before_decision,
             }
-        record = core.read_json(Path(prefix["path"]))
+        record, prefix_raw = self._load_prefix_record(Path(prefix["path"]))
         if record.get("state") == "DATA_INVALID":
             return {
                 "state": "DATA_INVALID_NO_SEND",
@@ -3307,6 +3749,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 str(runtime["legs"][leg_key]["epic"]),
                 float(configs[leg_key].reward_r),
                 prefix_record=record,
+                prefix_raw=prefix_raw,
             )
             results.append(result)
             if result.get("state") in {

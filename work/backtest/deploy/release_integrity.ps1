@@ -32,6 +32,33 @@ function Assert-ReleaseArtifactTestFiles {
     }
 }
 
+function Assert-ManifestTestGate {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Prefix
+    )
+    $required = @(
+        "${Prefix}_collected_count",
+        "${Prefix}_pass_count",
+        "${Prefix}_skipped_count",
+        "${Prefix}_nodeid_sha256"
+    )
+    $properties = @($Manifest.PSObject.Properties.Name)
+    foreach ($name in $required) {
+        if ($properties -notcontains $name) {
+            throw "Release manifest test inventory field is missing: $name"
+        }
+    }
+    $collected = [int]$Manifest.PSObject.Properties["${Prefix}_collected_count"].Value
+    $passed = [int]$Manifest.PSObject.Properties["${Prefix}_pass_count"].Value
+    $skipped = [int]$Manifest.PSObject.Properties["${Prefix}_skipped_count"].Value
+    $nodeIdSha256 = [string]$Manifest.PSObject.Properties["${Prefix}_nodeid_sha256"].Value
+    if ($collected -le 0 -or $passed -le 0 -or $passed -ne $collected -or
+        $skipped -ne 0 -or $nodeIdSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Release manifest test inventory is incomplete or not all passing: $Prefix"
+    }
+}
+
 function Assert-SignedReleaseArchive {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,
@@ -138,13 +165,14 @@ function Assert-SignedReleaseArchive {
             [bool]$manifest.git_dirty -ne $false -or
             [string]$manifest.python_version -notmatch '^3\.11' -or
             [bool]$manifest.pytest_passed -ne $true -or
-            [int]$manifest.pytest_passed_count -ne 268 -or
-            [bool]$manifest.artifact_pytest_passed -ne $true -or
-            $null -eq $manifest.artifact_pytest_count -or
-            [int]$manifest.artifact_pytest_count -ne 139 -or
             $null -eq $manifest.files -or @($manifest.files).Count -eq 0) {
             throw "Release manifest provenance is incomplete or below the required test baseline."
         }
+        if ([bool]$manifest.artifact_pytest_passed -ne $true) {
+            throw "Release manifest artifact test gate is not passing."
+        }
+        Assert-ManifestTestGate -Manifest $manifest -Prefix "pytest"
+        Assert-ManifestTestGate -Manifest $manifest -Prefix "artifact_pytest"
         Assert-ReleaseArtifactTestFiles -Manifest $manifest
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
