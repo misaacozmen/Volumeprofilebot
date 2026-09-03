@@ -42,7 +42,7 @@ def main() -> int:
         for value in args.date:
             trade_date = pd.Timestamp(value).date()
             replay_time = pd.Timestamp(f"{trade_date} 12:00", tz=core.TZ)
-            result = core.run_prefix(args.output_root.resolve(), store, replay_time)
+            result = core.run_prefix(args.output_root.resolve(), store, replay_time, replay_time.tz_convert(core.UTC))
             record = core.read_json(Path(result["path"])) if result.get("path") else {}
             results.append(
                 {

@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from v08_helpers import checkpoint_if_enabled, record_if_enabled
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -185,11 +187,18 @@ def test_mt5_login_total_failure_is_transient_and_redacts_password() -> None:
 def test_weekend_never_creates_an_executable_prefix(tmp_path) -> None:
     now = pd.Timestamp("2026-08-09T14:00:00Z")
 
-    assert MODULE.core.run_prefix(tmp_path, None, now) == {
+    assert MODULE.core.run_prefix(tmp_path, None, now, now) == {
         "state": "OUTSIDE_TRADE_WINDOW",
         "reason": "WEEKEND",
     }
-    assert MODULE.core.finalize_session(tmp_path, None, now) == {
+    assert MODULE.core.finalize_session(
+        tmp_path,
+        None,
+        market_data_asof=now,
+        knowledge_asof=now,
+        finalization_asof=now,
+        fetches={},
+    ) == {
         "state": "NON_TRADING_DAY",
         "reason": "WEEKEND",
     }
@@ -667,19 +676,30 @@ class FakeOrderMt5(FakeTradeMt5):
     TRADE_ACTION_REMOVE = 8
     ORDER_TYPE_BUY_LIMIT = 2
     ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    POSITION_TYPE_BUY = 0
+    POSITION_TYPE_SELL = 1
+    DEAL_ENTRY_IN = 0
+    DEAL_ENTRY_OUT = 1
+    DEAL_REASON_SL = 4
+    DEAL_REASON_TP = 5
     ORDER_TIME_GTC = 0
     ORDER_TIME_SPECIFIED = 2
     ORDER_FILLING_RETURN = 2
     TRADE_RETCODE_PLACED = 10008
     TRADE_RETCODE_DONE = 10009
+    ORDER_STATE_CANCELED = 2
 
     def __init__(self) -> None:
         super().__init__()
         self.pending = []
+        self.history_order = None
         self.pending_send_count = 0
+        self.history_deal_calls = []
 
     def symbol_select(self, symbol, visible):
-        return symbol == "US100Cash" and visible
+        return symbol in {"US100Cash", "US500Cash"} and visible
 
     def symbol_info(self, symbol):
         return SimpleNamespace(
@@ -702,10 +722,22 @@ class FakeOrderMt5(FakeTradeMt5):
                 ticket=12345,
                 magic=request["magic"],
                 comment=request["comment"],
+                symbol=request["symbol"],
+                type=request["type"],
+                volume_initial=request["volume"],
+                volume_current=request["volume"],
+                price_open=request["price"],
+                sl=request["sl"],
+                tp=request["tp"],
+                time_expiration=request["expiration"],
             )
             self.pending = [order]
             return SimpleNamespace(retcode=self.TRADE_RETCODE_PLACED, order=12345, deal=0)
         if request["action"] == self.TRADE_ACTION_REMOVE:
+            if self.pending:
+                history_values = vars(self.pending[0]).copy()
+                history_values["state"] = self.ORDER_STATE_CANCELED
+                self.history_order = SimpleNamespace(**history_values)
             self.pending = []
             return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, order=request["order"], deal=0)
         raise AssertionError("Unexpected fake order action.")
@@ -715,13 +747,20 @@ class FakeOrderMt5(FakeTradeMt5):
             return tuple(self.pending)
         return tuple(item for item in self.pending if item.ticket == ticket)
 
-    def positions_get(self):
+    def positions_get(self, ticket=None):
         return ()
 
-    def history_orders_get(self, start, end):
-        return ()
+    def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+        if self.history_order is None:
+            return ()
+        if ticket is not None and int(ticket) != int(self.history_order.ticket):
+            return ()
+        return (self.history_order,)
 
-    def history_deals_get(self, start, end):
+    def history_deals_get(self, start=None, end=None, *, ticket=None, position=None):
+        self.history_deal_calls.append(
+            {"start": start, "end": end, "ticket": ticket, "position": position}
+        )
         return ()
 
 
@@ -1152,7 +1191,13 @@ def test_smoke_order_uses_minimum_demo_volume_and_is_immediately_cancelled(tmp_p
         __import__("json").loads(line)
         for line in (tmp_path / "orders" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert [event["event"] for event in events] == ["SMOKE_SUBMITTED", "CANCELLED"]
+    assert [event["event"] for event in events] == [
+        "SMOKE_SUBMITTED",
+        "CANCEL_ARMED",
+        "CANCEL_ACKNOWLEDGED",
+        "BROKER_STATE",
+        "CANCEL_RESOLVED",
+    ]
 
 
 def test_pending_request_aligns_all_prices_to_broker_tick_size() -> None:
@@ -1241,6 +1286,26 @@ def order_candidate() -> dict[str, object]:
     }
 
 
+def place_candidate(client, output_root, decision=None, reward=2.0):
+    now = pd.Timestamp("2026-07-29T14:28:00Z")
+    prefix = {
+        "date": "2026-07-29",
+        "recorded_at": now.isoformat(),
+        "cutoffs": {
+            "nq": "2026-07-29T10:27:00-04:00",
+            "spx": "2026-07-29T10:25:00-04:00",
+        },
+    }
+    return client._place_candidate(
+        output_root,
+        order_candidate() if decision is None else decision,
+        "US100Cash",
+        reward,
+        prefix_record=prefix,
+        send_now=now,
+    )
+
+
 def claim_intent_in_process(database_path: str, start_event: object, results: object) -> None:
     start_event.wait()
     connection = sqlite3.connect(database_path, timeout=10.0, isolation_level=None)
@@ -1261,8 +1326,8 @@ def claim_intent_in_process(database_path: str, start_event: object, results: ob
 def test_duplicate_candidate_is_submitted_only_once(tmp_path) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
-    first = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
-    second = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    first = place_candidate(client, tmp_path)
+    second = place_candidate(client, tmp_path)
     assert first["state"] == "SUBMITTED"
     assert second["state"] == "IDEMPOTENT_ALREADY_SUBMITTED"
     assert mt5.pending_send_count == 1
@@ -1276,8 +1341,8 @@ def test_stale_candidate_is_nonfatal_no_send_and_idempotent(tmp_path) -> None:
     mt5 = CrossedQuoteMt5()
     client = demo_client(mt5)
 
-    first = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
-    second = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    first = place_candidate(client, tmp_path)
+    second = place_candidate(client, tmp_path)
 
     assert first == {
         "state": "CANDIDATE_NOT_EXECUTABLE_NO_SEND",
@@ -1316,8 +1381,8 @@ def test_entry_distance_wait_retries_then_submits_once(tmp_path) -> None:
     mt5 = MovingQuoteMt5()
     client = demo_client(mt5)
 
-    first = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
-    second = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    first = place_candidate(client, tmp_path)
+    second = place_candidate(client, tmp_path)
 
     assert first == {
         "state": "ENTRY_DISTANCE_WAIT_NO_SEND",
@@ -1326,11 +1391,241 @@ def test_entry_distance_wait_retries_then_submits_once(tmp_path) -> None:
     }
     assert second["state"] == "SUBMITTED"
     assert mt5.pending_send_count == 1
+
+
+def test_order_check_exception_is_persistent_retryable_without_send(tmp_path) -> None:
+    class BrokenCheckMt5(FakeOrderMt5):
+        def order_check(self, request):
+            raise RuntimeError("check transport failed")
+
+    mt5 = BrokenCheckMt5()
+    client = demo_client(mt5)
+
+    result = place_candidate(client, tmp_path)
+
+    assert result["state"] == "CHECK_RETRYABLE_NO_SEND"
+    assert result["retcode"] is None
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "CHECK_RETRYABLE"
+
+
+def test_missing_prefix_is_fail_closed_before_sdk_send(tmp_path) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+
+    result = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+
+    assert result["state"] == "PREFIX_REQUIRED_NO_SEND"
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "PREFIX_REQUIRED"
+
+
+def test_final_guard_expiry_after_send_arm_is_terminal_without_sdk_call(tmp_path, monkeypatch) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    opened = pd.Timestamp("2026-07-29T14:28:00Z")
+    expired = pd.Timestamp("2026-07-29T14:31:00Z")
+    guard_times = iter([opened, opened, expired])
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: opened)
+
+    result = client._place_candidate(
+        tmp_path,
+        order_candidate(),
+        "US100Cash",
+        2.0,
+        prefix_record={
+            "date": "2026-07-29",
+            "recorded_at": opened.isoformat(),
+            "cutoffs": {
+                "nq": "2026-07-29T10:27:00-04:00",
+                "spx": "2026-07-29T10:25:00-04:00",
+            },
+        },
+        send_now=lambda: next(guard_times),
+    )
+
+    assert result["state"] == "WINDOW_EXPIRED_NO_SEND"
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "WINDOW_EXPIRED"
+
+
+def test_sdk_unknown_result_is_persistent_and_never_replayed(tmp_path) -> None:
+    class UnknownSendMt5(FakeOrderMt5):
+        def order_send(self, request):
+            if request["action"] == self.TRADE_ACTION_PENDING:
+                self.pending_send_count += 1
+                return None
+            return super().order_send(request)
+
+    mt5 = UnknownSendMt5()
+    client = demo_client(mt5)
+
+    first = place_candidate(client, tmp_path)
+    second = place_candidate(client, tmp_path)
+
+    assert first["state"] == "SEND_UNKNOWN_NO_SEND"
+    assert second["state"] == "IDEMPOTENT_SEND_UNKNOWN_NO_SEND"
+    assert mt5.pending_send_count == 1
     assert [item["event"] for item in client._events(tmp_path)] == [
         "INTENT",
         "CHECK_PASSED",
-        "SUBMITTED",
+        "SEND_ARMED",
+        "SEND_UNKNOWN",
     ]
+
+
+@pytest.mark.parametrize("mode", ["none", "timeout", "connection", "partial"])
+def test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle(
+    tmp_path,
+    mode,
+    monkeypatch,
+    request,
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    class UncertainSendMt5(FakeOrderMt5):
+        TRADE_RETCODE_DONE_PARTIAL = 10010
+
+        def __init__(self):
+            super().__init__()
+            self.hidden = True
+            self.deals = []
+            self.history_order = None
+
+        def orders_get(self, ticket=None):
+            if self.hidden:
+                return ()
+            return super().orders_get(ticket=ticket)
+
+        def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+            if self.hidden or self.history_order is None:
+                return ()
+            order = self.history_order
+            if ticket is not None and int(ticket) != int(order.ticket):
+                return ()
+            return (order,)
+
+        def history_deals_get(self, start=None, end=None, *, ticket=None, position=None):
+            if self.hidden:
+                return ()
+            result = list(self.deals)
+            if ticket is not None:
+                result = [item for item in result if int(item.order) == int(ticket)]
+            if position is not None:
+                result = [item for item in result if int(item.position_id) == int(position)]
+            return tuple(result)
+
+        def order_send(self, request):
+            if request["action"] == self.TRADE_ACTION_PENDING:
+                self.pending_send_count += 1
+                self.pending = [SimpleNamespace(
+                    ticket=12345,
+                    magic=request["magic"],
+                    comment=request["comment"],
+                    symbol=request["symbol"],
+                    type=request["type"],
+                    volume_initial=request["volume"],
+                    volume_current=request["volume"] if mode != "partial" else request["volume"] - 0.04,
+                    price_open=request["price"],
+                    sl=request["sl"],
+                    tp=request["tp"],
+                    time_expiration=request["expiration"],
+                )]
+                self.history_order = SimpleNamespace(**vars(self.pending[0]), state=4)
+                if mode == "partial":
+                    self.deals = [SimpleNamespace(
+                        ticket=500,
+                        order=12345,
+                        position_id=700,
+                        symbol=request["symbol"],
+                        entry=self.DEAL_ENTRY_IN,
+                        reason=0,
+                        price=request["price"],
+                        volume=0.04,
+                        comment=request["comment"],
+                        magic=request["magic"],
+                        time_msc=1785330300000,
+                        type=self.ORDER_TYPE_BUY,
+                    )]
+                if mode == "none":
+                    return None
+                if mode == "timeout":
+                    raise TimeoutError("SDK send timed out")
+                if mode == "connection":
+                    raise ConnectionError("SDK connection dropped")
+                return SimpleNamespace(
+                    retcode=self.TRADE_RETCODE_DONE_PARTIAL,
+                    order=12345,
+                    deal=0,
+                    comment="partial",
+                )
+            return super().order_send(request)
+
+    first = {
+        **order_candidate(),
+        "order_id": "order-1",
+        "setup_state": "VALID",
+        "order_state": "CANCELLED",
+        "terminal_reason": "CANCELLED_TRADE_WINDOW_END",
+        "pair_cap_state": "ALLOWED",
+        "intrabar_ambiguity": "",
+    }
+    second = {**first, "order_id": "order-2", "fvg_time": "2026-07-29T13:01:00Z"}
+    prefix_path = tmp_path / "prefix.json"
+    prefix_path.write_text(
+        json.dumps(
+            {
+                "date": "2026-07-29",
+                "state": "VALID",
+                "deterministic_rerun": True,
+                "invariant_errors": [],
+                "cutoffs": {
+                    "nq": "2026-07-29T10:27:00-04:00",
+                    "spx": "2026-07-29T10:25:00-04:00",
+                },
+                "hashes": {"config": "config-hash", "code": MODULE.core.source_code_hash()},
+                "payload": {"decisions": [first, second]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mt5 = UncertainSendMt5()
+    client = demo_client(mt5)
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: pd.Timestamp("2026-07-29T14:28:00Z"))
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"live_config_hash": "config-hash"},
+    )
+
+    assert mt5.pending_send_count == 1
+    assert result["results"][0]["state"] in {
+        "SEND_UNKNOWN_NO_SEND",
+        "SEND_PARTIAL_NO_SEND",
+    }
+    assert result["results"][1] == {
+        "state": "BLOCKED_BY_PRIOR_BROKER_UNCERTAINTY_NO_SEND",
+        "order_id": "order-2",
+        "reason": "A prior candidate in this cycle returned UNKNOWN/PARTIAL.",
+    }
+
+    restarted = demo_client(mt5)
+    mt5.hidden = False
+    next_cycle = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        pd.Timestamp("2026-07-29T14:29:00Z"),
+        {"live_config_hash": "config-hash"},
+    )
+    assert mt5.pending_send_count == (1 if mode == "partial" else 2)
+    assert next_cycle["state"] in {
+        "RECONCILED",
+        "UNKNOWN_NO_SEND",
+        "BROKER_UNSAFE_NO_SEND",
+        "CANCEL_UNKNOWN_NO_SEND",
+    }
+    assert any(event.get("event") == "LINKED_EXISTING" for event in restarted._events(tmp_path))
+    record_if_enabled(request, evidence_token)
 
 
 def test_stop_target_distance_is_terminal_and_idempotent(tmp_path) -> None:
@@ -1357,8 +1652,8 @@ def test_stop_target_distance_is_terminal_and_idempotent(tmp_path) -> None:
     mt5 = PermanentDistanceMt5()
     client = demo_client(mt5)
 
-    first = client._place_candidate(tmp_path, decision, "US100Cash", 2.0)
-    second = client._place_candidate(tmp_path, decision, "US100Cash", 2.0)
+    first = place_candidate(client, tmp_path, decision)
+    second = place_candidate(client, tmp_path, decision)
 
     assert first == {
         "state": "CANDIDATE_NOT_EXECUTABLE_NO_SEND",
@@ -1387,8 +1682,8 @@ def test_transient_order_check_retries_without_duplicate_send(tmp_path) -> None:
     mt5 = RetryCheckMt5()
     client = demo_client(mt5)
 
-    first = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
-    second = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    first = place_candidate(client, tmp_path)
+    second = place_candidate(client, tmp_path)
 
     assert first == {
         "state": "CHECK_RETRYABLE_NO_SEND",
@@ -1399,10 +1694,11 @@ def test_transient_order_check_retries_without_duplicate_send(tmp_path) -> None:
     assert mt5.check_count == 2
     assert mt5.pending_send_count == 1
     assert [item["event"] for item in client._events(tmp_path)] == [
-        "INTENT",
-        "CHECK_RETRYABLE",
-        "CHECK_PASSED",
-        "SUBMITTED",
+            "INTENT",
+            "CHECK_RETRYABLE",
+            "CHECK_PASSED",
+            "SEND_ARMED",
+            "SUBMITTED",
     ]
 
 
@@ -1414,7 +1710,7 @@ def test_uncertain_prior_intent_refuses_duplicate_send(tmp_path) -> None:
         {"event": "INTENT", "order_id": "order-1", "comment": "FSP-nq-order-1"},
     )
     try:
-        client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+        place_candidate(client, tmp_path)
     except MODULE.core.CriticalLiveError as exc:
         assert "uncertain prior order intent" in str(exc)
     else:
@@ -1432,7 +1728,7 @@ def test_restart_links_existing_broker_order_after_recorded_intent(tmp_path) -> 
     )
     mt5.pending = [SimpleNamespace(ticket=12345, magic=client.magic, comment=comment)]
 
-    result = client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    result = place_candidate(client, tmp_path)
 
     assert result["state"] == "IDEMPOTENT_LINKED_EXISTING"
     assert mt5.pending_send_count == 0
@@ -1443,7 +1739,7 @@ def test_restart_links_existing_broker_order_after_recorded_intent(tmp_path) -> 
 def test_data_invalid_cancels_own_pending_order_without_resubmitting(tmp_path) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
-    client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    place_candidate(client, tmp_path)
     result = client.reconcile_orders(
         tmp_path,
         {"state": "DATA_INVALID"},
@@ -1513,7 +1809,7 @@ def test_already_recorded_data_invalid_remains_no_send(tmp_path) -> None:
 def test_outside_trade_window_cancels_own_pending_order(tmp_path) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
-    client._place_candidate(tmp_path, order_candidate(), "US100Cash", 3.0)
+    place_candidate(client, tmp_path, reward=3.0)
 
     result = client.reconcile_orders(
         tmp_path,
@@ -1527,10 +1823,10 @@ def test_outside_trade_window_cancels_own_pending_order(tmp_path) -> None:
     assert mt5.pending == []
 
 
-def test_final_trade_window_prefix_cancels_instead_of_submitting(tmp_path) -> None:
+def test_final_trade_window_prefix_cancels_instead_of_submitting(tmp_path, monkeypatch) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
-    client._place_candidate(tmp_path, order_candidate(), "US100Cash", 3.0)
+    place_candidate(client, tmp_path, reward=3.0)
     decision = {
         **order_candidate(),
         "setup_state": "VALID",
@@ -1559,6 +1855,7 @@ def test_final_trade_window_prefix_cancels_instead_of_submitting(tmp_path) -> No
         ),
         encoding="utf-8",
     )
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: pd.Timestamp("2026-07-29T14:31:00Z"))
 
     result = client.reconcile_orders(
         tmp_path,
@@ -1574,7 +1871,7 @@ def test_final_trade_window_prefix_cancels_instead_of_submitting(tmp_path) -> No
     assert mt5.pending_send_count == 1
 
 
-def test_executable_intrawindow_prefix_reaches_broker_submission(tmp_path) -> None:
+def test_executable_intrawindow_prefix_reaches_broker_submission(tmp_path, monkeypatch) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
     decision = {
@@ -1606,6 +1903,7 @@ def test_executable_intrawindow_prefix_reaches_broker_submission(tmp_path) -> No
         ),
         encoding="utf-8",
     )
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: pd.Timestamp("2026-07-29T14:28:00Z"))
 
     result = client.reconcile_orders(
         tmp_path,
@@ -1617,6 +1915,1032 @@ def test_executable_intrawindow_prefix_reaches_broker_submission(tmp_path) -> No
     assert result["state"] == "RECONCILED"
     assert result["candidate_count"] == 1
     assert result["results"][0]["state"] == "SUBMITTED"
+    assert mt5.pending_send_count == 1
+
+
+def test_stale_prefix_defers_without_check_passed_then_retries_once(tmp_path) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    stale_prefix = {
+        "date": "2026-07-29",
+        "recorded_at": "2026-07-29T14:25:00Z",
+        "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+    }
+    fresh_prefix = {**stale_prefix, "cutoffs": {"nq": "2026-07-29T10:27:00-04:00", "spx": "2026-07-29T10:25:00-04:00"}}
+    now = pd.Timestamp("2026-07-29T14:28:00Z")
+
+    first = client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0,
+        prefix_record=stale_prefix, send_now=now,
+    )
+    assert first["state"] == "STALE_PREFIX_NO_SEND"
+    assert mt5.pending_send_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "PRE_SEND_DEFERRED"
+    assert [item["event"] for item in client._events(tmp_path)] == ["PRE_SEND_DEFERRED"]
+
+    second = client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0,
+        prefix_record=fresh_prefix, send_now=now,
+    )
+    assert second["state"] == "SUBMITTED"
+    assert mt5.pending_send_count == 1
+    assert [item["event"] for item in client._events(tmp_path)] == [
+            "PRE_SEND_DEFERRED", "INTENT_REEVALUATED", "CHECK_PASSED", "SEND_ARMED", "SUBMITTED"
+    ]
+
+    third = client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0,
+        prefix_record=fresh_prefix, send_now=now,
+    )
+    assert third["state"] == "IDEMPOTENT_ALREADY_SUBMITTED"
+    assert mt5.pending_send_count == 1
+
+
+def test_reconcile_common_cutoff_vector_rejects_stale_then_sends_once_when_fresh(
+    tmp_path, monkeypatch, request
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    decision = {
+        **order_candidate(),
+        "leg_key": "spx",
+        "setup_state": "VALID",
+        "order_state": "CANCELLED",
+        "terminal_reason": "CANCELLED_TRADE_WINDOW_END",
+        "pair_cap_state": "ALLOWED",
+        "intrabar_ambiguity": "",
+    }
+    prefix_path = tmp_path / "prefix.json"
+
+    def write_prefix(nq_cutoff: str, spx_cutoff: str) -> None:
+        prefix_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-07-29",
+                    "state": "VALID",
+                    "deterministic_rerun": True,
+                    "invariant_errors": [],
+                    "cutoffs": {"nq": nq_cutoff, "spx": spx_cutoff},
+                    "hashes": {
+                        "config": "config-hash",
+                        "code": MODULE.core.source_code_hash(),
+                    },
+                    "payload": {"decisions": [decision]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    now = pd.Timestamp("2026-07-29T14:24:10Z")
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: now)
+    write_prefix("2026-07-29T10:21:00-04:00", "2026-07-29T10:20:00-04:00")
+    stale = client.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        now,
+        {"live_config_hash": "config-hash"},
+    )
+    assert stale["results"][0]["state"] == "STALE_PREFIX_NO_SEND"
+    assert mt5.pending_send_count == 0
+
+    write_prefix("2026-07-29T10:24:00-04:00", "2026-07-29T10:20:00-04:00")
+    fresh = client.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        now,
+        {"live_config_hash": "config-hash"},
+    )
+    assert fresh["results"][0]["state"] == "SUBMITTED"
+    assert mt5.pending_send_count == 1
+    record_if_enabled(request, evidence_token)
+
+
+@pytest.mark.parametrize("mode", ["none", "exception", "timeout-retcode", "connection-retcode"])
+def test_remove_unknown_is_persistent_single_attempt_and_later_broker_resolved(
+    tmp_path, mode
+) -> None:
+    class CancelUnknownMt5(FakeOrderMt5):
+        ORDER_STATE_CANCELED = 2
+
+        def __init__(self):
+            super().__init__()
+            self.remove_count = 0
+            self.readback_ready = False
+            self.history_order = None
+
+        def order_send(self, request):
+            if request["action"] != self.TRADE_ACTION_REMOVE:
+                return super().order_send(request)
+            self.remove_count += 1
+            self.history_order = SimpleNamespace(
+                **vars(self.pending[0]), state=self.ORDER_STATE_CANCELED
+            )
+            self.pending = []
+            if mode == "none":
+                return None
+            if mode == "exception":
+                raise TimeoutError("REMOVE response lost after broker apply")
+            if mode == "timeout-retcode":
+                return SimpleNamespace(retcode=10012, order=request["order"], deal=0)
+            return SimpleNamespace(retcode=10031, order=request["order"], deal=0)
+
+        def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+            if not self.readback_ready or self.history_order is None:
+                return ()
+            if ticket is not None and int(ticket) != int(self.history_order.ticket):
+                return ()
+            return (self.history_order,)
+
+    mt5 = CancelUnknownMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    first = client.cancel_all_pending(tmp_path, "TECHNICAL_RECOVERY")
+    assert first[0]["state"] in {"CANCEL_UNKNOWN", "CANCEL_REJECTED"}
+    assert mt5.remove_count == 1
+    assert client._intent_state(tmp_path, "order-1")["status"] in {"CANCEL_UNKNOWN", "CANCEL_REJECTED"}
+    assert not (tmp_path / "fatal_latch.json").exists()
+
+    restarted = demo_client(mt5)
+    mt5.readback_ready = True
+    resolved = restarted._reconcile_persistent_intents(
+        tmp_path, pd.Timestamp("2026-07-29T14:30:00Z")
+    )
+    assert resolved[0]["state"] == "CANCELLED"
+    assert mt5.remove_count == 1
+    assert restarted._intent_state(tmp_path, "order-1")["status"] == "CANCELLED"
+    assert not mt5.pending
+
+
+class ReconcileCancelMt5(FakeOrderMt5):
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+        self.remove_count = 0
+        self.cancelled_order = None
+        self.history_order = None
+        self.pending_requests = []
+
+    def order_send(self, request):
+        if request["action"] == self.TRADE_ACTION_PENDING:
+            self.pending_requests.append(dict(request))
+            return super().order_send(request)
+        if request["action"] != self.TRADE_ACTION_REMOVE:
+            return super().order_send(request)
+        self.remove_count += 1
+        if self.pending:
+            self.cancelled_order = SimpleNamespace(**vars(self.pending[0]))
+        if self.mode != "pending-visible":
+            self.pending = []
+        if self.mode == "reject":
+            return SimpleNamespace(retcode=10006, order=request["order"], deal=0)
+        if self.mode in {"none", "pending-visible"}:
+            return None
+        if self.mode == "exception":
+            raise TimeoutError("REMOVE response lost")
+        if self.mode == "timeout-retcode":
+            return SimpleNamespace(retcode=10012, order=request["order"], deal=0)
+        if self.mode == "connection-retcode":
+            return SimpleNamespace(retcode=10031, order=request["order"], deal=0)
+        raise AssertionError(f"unknown cancellation fixture mode {self.mode}")
+
+    def confirm_cancel(self) -> None:
+        if self.cancelled_order is None:
+            raise AssertionError("fixture has no pending order to confirm")
+        values = vars(self.cancelled_order).copy()
+        values["state"] = self.ORDER_STATE_CANCELED
+        self.pending = []
+        self.history_order = SimpleNamespace(**values)
+
+    def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+        del start, end, position
+        if self.history_order is None:
+            return ()
+        if ticket is not None and int(ticket) != int(self.history_order.ticket):
+            return ()
+        return (self.history_order,)
+
+
+def reconcile_candidate(order_id: str) -> dict[str, object]:
+    return {
+        **order_candidate(),
+        "order_id": order_id,
+        "setup_state": "VALID",
+        "order_state": "CANCELLED",
+        "terminal_reason": "CANCELLED_TRADE_WINDOW_END",
+        "pair_cap_state": "ALLOWED",
+        "intrabar_ambiguity": "",
+    }
+
+
+def reconcile_valid_candidate(client, output_root, order_id: str):
+    now = pd.Timestamp("2026-07-29T14:28:00Z")
+    prefix_path = output_root / "valid-prefix.json"
+    prefix_path.write_text(
+        json.dumps(
+            {
+                "date": "2026-07-29",
+                "state": "VALID",
+                "deterministic_rerun": True,
+                "invariant_errors": [],
+                "cutoffs": {
+                    "nq": "2026-07-29T10:27:00-04:00",
+                    "spx": "2026-07-29T10:25:00-04:00",
+                },
+                "hashes": {
+                    "config": "config-hash",
+                    "code": MODULE.core.source_code_hash(),
+                },
+                "payload": {"decisions": [reconcile_candidate(order_id)]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_utc_now = MODULE.core.utc_now
+    MODULE.core.utc_now = lambda: now
+    try:
+        return client.reconcile_orders(
+            output_root,
+            {"state": "VALID", "path": str(prefix_path)},
+            now,
+            {"live_config_hash": "config-hash"},
+        )
+    finally:
+        MODULE.core.utc_now = original_utc_now
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["none", "exception", "timeout-retcode", "connection-retcode"],
+    ids=["none", "exception", "timeout", "connection"],
+)
+def test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves(tmp_path, mode, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = ReconcileCancelMt5(mode)
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    first_comment = mt5.pending_requests[0]["comment"]
+
+    first = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert first["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 1
+    assert client._intent_state(tmp_path, "order-1")["status"] == "CANCEL_UNKNOWN"
+    armed = [item for item in client._events(tmp_path) if item.get("event") == "CANCEL_ARMED"]
+    assert len(armed) == 1
+    assert armed[0]["broker_order_ticket"] == 12345
+
+    restarted = demo_client(mt5)
+    blocked = reconcile_valid_candidate(restarted, tmp_path, "order-2")
+    assert blocked["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 1
+    assert mt5.pending_send_count == 1
+
+    mt5.confirm_cancel()
+    resolved = reconcile_valid_candidate(restarted, tmp_path, "order-2")
+    assert resolved["state"] == "RECONCILED"
+    assert mt5.remove_count == 1
+    assert mt5.pending_send_count == 2
+    assert mt5.pending_requests[-1]["comment"] != first_comment
+    record_if_enabled(request, evidence_token)
+
+
+def test_r02_b_pending_visible_restart_does_not_repeat_remove_or_send(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = ReconcileCancelMt5("pending-visible")
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    first = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert first["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    restarted = demo_client(mt5)
+    second = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:29:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert second["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 1
+    assert mt5.pending_send_count == 1
+    assert mt5.pending
+    record_if_enabled(request, evidence_token)
+
+
+def test_r02_c_cancel_armed_crash_before_sdk_is_not_retried(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = ReconcileCancelMt5("none")
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    client._order_send_checked = lambda *args, **kwargs: (_ for _ in ()).throw(
+        KeyboardInterrupt("process interrupted before REMOVE")
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        client.cancel_all_pending(tmp_path, "TEST_CRASH")
+
+    assert mt5.remove_count == 0
+    assert client._intent_state(tmp_path, "order-1")["status"] == "CANCEL_ARMED"
+    restarted = demo_client(mt5)
+    blocked = reconcile_valid_candidate(restarted, tmp_path, "order-2")
+    assert blocked["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 0
+    assert mt5.pending_send_count == 1
+    record_if_enabled(request, evidence_token)
+
+
+def test_r02_e_rejected_remove_stays_distinct_then_confirmed_cancel_allows_new_order(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = ReconcileCancelMt5("reject")
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    rejected = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert rejected["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert client._intent_state(tmp_path, "order-1")["status"] == "CANCEL_REJECTED"
+    assert mt5.remove_count == 1
+
+    restarted = demo_client(mt5)
+    blocked = reconcile_valid_candidate(restarted, tmp_path, "order-2")
+    assert blocked["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 1
+    mt5.confirm_cancel()
+    allowed = reconcile_valid_candidate(restarted, tmp_path, "order-2")
+    assert allowed["state"] == "RECONCILED"
+    assert mt5.remove_count == 1
+    assert mt5.pending_send_count == 2
+    assert mt5.pending_requests[-1]["symbol"] == "US100Cash"
+    record_if_enabled(request, evidence_token)
+
+
+class DetailedOrderMt5(FakeOrderMt5):
+    def order_send(self, request):
+        if request["action"] == self.TRADE_ACTION_PENDING:
+            self.pending_send_count += 1
+            self.pending = [
+                SimpleNamespace(
+                    ticket=12345,
+                    magic=request["magic"],
+                    comment=request["comment"],
+                    symbol=request["symbol"],
+                    type=request["type"],
+                    volume_initial=request["volume"],
+                    volume_current=request["volume"],
+                    price_open=request["price"],
+                    sl=request["sl"],
+                    tp=request["tp"],
+                    time_expiration=request["expiration"],
+                )
+            ]
+            return SimpleNamespace(retcode=self.TRADE_RETCODE_PLACED, order=12345, deal=0)
+        return super().order_send(request)
+
+
+def test_pending_broker_request_mismatch_blocks_new_orders(tmp_path) -> None:
+    mt5 = DetailedOrderMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.pending[0].sl = 89.0
+
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["state"] == "BROKER_UNSAFE_NO_SEND"
+    assert result["broker_states"][0]["state"] == "BROKER_REQUEST_MISMATCH_NO_SEND"
+    assert mt5.pending_send_count == 1
+    assert mt5.pending == []
+
+
+class PartialFillMt5(DetailedOrderMt5):
+    ORDER_STATE_FILLED = 4
+    ORDER_TYPE_BUY = 0
+    DEAL_ENTRY_IN = 0
+
+    def __init__(self, *, protected: bool = False) -> None:
+        super().__init__()
+        self.protected = protected
+        self.history_order = None
+        self.deals = []
+        self.position = None
+
+    def order_send(self, request):
+        result = super().order_send(request)
+        if request["action"] == self.TRADE_ACTION_PENDING:
+            self.history_order = SimpleNamespace(
+                ticket=12345,
+                magic=request["magic"],
+                comment=request["comment"],
+                symbol=request["symbol"],
+                type=request["type"],
+                volume_initial=request["volume"],
+                volume_current=0.0 if self.protected else 0.06,
+                price_open=request["price"],
+                sl=request["sl"],
+                tp=request["tp"],
+                time_expiration=request["expiration"],
+                state=self.ORDER_STATE_FILLED,
+            )
+            self.pending = []
+            volume = 0.1 if self.protected else 0.04
+            self.deals = [
+                SimpleNamespace(
+                    ticket=500,
+                    order=12345,
+                    position_id=700,
+                    symbol=request["symbol"],
+                    entry=self.DEAL_ENTRY_IN,
+                    reason=0,
+                    price=100.5,
+                    volume=volume,
+                    comment=request["comment"],
+                    magic=request["magic"],
+                    time_msc=1785330300000,
+                    type=self.ORDER_TYPE_BUY,
+                )
+            ]
+            if self.protected:
+                self.position = SimpleNamespace(
+                    ticket=700,
+                    identifier=700,
+                    magic=request["magic"],
+                    comment=request["comment"],
+                    symbol=request["symbol"],
+                    type=0,
+                    volume=volume,
+                    sl=request["sl"],
+                    tp=request["tp"],
+                )
+        return result
+
+    def positions_get(self, ticket=None):
+        if self.position is None:
+            return ()
+        if ticket is not None and int(self.position.ticket) != int(ticket):
+            return ()
+        return (self.position,)
+
+    def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+        if ticket is not None and int(ticket) != 12345:
+            return ()
+        return () if self.history_order is None else (self.history_order,)
+
+    def history_deals_get(self, start=None, end=None, *, ticket=None, position=None):
+        self.history_deal_calls.append(
+            {"start": start, "end": end, "ticket": ticket, "position": position}
+        )
+        result = tuple(self.deals)
+        if ticket is not None:
+            result = tuple(item for item in result if int(item.order) == int(ticket))
+        if position is not None:
+            result = tuple(item for item in result if int(item.position_id) == int(position))
+        return result
+
+
+class PartialCancelMt5(PartialFillMt5):
+    def __init__(self) -> None:
+        super().__init__(protected=False)
+        self.remove_count = 0
+        self.cancelled_order = None
+        self.history_order = None
+        self.position_calls = 0
+
+    def order_send(self, request):
+        if request["action"] != self.TRADE_ACTION_REMOVE:
+            return super().order_send(request)
+        self.remove_count += 1
+        self.cancelled_order = SimpleNamespace(**vars(self.pending[0]))
+        self.pending = []
+        return None
+
+    def positions_get(self, ticket=None):
+        self.position_calls += 1
+        return super().positions_get(ticket=ticket)
+
+    def confirm_cancel(self) -> None:
+        if self.cancelled_order is None:
+            raise AssertionError("REMOVE did not create a broker history fixture")
+        values = vars(self.cancelled_order).copy()
+        values["state"] = self.ORDER_STATE_CANCELED
+        values["volume_current"] = 0.06
+        self.history_order = SimpleNamespace(**values)
+
+    def confirm_exit(self, reason: int) -> None:
+        self.position = None
+        self.deals.append(
+            SimpleNamespace(
+                ticket=501,
+                order=99999,
+                position_id=700,
+                symbol="US100Cash",
+                entry=self.DEAL_ENTRY_OUT,
+                reason=reason,
+                price=self.history_order.tp if reason == self.DEAL_REASON_TP else self.history_order.sl,
+                volume=0.04,
+                comment="broker-exit",
+                magic=260729315,
+                time_msc=1785330360000,
+                type=self.ORDER_TYPE_SELL,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("exit_reason", "expected_terminal"),
+    [(FakeOrderMt5.DEAL_REASON_SL, "CLOSED_SL"), (FakeOrderMt5.DEAL_REASON_TP, "CLOSED_TP")],
+)
+def test_r02_d_cancel_control_resolves_remainder_before_economic_exit(
+    tmp_path, exit_reason, expected_terminal, request
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = PartialCancelMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.deals[0].volume = 0.04
+    mt5.history_order.volume_current = 0.06
+    mt5.position = SimpleNamespace(
+        ticket=700,
+        identifier=700,
+        magic=client.magic,
+        comment=client._comment("nq", "order-1"),
+        symbol="US100Cash",
+        type=0,
+        volume=0.04,
+        sl=mt5.history_order.sl,
+        tp=mt5.history_order.tp,
+    )
+    mt5.pending = [SimpleNamespace(**vars(mt5.history_order))]
+
+    first = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert first["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 1
+    mt5.confirm_cancel()
+    restarted = demo_client(mt5)
+    resolved = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:30:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert resolved["state"] == "BROKER_UNSAFE_NO_SEND"
+    economic = next(item for item in resolved["broker_states"] if item["order_id"] == "order-1")
+    assert economic["state"] == "PARTIAL_FILL"
+    assert economic["protection_state"] == "PROTECTED"
+    assert economic["open_position_volume"] == 0.04
+    assert restarted._intent_state(tmp_path, "order-1")["status"] == "LINKED_EXISTING"
+    cancel_events = [item for item in restarted._events(tmp_path) if item.get("event") == "CANCEL_RESOLVED"]
+    assert len(cancel_events) == 1
+    assert cancel_events[0]["cancelled_remainder_volume"] == 0.06
+    assert cancel_events[0]["entry_filled_volume"] == 0.04
+    assert cancel_events[0]["position_id"] == 700
+    assert mt5.remove_count == 1
+    assert mt5.position_calls > 0
+    assert any(call["position"] == 700 for call in mt5.history_deal_calls)
+
+    mt5.confirm_exit(exit_reason)
+    terminal = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T14:31:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert terminal["state"] == "DATA_INVALID_NO_SEND"
+    assert next(item for item in terminal["broker_states"] if item["order_id"] == "order-1")["state"] == expected_terminal
+    assert restarted._stored_broker_state(tmp_path, "order-1")[0] == expected_terminal
+    assert restarted._intent_state(tmp_path, "order-1")["status"] == expected_terminal
+    assert mt5.remove_count == 1
+    record_if_enabled(request, evidence_token)
+
+
+@pytest.mark.parametrize("legacy_status", ["CANCEL_UNKNOWN", "CANCEL_REJECTED"])
+def test_r02_p_legacy_cancel_without_arm_uses_outbox_ticket_without_fabricating_request(
+    tmp_path, legacy_status, monkeypatch, request
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    monkeypatch.setattr(
+        MODULE.core,
+        "utc_now",
+        lambda: pd.Timestamp("2026-07-29T14:28:00Z"),
+    )
+    mt5 = ReconcileCancelMt5("none")
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.cancelled_order = SimpleNamespace(**vars(mt5.pending[0]))
+    mt5.pending = []
+    connection = client._order_connection(tmp_path)
+    try:
+        connection.execute(
+            "UPDATE order_intents SET status=?, request_json=NULL, broker_ticket=NULL WHERE order_id=?",
+            (legacy_status, "order-1"),
+        )
+        connection.execute(
+            "INSERT INTO order_event_outbox (order_id, event_json, delivered_at) VALUES (?, ?, ?)",
+            (
+                "order-1",
+                json.dumps({
+                    "event": legacy_status,
+                    "order_id": "order-1",
+                    "ticket": 12345,
+                    "broker_order_ticket": 12345,
+                }),
+                "legacy-acked",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    prefix_path = tmp_path / "valid-prefix.json"
+    prefix_path.write_text(
+        json.dumps({
+            "date": "2026-07-29",
+            "state": "VALID",
+            "deterministic_rerun": True,
+            "invariant_errors": [],
+            "cutoffs": {"nq": "2026-07-29T10:27:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+            "hashes": {"config": "config-hash", "code": MODULE.core.source_code_hash()},
+            "payload": {"decisions": [reconcile_candidate("order-2")]},
+        }),
+        encoding="utf-8",
+    )
+    restarted = demo_client(mt5)
+    first = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        pd.Timestamp("2026-07-29T14:30:00Z"),
+        {"live_config_hash": "config-hash"},
+    )
+    assert first["state"] == "CANCEL_UNKNOWN_NO_SEND"
+    assert mt5.remove_count == 0
+    assert mt5.pending_send_count == 1
+    assert restarted._intent_state(tmp_path, "order-1")["status"] == legacy_status
+
+    mt5.confirm_cancel()
+    second = restarted.reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        pd.Timestamp("2026-07-29T14:28:00Z"),
+        {"live_config_hash": "config-hash"},
+    )
+    assert second["state"] == "RECONCILED"
+    assert mt5.remove_count == 0
+    assert mt5.pending_send_count == 2
+    assert restarted._intent_state(tmp_path, "order-1")["status"] == "CANCELLED"
+    record_if_enabled(request, evidence_token)
+
+
+def test_r02_p_legacy_outbox_ticket_conflict_is_unsafe_without_remove_or_send(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = ReconcileCancelMt5("none")
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.pending = []
+    connection = client._order_connection(tmp_path)
+    try:
+        connection.execute(
+            "UPDATE order_intents SET status='CANCEL_UNKNOWN', request_json=NULL, broker_ticket=12345 WHERE order_id='order-1'"
+        )
+        connection.execute(
+            "INSERT INTO order_event_outbox (order_id, event_json, delivered_at) VALUES (?, ?, ?)",
+            ("order-1", json.dumps({"event": "CANCEL_UNKNOWN", "order_id": "order-1", "ticket": 99999}), "legacy-acked"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    prefix_path = tmp_path / "valid-prefix.json"
+    prefix_path.write_text(
+        json.dumps({
+            "date": "2026-07-29",
+            "state": "VALID",
+            "deterministic_rerun": True,
+            "invariant_errors": [],
+            "cutoffs": {"nq": "2026-07-29T10:27:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+            "hashes": {"config": "config-hash", "code": MODULE.core.source_code_hash()},
+            "payload": {"decisions": [reconcile_candidate("order-2")]},
+        }),
+        encoding="utf-8",
+    )
+    result = demo_client(mt5).reconcile_orders(
+        tmp_path,
+        {"state": "VALID", "path": str(prefix_path)},
+        pd.Timestamp("2026-07-29T14:30:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+    assert result["state"] == "BROKER_UNSAFE_NO_SEND"
+    assert result["broker_states"][0]["state"] == "BROKER_REQUEST_MISMATCH_NO_SEND"
+    record_if_enabled(request, evidence_token)
+    assert mt5.remove_count == 0
+    assert mt5.pending_send_count == 1
+
+
+class ClosedWithDifferentExitOrderMt5(PartialFillMt5):
+    def __init__(self) -> None:
+        super().__init__(protected=False)
+
+    def order_send(self, request):
+        result = super().order_send(request)
+        if request["action"] == self.TRADE_ACTION_PENDING:
+            self.deals[0] = SimpleNamespace(**vars(self.deals[0]))
+            self.deals[0].volume = 0.1
+            self.deals.append(
+                SimpleNamespace(
+                    ticket=501,
+                    order=99999,
+                    position_id=700,
+                    symbol=request["symbol"],
+                    entry=self.DEAL_ENTRY_OUT,
+                    reason=self.DEAL_REASON_SL,
+                    price=90.0,
+                    volume=0.1,
+                    comment="broker-generated-exit",
+                    magic=999,
+                    time_msc=1785330360000,
+                    type=self.ORDER_TYPE_SELL,
+                )
+            )
+        return result
+
+
+class DocumentedLifecycleMt5(FakeOrderMt5):
+    ORDER_STATE_FILLED = 4
+
+    def __init__(self, direction: str, exit_reason: int | None = None) -> None:
+        super().__init__()
+        self.direction = direction
+        self.exit_reason = exit_reason
+        self.history_order = None
+        self.deals = []
+        self.position = None
+
+    def order_send(self, request):
+        result = super().order_send(request)
+        if request["action"] != self.TRADE_ACTION_PENDING:
+            return result
+        entry_type = self.ORDER_TYPE_BUY if self.direction == "long" else self.ORDER_TYPE_SELL
+        exit_type = self.ORDER_TYPE_SELL if self.direction == "long" else self.ORDER_TYPE_BUY
+        self.history_order = SimpleNamespace(
+            ticket=1001,
+            magic=request["magic"],
+            comment=request["comment"],
+            symbol=request["symbol"],
+            type=request["type"],
+            volume_initial=0.1,
+            volume_current=0.0,
+            price_open=request["price"],
+            sl=request["sl"],
+            tp=request["tp"],
+            time_expiration=request["expiration"],
+            state=self.ORDER_STATE_FILLED,
+        )
+        # The strategy intent must link to the actual entry order returned by
+        # the broker, not to the generic fake ticket used by the base helper.
+        self.pending[0].ticket = 1001
+        self.pending = []
+        self.deals = [
+            SimpleNamespace(
+                ticket=2001,
+                order=1001,
+                position_id=3001,
+                symbol=request["symbol"],
+                entry=self.DEAL_ENTRY_IN,
+                reason=0,
+                price=request["price"],
+                volume=0.1,
+                comment=request["comment"],
+                magic=request["magic"],
+                time_msc=1785330300000,
+                type=entry_type,
+            )
+        ]
+        if self.exit_reason is None:
+            self.position = SimpleNamespace(
+                ticket=3001,
+                identifier=3001,
+                magic=request["magic"],
+                comment=request["comment"],
+                symbol=request["symbol"],
+                type=self.POSITION_TYPE_BUY if self.direction == "long" else self.POSITION_TYPE_SELL,
+                volume=0.1,
+                sl=request["sl"],
+                tp=request["tp"],
+            )
+        else:
+            self.deals.append(
+                SimpleNamespace(
+                    ticket=2002,
+                    order=1002,
+                    position_id=3001,
+                    symbol=request["symbol"],
+                    entry=self.DEAL_ENTRY_OUT,
+                    reason=self.exit_reason,
+                    price=request["sl"] if self.exit_reason == self.DEAL_REASON_SL else request["tp"],
+                    volume=0.1,
+                    comment="broker-exit",
+                    magic=0,
+                    time_msc=1785330360000,
+                    type=exit_type,
+                )
+            )
+        return SimpleNamespace(
+            retcode=result.retcode,
+            order=1001,
+            deal=0,
+        )
+
+    def orders_get(self, ticket=None):
+        if ticket is None:
+            return tuple(self.pending)
+        return tuple(item for item in self.pending if int(item.ticket) == int(ticket))
+
+    def positions_get(self, ticket=None):
+        if self.position is None:
+            return ()
+        if ticket is not None and int(self.position.ticket) != int(ticket):
+            return ()
+        return (self.position,)
+
+    def history_orders_get(self, start=None, end=None, *, ticket=None, position=None):
+        del start, end, position
+        if ticket is not None and int(ticket) != 1001:
+            return ()
+        return () if self.history_order is None else (self.history_order,)
+
+    def history_deals_get(self, start=None, end=None, *, ticket=None, position=None):
+        self.history_deal_calls.append(
+            {"start": start, "end": end, "ticket": ticket, "position": position}
+        )
+        result = tuple(self.deals)
+        if ticket is not None:
+            result = tuple(item for item in result if int(item.order) == int(ticket))
+        if position is not None:
+            result = tuple(item for item in result if int(item.position_id) == int(position))
+        return result
+
+
+@pytest.mark.parametrize(
+    ("direction", "exit_reason", "expected"),
+    [
+        ("long", None, "OPEN_PROTECTED"),
+        ("short", None, "OPEN_PROTECTED"),
+        ("long", FakeOrderMt5.DEAL_REASON_SL, "CLOSED_SL"),
+        ("short", FakeOrderMt5.DEAL_REASON_TP, "CLOSED_TP"),
+    ],
+)
+def test_documented_mt5_order_deal_position_chain_for_long_short_and_exit(
+    tmp_path,
+    direction,
+    exit_reason,
+    expected,
+    request,
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = DocumentedLifecycleMt5(direction, exit_reason)
+    client = demo_client(mt5)
+    decision = {
+        **order_candidate(),
+        "direction": direction,
+        "stop_price": 120.0 if direction == "short" else 90.0,
+        "target_price": 90.0 if direction == "short" else 120.0,
+    }
+    assert place_candidate(client, tmp_path, decision)["state"] == "SUBMITTED"
+
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["broker_states"][0]["state"] == expected
+    assert any(call["ticket"] == 1001 for call in mt5.history_deal_calls)
+    assert any(call["position"] == 3001 for call in mt5.history_deal_calls)
+    record_if_enabled(request, evidence_token)
+
+
+def test_closed_state_uses_position_chain_and_allows_different_exit_order_ticket(tmp_path) -> None:
+    mt5 = ClosedWithDifferentExitOrderMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["state"] == "DATA_INVALID_NO_SEND"
+    assert result["broker_states"][0]["state"] == "CLOSED_SL"
+    assert result["broker_states"][0]["exit_deal_tickets"] == [501]
+    assert mt5.pending_send_count == 1
+    assert {call["ticket"] for call in mt5.history_deal_calls if call["ticket"]} == {12345}
+    assert {call["position"] for call in mt5.history_deal_calls if call["position"]} == {700}
+
+
+def test_history_deal_lookup_rejects_undocumented_order_keyword(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = PartialFillMt5(protected=True)
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["broker_states"][0]["state"] == "OPEN_PROTECTED"
+    assert all("order" not in call for call in mt5.history_deal_calls)
+    assert any(call["ticket"] == 12345 for call in mt5.history_deal_calls)
+    assert any(call["position"] == 700 for call in mt5.history_deal_calls)
+    record_if_enabled(request, evidence_token)
+
+
+def test_verified_terminal_intent_is_not_reclassified_unknown_after_35_days(tmp_path) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    client._record_broker_state(
+        tmp_path,
+        "order-1",
+        "CLOSED_TP",
+        {
+            "broker_order_ticket": 12345,
+            "filled_volume": 0.1,
+            "exit_volume": 0.1,
+            "position_id": 700,
+            "checked_at": "2026-07-29T13:05:00Z",
+        },
+    )
+    mt5.pending = []
+
+    result = client._reconcile_persistent_intents(
+        tmp_path, pd.Timestamp("2026-09-01T13:05:00Z")
+    )
+
+    assert result == []
+
+
+def test_partial_fill_is_not_full_fill_and_does_not_resend(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = PartialFillMt5()
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["state"] == "BROKER_UNSAFE_NO_SEND"
+    assert result["broker_states"][0]["state"] == "PARTIAL_FILL"
+    details = result["broker_states"][0]
+    assert details["filled_volume"] == 0.04
+    assert details["pending_remainder_volume"] == pytest.approx(0.06)
+    assert mt5.pending_send_count == 1
+    record_if_enabled(request, evidence_token)
+
+
+def test_fill_with_unprotected_position_blocks_new_orders(tmp_path) -> None:
+    mt5 = PartialFillMt5(protected=True)
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+
+    mt5.position.sl = 0.0
+    result = client.reconcile_orders(
+        tmp_path,
+        {"state": "DATA_INVALID"},
+        pd.Timestamp("2026-07-29T13:05:00Z"),
+        {"runtime_config_hash": "runtime-hash"},
+    )
+
+    assert result["state"] == "BROKER_UNSAFE_NO_SEND"
+    assert result["broker_states"][0]["state"] == "PROTECTION_MISMATCH_NO_SEND"
     assert mt5.pending_send_count == 1
 
 
@@ -1675,9 +2999,7 @@ def test_sqlite_intent_allows_only_one_parallel_send(tmp_path, monkeypatch) -> N
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(
             pool.map(
-                lambda client: client._place_candidate(
-                    tmp_path, order_candidate(), "US100Cash", 2.0
-                ),
+                lambda client: place_candidate(client, tmp_path),
                 clients,
             )
         )
@@ -1703,14 +3025,115 @@ def test_cancel_acknowledgement_requires_empty_broker_readback(tmp_path) -> None
 
     mt5 = StuckOrderMt5()
     client = demo_client(mt5)
-    client._place_candidate(tmp_path, order_candidate(), "US100Cash", 2.0)
+    place_candidate(client, tmp_path)
 
-    try:
-        client.cancel_all_pending(tmp_path, "TEST")
-    except MODULE.UnsafeOpenOrdersError as exc:
-        assert "remained open" in str(exc)
-    else:
-        raise AssertionError("Unverified cancellation was treated as safe.")
+    result = client.cancel_all_pending(tmp_path, "TEST")
+    assert result[0]["state"] == "CANCEL_UNKNOWN"
+    assert client._intent_state(tmp_path, "order-1")["status"] == "CANCEL_UNKNOWN"
+    assert mt5.pending
+
+
+def test_pending_remove_keeps_order_specific_partial_exposure_without_fatal(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = PartialFillMt5(protected=False)
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.position = SimpleNamespace(
+        ticket=700,
+        identifier=700,
+        magic=client.magic,
+        comment=client._comment("nq", "order-1"),
+        symbol="US100Cash",
+        type=0,
+        volume=0.04,
+        sl=mt5.history_order.sl,
+        tp=mt5.history_order.tp,
+    )
+    mt5.pending = [SimpleNamespace(**vars(mt5.history_order))]
+
+    cancelled = client.cancel_all_pending(tmp_path, "DATA_INVALID")
+
+    assert cancelled[0]["state"] == "PARTIAL_FILL"
+    assert cancelled[0]["protection_state"] == "PROTECTED"
+    assert cancelled[0]["cancelled_remainder_volume"] == pytest.approx(0.06)
+    assert mt5.pending == []
+    assert client._intent_state(tmp_path, "order-1")["status"] == "LINKED_EXISTING"
+    record_if_enabled(request, evidence_token)
+
+
+def test_pending_remove_does_not_bind_unrelated_same_magic_position(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    mt5.pending = [
+        SimpleNamespace(ticket=12345, magic=client.magic, comment="FSP:other:unrelated")
+    ]
+    mt5.positions_get = lambda ticket=None: (
+        ()
+        if ticket is not None
+        else (SimpleNamespace(ticket=900, magic=client.magic),)
+    )
+
+    result = client.cancel_all_pending(tmp_path, "STALE_PREFIX")
+
+    assert result == [
+        {"ticket": 12345, "state": "CANCELLED", "reason": "STALE_PREFIX"}
+    ]
+    assert mt5.pending == []
+    record_if_enabled(request, evidence_token)
+
+
+def test_pending_remove_keeps_unknown_when_order_fill_readback_disappears(tmp_path) -> None:
+    class LostReadbackMt5(FakeOrderMt5):
+        def __init__(self):
+            super().__init__()
+            self.lost = False
+
+        def order_send(self, request):
+            result = super().order_send(request)
+            if request["action"] == self.TRADE_ACTION_REMOVE:
+                self.lost = True
+            return result
+
+        def history_deals_get(self, start=None, end=None, *, ticket=None, position=None):
+            if self.lost and ticket is not None:
+                return None
+            return super().history_deals_get(start, end, ticket=ticket, position=position)
+
+    mt5 = LostReadbackMt5()
+    client = demo_client(mt5)
+    mt5.pending = [
+        SimpleNamespace(ticket=12345, magic=client.magic, comment="FSP:other:unrelated")
+    ]
+
+    result = client.cancel_all_pending(tmp_path, "TECHNICAL_RECOVERY")
+    assert result[0]["state"] == "CANCEL_UNKNOWN"
+    assert client._intent_state(tmp_path, "broker-cancel-12345")["status"] == "CANCEL_UNKNOWN"
+
+
+def test_pending_remove_blocks_unprotected_order_specific_position(tmp_path, request) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    mt5 = PartialFillMt5(protected=False)
+    client = demo_client(mt5)
+    place_candidate(client, tmp_path)
+    mt5.position = SimpleNamespace(
+        ticket=700,
+        identifier=700,
+        magic=client.magic,
+        comment=client._comment("nq", "order-1"),
+        symbol="US100Cash",
+        type=0,
+        volume=0.04,
+        sl=0.0,
+        tp=mt5.history_order.tp,
+    )
+    mt5.pending = [SimpleNamespace(**vars(mt5.history_order))]
+
+    cancelled = client.cancel_all_pending(tmp_path, "DATA_INVALID")
+    assert cancelled[0]["state"] == "CANCEL_UNKNOWN"
+    assert cancelled[0]["broker_execution_state"] == "PROTECTION_MISMATCH_NO_SEND"
+    assert mt5.pending == []
+    record_if_enabled(request, evidence_token)
 
 
 def test_sqlite_unique_intent_is_process_safe(tmp_path) -> None:

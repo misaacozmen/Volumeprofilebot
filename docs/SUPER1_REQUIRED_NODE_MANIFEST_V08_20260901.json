@@ -1,0 +1,1373 @@
+{
+  "authority": {
+    "architect_instruction": "docs/SUPER1_MUHENDIS_TALIMATI_08_20260901.md",
+    "base_required_mapping_count": 53,
+    "base_unique_required_node_count": 47,
+    "immutable_base_path": "outputs/super1_readiness_20260831/run-012/evidence-report.raw.json",
+    "immutable_base_sha256": "2586662142096deca444cf09966332246dee748f5aeace9ee5531865ee7f7bf3",
+    "policy": "This file is architect-owned and immutable for the V08 acceptance run. Producer output cannot redefine it."
+  },
+  "behavior_required_nodes": [
+    "tests/test_capital_forward.py::test_fetch_window_preserves_provider_observation_after_requested_asof",
+    "tests/test_capital_forward.py::test_finalize_future_known_required_bar_waits_for_knowledge_without_artifacts",
+    "tests/test_capital_forward.py::test_finalize_missing_provider_metadata_waits_for_final_data_without_artifacts",
+    "tests/test_capital_forward.py::test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once",
+    "tests/test_capital_forward.py::test_finalize_waits_for_complete_shared_fetch_scope_without_marker",
+    "tests/test_super1_calendar.py::test_calendar_extraction_mutation_fails_cross_source_and_runtime_checks",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[calendar-provenance]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[coverage-in-gap]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[coverage-outside]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[duplicate-key]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[outside-date]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[repeated-date]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-early-end]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-early-start]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-normal-end]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-normal-start]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-provenance]",
+    "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-timezone]",
+    "tests/test_super1_calendar.py::test_independent_calendar_extractions_match_each_other_and_runtime",
+    "tests/test_super1_continuation.py::test_exclusive_writer_rejects_existing_source_contained_and_reparse_outputs",
+    "tests/test_super1_continuation.py::test_inventory_and_real_sqlite_backup_snapshot_reject_all_mutations",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[existing_empty_output]",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[existing_nonempty_output]",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_case_equivalent]",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_descendant]",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_exact]",
+    "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[windows_junction]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[changed_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[credential_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[duplicate_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[extra_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[forbidden_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[missing_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[non_normalized_member]",
+    "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[traversal_member]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[account]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[calendar_bytes]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[campaign_lock]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[contract_bytes]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[frozen_state]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[genesis_transition_signature]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[harness_bytes]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[missing_required_field]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[old_new_release_link]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_archive_sha]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_manifest_signature]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_member_sha]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r1_archive_sha]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r1_member_sha]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[release_binding]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[replay]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[risk_parameters]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[runtime_bytes]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[server]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[snapshot_member]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[structural_cycle]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[synthetic_genesis_flag_only]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[synthetic_genesis_root_only]",
+    "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[wrong_trust_root]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[cancel_armed]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[deal]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[duplicate_terminal]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[entry_constant]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[external_identity]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[lookback]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[magic]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[missing_required_field]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[missing_required_file]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[negative_scale]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[nonnegative_scale]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[out_constant]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_ack]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_content]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_sequence]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[position]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[reward_map]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[signed_config_path]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[signed_config_sha]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[sl_constant]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[submitted]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[symbol]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[terminal_history_days]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[tp_constant]",
+    "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[unknown]",
+    "tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[minute_bars_and_conflicts]",
+    "tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[order_store]",
+    "tests/test_super1_continuation.py::test_rsa_transition_payload_binds_all_external_fields_and_chain",
+    "tests/test_super1_continuation.py::test_super1_harness_scope_is_ordered_and_not_capital_scope",
+    "tests/test_super1_continuation.py::test_transition_snapshot_manifest_and_predecessor_mutations_fail",
+    "tests/test_super1_continuation.py::test_verified_signature_status_alone_is_not_accepted",
+    "tests/test_super1_rollback_harness.py::test_o01_harness_uses_same_policy_ast_contract",
+    "tests/test_super1_rollback_harness.py::test_o01_production_policy_call_ast_contract",
+    "tests/test_super1_rollback_harness.py::test_o01_removed_policy_call_mutation_fails",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[both_latch_writes_fail]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[evidence_writer_io_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[fatal_only_partial]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[main_start_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[old_hash_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[old_health_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[post_start_timeout]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[post_watchdog_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[preexisting_fatal]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[preexisting_recovery]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[recovery_only_partial]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[restore_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[running_no_mutation_safe]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[stop_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[stopped_safe_restore]",
+    "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[watchdog_start_failure]",
+    "tests/test_super1_rollback_harness.py::test_o01_startup_gate_rejects_latch[fatal_only]",
+    "tests/test_super1_rollback_harness.py::test_o01_startup_gate_rejects_latch[recovery_only]",
+    "tests/test_super1_rollback_harness.py::test_power_shell_rollback_harness_latches_all_injected_failures",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[broker_execution_state]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[current_order]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[economic_outbox]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[history_deal]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[history_order]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[order_intent]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[position]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[blocked_mismatch]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[unresolved_newer_after_cutoff]",
+    "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[unresolved_newer_before_cutoff]",
+    "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[cutoff_closed]",
+    "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[global_entry_blocked]",
+    "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[risk_blocked]",
+    "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[cutoff_regression]",
+    "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[observed_at_not_later]",
+    "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[raw_sha_unchanged]",
+    "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[revision_not_higher]",
+    "tests/test_super1_xm_forward.py::test_continuation_design_is_non_applying_and_snapshot_gated",
+    "tests/test_super1_xm_forward.py::test_m03_terminal_r_uses_real_super1_deal_chain_and_lookback",
+    "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[missing-previous-rth-close-2026-08-05-long-20004.0-overnight_rows3-SUPER1_FILTER_UNRESOLVED_NO_SEND-0]",
+    "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[monday-short-2026-08-03-short-20004.0-overnight_rows0-SUPER1_FILTER_BLOCKED-0]",
+    "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[overnight-up-block-2026-08-05-long-20004.0-overnight_rows1-SUPER1_FILTER_BLOCKED-0]",
+    "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[proven-overnight-allow-2026-08-05-long-20004.0-overnight_rows2-SUBMITTED-1]",
+    "tests/test_super1_xm_forward.py::test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary",
+    "tests/test_super1_xm_forward.py::test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candidate",
+    "tests/test_super1_xm_forward.py::test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile",
+    "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-4-CLOSED_SL]",
+    "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-None-OPEN_PROTECTED]",
+    "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-5-CLOSED_TP]",
+    "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-None-OPEN_PROTECTED]",
+    "tests/test_xm_mt5_forward.py::test_history_deal_lookup_rejects_undocumented_order_keyword",
+    "tests/test_xm_mt5_forward.py::test_partial_fill_is_not_full_fill_and_does_not_resend",
+    "tests/test_xm_mt5_forward.py::test_pending_remove_blocks_unprotected_order_specific_position",
+    "tests/test_xm_mt5_forward.py::test_pending_remove_does_not_bind_unrelated_same_magic_position",
+    "tests/test_xm_mt5_forward.py::test_pending_remove_keeps_order_specific_partial_exposure_without_fatal",
+    "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[connection]",
+    "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[exception]",
+    "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[none]",
+    "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[timeout]",
+    "tests/test_xm_mt5_forward.py::test_r02_b_pending_visible_restart_does_not_repeat_remove_or_send",
+    "tests/test_xm_mt5_forward.py::test_r02_c_cancel_armed_crash_before_sdk_is_not_retried",
+    "tests/test_xm_mt5_forward.py::test_r02_d_cancel_control_resolves_remainder_before_economic_exit[4-CLOSED_SL]",
+    "tests/test_xm_mt5_forward.py::test_r02_d_cancel_control_resolves_remainder_before_economic_exit[5-CLOSED_TP]",
+    "tests/test_xm_mt5_forward.py::test_r02_e_rejected_remove_stays_distinct_then_confirmed_cancel_allows_new_order",
+    "tests/test_xm_mt5_forward.py::test_r02_p_legacy_cancel_without_arm_uses_outbox_ticket_without_fabricating_request[CANCEL_REJECTED]",
+    "tests/test_xm_mt5_forward.py::test_r02_p_legacy_cancel_without_arm_uses_outbox_ticket_without_fabricating_request[CANCEL_UNKNOWN]",
+    "tests/test_xm_mt5_forward.py::test_r02_p_legacy_outbox_ticket_conflict_is_unsafe_without_remove_or_send",
+    "tests/test_xm_mt5_forward.py::test_reconcile_common_cutoff_vector_rejects_stale_then_sends_once_when_fresh",
+    "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[connection]",
+    "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[none]",
+    "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[partial]",
+    "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[timeout]"
+  ],
+  "contract_id": "SUPER1_REQUIRED_NODE_MANIFEST_V08_20260901",
+  "counts": {
+    "behavior_observation_count_per_suite": 164,
+    "behavior_observation_count_two_suites": 328,
+    "behavior_required_node_count": 164,
+    "evidence_negative_required_node_count": 53,
+    "required_mapping_count": 225,
+    "unique_required_node_count": 217
+  },
+  "evidence_negative_required_nodes": [
+    "tests/test_super1_observation.py::test_v02_foreign_attempt_is_rejected",
+    "tests/test_super1_observation.py::test_v02_foreign_checkpoint_is_rejected",
+    "tests/test_super1_observation.py::test_v02_foreign_nodeid_is_rejected",
+    "tests/test_super1_observation.py::test_v02_foreign_run_id_is_rejected",
+    "tests/test_super1_observation.py::test_v02_foreign_scenario_nonce_is_rejected",
+    "tests/test_super1_observation.py::test_v02_foreign_suite_is_rejected",
+    "tests/test_super1_observation.py::test_v02_nonrequired_node_observation_is_rejected",
+    "tests/test_super1_observation.py::test_v02_required_node_double_checkpoint_fails_session",
+    "tests/test_super1_observation.py::test_v02_required_node_double_record_actual_fails_session",
+    "tests/test_super1_observation.py::test_v02_required_node_without_checkpoint_fails_session",
+    "tests/test_super1_observation.py::test_v02_required_node_without_record_actual_fails_session",
+    "tests/test_super1_observation.py::test_v03_actual_tamper_is_rejected",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[attempt_id_split]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[authoritative_before_verified_receipt]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_before_fail_after_pass_contract]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_hash_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_missing]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[canonical_run_name_collision]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[claim_formula_changed]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[csv_temp_path]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_final_stdout_tamper]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_prepublish_stdout_tamper]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[diff_temp_path]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[fake_trace_actual]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[final_failure_quarantine_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_duplicate_required_node]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_foreign_node]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_missing_required_node]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[log_temp_path]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[mandatory_xm_config_missing]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_extra]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_missing]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[nested_json_absolute_path]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[normative_required_set_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[predecessor_changed]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_hash_changed]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_inventory_changed]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_checkpoint_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_identity_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_failure_quarantine_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_name_collision]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_partial_write]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_verifier_source_sha_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[semantic_verifier_source_sha_mismatch]",
+    "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[stale_required_set]",
+    "tests/test_super1_observation.py::test_v03_ledger_tamper_is_rejected",
+    "tests/test_super1_observation.py::test_v03_missing_raw_source_is_rejected",
+    "tests/test_super1_observation.py::test_v03_snapshot_tamper_is_rejected",
+    "tests/test_super1_observation.py::test_v03_stale_raw_source_from_other_attempt_is_rejected",
+    "tests/test_super1_observation.py::test_v03_test_supplied_expected_is_rejected",
+    "tests/test_super1_observation.py::test_v03_test_supplied_measurement_is_rejected",
+    "tests/test_super1_observation.py::test_v03_trace_actual_override_is_rejected",
+    "tests/test_super1_observation.py::test_v03_trace_tamper_is_rejected"
+  ],
+  "pytest_id_policy": {
+    "default_value_or_error_message_ids_forbidden": true,
+    "nodeid_root": "work/backtest",
+    "parameterized_nodes_require_explicit_ids": true
+  },
+  "requirement_edges": [
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_extraction_mutation_fails_cross_source_and_runtime_checks",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[calendar-provenance]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[coverage-in-gap]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[coverage-outside]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[duplicate-key]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[outside-date]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[repeated-date]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-early-end]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-early-start]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-normal-end]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-normal-start]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-provenance]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_calendar_semantic_mutations_fail_through_full_validator[wrong-timezone]",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_calendar.py::test_independent_calendar_extractions_match_each_other_and_runtime",
+      "requirement": "C01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[broker_execution_state]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[current_order]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[economic_outbox]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[history_deal]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[history_order]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[order_intent]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_clean_gate_defers_to_base_lifecycle[position]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[blocked_mismatch]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[unresolved_newer_after_cutoff]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_filter_persistence_transition[unresolved_newer_before_cutoff]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[cutoff_closed]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[global_entry_blocked]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_promotion_rechecks_entry_gates[risk_blocked]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[cutoff_regression]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[observed_at_not_later]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[raw_sha_unchanged]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_c02_unresolved_requires_strictly_newer_evidence[revision_not_higher]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[missing-previous-rth-close-2026-08-05-long-20004.0-overnight_rows3-SUPER1_FILTER_UNRESOLVED_NO_SEND-0]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[monday-short-2026-08-03-short-20004.0-overnight_rows0-SUPER1_FILTER_BLOCKED-0]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[overnight-up-block-2026-08-05-long-20004.0-overnight_rows1-SUPER1_FILTER_BLOCKED-0]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary[proven-overnight-allow-2026-08-05-long-20004.0-overnight_rows2-SUBMITTED-1]",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary",
+      "requirement": "C02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-4-CLOSED_SL]",
+      "requirement": "E01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-None-OPEN_PROTECTED]",
+      "requirement": "E01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-5-CLOSED_TP]",
+      "requirement": "E01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-None-OPEN_PROTECTED]",
+      "requirement": "E01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_history_deal_lookup_rejects_undocumented_order_keyword",
+      "requirement": "E01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-4-CLOSED_SL]",
+      "requirement": "E02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[long-None-OPEN_PROTECTED]",
+      "requirement": "E02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-5-CLOSED_TP]",
+      "requirement": "E02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_documented_mt5_order_deal_position_chain_for_long_short_and_exit[short-None-OPEN_PROTECTED]",
+      "requirement": "E02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_partial_fill_is_not_full_fill_and_does_not_resend",
+      "requirement": "E02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_pending_remove_blocks_unprotected_order_specific_position",
+      "requirement": "E03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_pending_remove_does_not_bind_unrelated_same_magic_position",
+      "requirement": "E03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_pending_remove_keeps_order_specific_partial_exposure_without_fatal",
+      "requirement": "E03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[connection]",
+      "requirement": "E04"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[none]",
+      "requirement": "E04"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[partial]",
+      "requirement": "E04"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_unknown_or_partial_candidate_blocks_later_candidate_in_same_cycle[timeout]",
+      "requirement": "E04"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_exclusive_writer_rejects_existing_source_contained_and_reparse_outputs",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[existing_empty_output]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[existing_nonempty_output]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_case_equivalent]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_descendant]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[source_exact]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m01_pre_capture_inventory_and_retention_are_exact_and_case_safe[windows_junction]",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_continuation_design_is_non_applying_and_snapshot_gated",
+      "requirement": "M01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[changed_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[credential_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[duplicate_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[extra_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[forbidden_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[missing_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[non_normalized_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_release_archive_mutation_is_rejected[traversal_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[account]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[calendar_bytes]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[campaign_lock]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[contract_bytes]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[frozen_state]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[genesis_transition_signature]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[harness_bytes]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[missing_required_field]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[old_new_release_link]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_archive_sha]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_manifest_signature]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r0_member_sha]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r1_archive_sha]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[r1_member_sha]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[release_binding]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[replay]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[risk_parameters]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[runtime_bytes]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[server]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[snapshot_member]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[structural_cycle]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[synthetic_genesis_flag_only]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[synthetic_genesis_root_only]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m02_transition_mutation_is_rejected_with_fresh_signature[wrong_trust_root]",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_rsa_transition_payload_binds_all_external_fields_and_chain",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_transition_snapshot_manifest_and_predecessor_mutations_fail",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_verified_signature_status_alone_is_not_accepted",
+      "requirement": "M02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_inventory_and_real_sqlite_backup_snapshot_reject_all_mutations",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[cancel_armed]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[deal]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[duplicate_terminal]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[entry_constant]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[external_identity]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[lookback]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[magic]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[missing_required_field]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[missing_required_file]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[negative_scale]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[nonnegative_scale]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[out_constant]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_ack]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_content]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[outbox_sequence]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[position]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[reward_map]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[signed_config_path]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[signed_config_sha]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[sl_constant]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[submitted]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[symbol]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[terminal_history_days]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[tp_constant]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[unknown]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[minute_bars_and_conflicts]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[order_store]",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_continuation.py::test_super1_harness_scope_is_ordered_and_not_capital_scope",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_m03_terminal_r_uses_real_super1_deal_chain_and_lookback",
+      "requirement": "M03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_harness_uses_same_policy_ast_contract",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_production_policy_call_ast_contract",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_removed_policy_call_mutation_fails",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[both_latch_writes_fail]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[evidence_writer_io_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[fatal_only_partial]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[main_start_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[old_hash_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[old_health_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[post_start_timeout]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[post_watchdog_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[preexisting_fatal]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[preexisting_recovery]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[recovery_only_partial]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[restore_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[running_no_mutation_safe]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[stop_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[stopped_safe_restore]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_rollover_failure_policy_case[watchdog_start_failure]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_startup_gate_rejects_latch[fatal_only]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_o01_startup_gate_rejects_latch[recovery_only]",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_rollback_harness.py::test_power_shell_rollback_harness_latches_all_injected_failures",
+      "requirement": "O01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candidate",
+      "requirement": "R01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_reconcile_common_cutoff_vector_rejects_stale_then_sends_once_when_fresh",
+      "requirement": "R01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[connection]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[exception]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[none]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_a_reconcile_restart_lost_remove_blocks_entry_and_resolves[timeout]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_b_pending_visible_restart_does_not_repeat_remove_or_send",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_c_cancel_armed_crash_before_sdk_is_not_retried",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_d_cancel_control_resolves_remainder_before_economic_exit[4-CLOSED_SL]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_d_cancel_control_resolves_remainder_before_economic_exit[5-CLOSED_TP]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_e_rejected_remove_stays_distinct_then_confirmed_cancel_allows_new_order",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_p_legacy_cancel_without_arm_uses_outbox_ticket_without_fabricating_request[CANCEL_REJECTED]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_p_legacy_cancel_without_arm_uses_outbox_ticket_without_fabricating_request[CANCEL_UNKNOWN]",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_xm_mt5_forward.py::test_r02_p_legacy_outbox_ticket_conflict_is_unsafe_without_remove_or_send",
+      "requirement": "R02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_future_known_required_bar_waits_for_knowledge_without_artifacts",
+      "requirement": "R03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_missing_provider_metadata_waits_for_final_data_without_artifacts",
+      "requirement": "R03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once",
+      "requirement": "R03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_waits_for_complete_shared_fetch_scope_without_marker",
+      "requirement": "R03"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_fetch_window_preserves_provider_observation_after_requested_asof",
+      "requirement": "T01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_super1_xm_forward.py::test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile",
+      "requirement": "T01"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_future_known_required_bar_waits_for_knowledge_without_artifacts",
+      "requirement": "T02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_missing_provider_metadata_waits_for_final_data_without_artifacts",
+      "requirement": "T02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once",
+      "requirement": "T02"
+    },
+    {
+      "class": "BEHAVIOR",
+      "nodeid": "tests/test_capital_forward.py::test_finalize_waits_for_complete_shared_fetch_scope_without_marker",
+      "requirement": "T02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_attempt_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_checkpoint_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_nodeid_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_run_id_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_scenario_nonce_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_foreign_suite_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_nonrequired_node_observation_is_rejected",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_required_node_double_checkpoint_fails_session",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_required_node_double_record_actual_fails_session",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_required_node_without_checkpoint_fails_session",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v02_required_node_without_record_actual_fails_session",
+      "requirement": "V02"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_actual_tamper_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[attempt_id_split]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[authoritative_before_verified_receipt]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_before_fail_after_pass_contract]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_hash_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_missing]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[canonical_run_name_collision]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[claim_formula_changed]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[csv_temp_path]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_final_stdout_tamper]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_prepublish_stdout_tamper]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[diff_temp_path]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[fake_trace_actual]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[final_failure_quarantine_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_duplicate_required_node]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_foreign_node]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_missing_required_node]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[log_temp_path]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[mandatory_xm_config_missing]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_extra]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_missing]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[nested_json_absolute_path]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[normative_required_set_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[predecessor_changed]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_hash_changed]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_inventory_changed]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_checkpoint_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_identity_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_failure_quarantine_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_name_collision]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_partial_write]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_verifier_source_sha_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[semantic_verifier_source_sha_mismatch]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[stale_required_set]",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_ledger_tamper_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_missing_raw_source_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_snapshot_tamper_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_stale_raw_source_from_other_attempt_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_test_supplied_expected_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_test_supplied_measurement_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_trace_actual_override_is_rejected",
+      "requirement": "V03"
+    },
+    {
+      "class": "EVIDENCE_NEGATIVE",
+      "nodeid": "tests/test_super1_observation.py::test_v03_trace_tamper_is_rejected",
+      "requirement": "V03"
+    }
+  ],
+  "schema_version": 1
+}

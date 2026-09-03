@@ -60,6 +60,12 @@ if (-not (Test-Path -LiteralPath $SecureHelper -PathType Leaf) -or
     throw "Protected Super1 secure-task helper is missing or is a reparse point."
 }
 . $SecureHelper
+$FailureHelper = [IO.Path]::GetFullPath((Join-Path $App "deploy\super1_rollover_failure.ps1"))
+if (-not (Test-Path -LiteralPath $FailureHelper -PathType Leaf) -or
+    (Get-Item -LiteralPath $FailureHelper -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Protected Super1 rollover failure helper is missing or is a reparse point."
+}
+. $FailureHelper
 $InternalFlatScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\check_super1_flat_windows.ps1"))
 $ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
@@ -432,6 +438,10 @@ $candidatePairs = @(
     [pscustomobject]@{ Source = $ContractCandidate; Staged = (Join-Path $archive "super1_signal_contract.json.candidate"); Target = $ContractTarget; Backup = (Join-Path $archive "super1_signal_contract.json.previous") }
 )
 $tasksStopped = $false
+$brokerSideEffectPossible = $false
+$appMutation = $false
+$stateMutation = $false
+$taskXmlMutation = $false
 $requestEvidence = $null
 $transactionRequestEvidence = $null
 $initTransaction = $null
@@ -485,12 +495,15 @@ try {
         if ($pair.Target -eq $ContractTarget -and -not $contractPreviouslyPresent) {
             continue
         }
+        $appMutation = $true
         Copy-Item -LiteralPath $pair.Target -Destination $pair.Backup
     }
     foreach ($pair in $candidatePairs) {
+        $appMutation = $true
         Move-Item -LiteralPath $pair.Source -Destination $pair.Staged
     }
 
+    $stateMutation = $true
     Move-Item -LiteralPath $State -Destination $archivedState
     New-Item -ItemType Directory -Path $State | Out-Null
     Set-Acl -LiteralPath $State -AclObject $stateAcl
@@ -535,6 +548,9 @@ try {
         -Path $ProbeRequest `
         -Content $requestJson `
         -RunnerSid $runnerSid
+    # Runtime launch is the broker-side-effect boundary.  Any later failure
+    # preserves both state generations and forbids automatic restart.
+    $brokerSideEffectPossible = $true
     Start-ScheduledTask -TaskName $MainTask
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(45)
     do {
@@ -611,10 +627,148 @@ try {
 catch {
     $failure = $_
     $rollbackErrors = @()
-    try {
-        Stop-Super1SecureRuntime -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask
-    }
-    catch { $rollbackErrors += "stopped-state gate: $($_.Exception.Message)" }
+    $persistentLatch = $null
+    $writerResult = $null
+    $orchestration = Invoke-Super1RolloverCatchPolicy `
+        -StateRoot $State `
+        -BrokerSideEffectPossible ([bool]$brokerSideEffectPossible) `
+        -TasksStopped ([bool]$tasksStopped) `
+        -AppMutation ([bool]$appMutation) `
+        -StateMutation ([bool]$stateMutation) `
+        -TaskXmlMutation ([bool]$taskXmlMutation) `
+        -FatalLatchPreexisting (
+            Test-Path -LiteralPath (Join-Path $State "fatal_latch.json") -PathType Leaf
+        ) `
+        -RecoveryLatchPreexisting (
+            Test-Path -LiteralPath (Join-Path $State "runtime\broker_recovery_required.json") -PathType Leaf
+        ) `
+        -Restore {
+            foreach ($pair in $candidatePairs) {
+                if ($pair.Target -eq $ContractTarget -and -not $contractPreviouslyPresent) {
+                    if (Test-Path -LiteralPath $pair.Target -PathType Leaf) {
+                        Remove-Item -LiteralPath $pair.Target -Force
+                    }
+                }
+                elseif (Test-Path -LiteralPath $pair.Backup -PathType Leaf) {
+                    Copy-Item -LiteralPath $pair.Backup -Destination $pair.Target -Force
+                }
+            }
+            if (Test-Path -LiteralPath $archivedState -PathType Container) {
+                if (Test-Path -LiteralPath $State -PathType Container) {
+                    Remove-Item -LiteralPath $State -Recurse -Force
+                }
+                Move-Item -LiteralPath $archivedState -Destination $State
+                Set-Acl -LiteralPath $State -AclObject $stateAcl
+            }
+            foreach ($pair in $candidatePairs) {
+                if (Test-Path -LiteralPath $pair.Staged -PathType Leaf) {
+                    Move-Item -LiteralPath $pair.Staged -Destination $pair.Source
+                }
+            }
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -VerifyOldHashes {
+            foreach ($pair in $candidatePairs) {
+                if ($pair.Target -eq $ContractTarget -and -not $contractPreviouslyPresent) {
+                    if (Test-Path -LiteralPath $pair.Target -PathType Leaf) {
+                        throw "Old signal contract was recreated although it was absent before rollover."
+                    }
+                }
+                elseif (Test-Path -LiteralPath $pair.Backup -PathType Leaf) {
+                    if ((Get-Sha256Lower -Path $pair.Target) -ne (Get-Sha256Lower -Path $pair.Backup)) {
+                        throw "Old deployed hash was not restored: $($pair.Target)"
+                    }
+                }
+                if (-not (Test-Path -LiteralPath $pair.Source -PathType Leaf)) {
+                    throw "Old candidate was not restored: $($pair.Source)"
+                }
+            }
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -VerifyOldTaskXml {
+            Assert-FrozenSuper1TaskContracts
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -StartOldMain {
+            Start-ScheduledTask -TaskName $MainTask
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -StartOldWatchdog {
+            Start-ScheduledTask -TaskName $WatchdogTask
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -VerifyOldHealth {
+            $oldHealthPath = Join-Path $State "health.json"
+            $oldWatchdogPath = Join-Path $Root "watchdog_status.json"
+            $oldHealth = Get-Content -LiteralPath $oldHealthPath -Raw | ConvertFrom-Json
+            $oldWatchdog = Get-Content -LiteralPath $oldWatchdogPath -Raw | ConvertFrom-Json
+            if ([string]$oldHealth.state -ne "RUNNING" -or
+                [string]$oldWatchdog.state -ne "HEALTHY" -or
+                [string]$oldWatchdog.main_task -ne $MainTask) {
+                throw "Restored old Super1 health proof failed."
+            }
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -StopOldWatchdog {
+            Stop-ScheduledTask -TaskName $WatchdogTask -ErrorAction Stop
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -StopOldMain {
+            Stop-ScheduledTask -TaskName $MainTask -ErrorAction Stop
+            return [pscustomobject]@{ status = "PASS" }
+        } `
+        -WriteLatch {
+            $writerResult = Write-Super1FailureLatchesCreateNew `
+                -StateRoot $State `
+                -FailureMessage $failure.Exception.Message `
+                -FailureType $failure.Exception.GetType().FullName
+            if (-not $writerResult.latch_written -or -not $writerResult.recovery_written) {
+                throw "Independent failure latch writer did not complete both files."
+            }
+            return [pscustomobject]@{
+                status = "PASS"
+                latch_preexisting = [bool]$writerResult.latch_preexisting
+                recovery_preexisting = [bool]$writerResult.recovery_preexisting
+                latch_written = [bool]$writerResult.latch_written
+                recovery_written = [bool]$writerResult.recovery_written
+                paths = $writerResult.paths
+                errors = @($writerResult.errors)
+            }
+        } `
+        -WriteEvidence {
+            $failureEvidence = Join-Path $archive "broker-side-effect-failure.json"
+            [ordered]@{
+                schema_version = 1
+                state = "BROKER_SIDE_EFFECT_POSSIBLE"
+                recorded_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+                failure_type = $failure.Exception.GetType().FullName
+                failure_message = $failure.Exception.Message
+                runtime_start_attempted = $true
+                old_state_archive = $archivedState
+                active_state = $State
+                main_task = $MainTask
+                watchdog_task = $WatchdogTask
+                automatic_restart = $false
+                persistent_fatal_latch = Join-Path $State "fatal_latch.json"
+                persistent_broker_recovery = Join-Path $State "runtime\broker_recovery_required.json"
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $failureEvidence -Encoding UTF8 -NoNewline
+            return [pscustomobject]@{ status = "PASS"; path = $failureEvidence }
+        } `
+        -WriteHealth {
+            [ordered]@{
+                schema_version = 1
+                state = "CRITICAL_STOP"
+                failure = $failure.Exception.Message
+                recovery_required = $true
+                automatic_restart = $false
+                fatal_latch = Join-Path $State "fatal_latch.json"
+                stopped_proof = $false
+            } | ConvertTo-Json -Depth 5 | Set-Content `
+                -LiteralPath (Join-Path $State "health.json") -Encoding UTF8 -NoNewline
+            return [pscustomobject]@{ status = "PASS"; path = (Join-Path $State "health.json") }
+        }
+    $persistentLatch = if ($null -eq $writerResult -or -not $writerResult.latch_written) { $null } else { [pscustomobject]@{ Latch = $writerResult.paths.latch; Recovery = $writerResult.paths.recovery } }
+    $rollbackErrors += @($orchestration.Errors)
     if ($requestEvidence -and $requestEvidence.lock) {
         try { $requestEvidence.lock.Dispose(); $requestEvidence = $null }
         catch { $rollbackErrors += "probe read-lock cleanup: $($_.Exception.Message)" }
@@ -632,53 +786,13 @@ catch {
     if ($rollbackErrors.Count -ne 0) {
         throw "Super1 rollover failed ($($failure.Exception.Message)); rollback not safe: $($rollbackErrors -join '; ')"
     }
-
-    foreach ($pair in $candidatePairs) {
-        try {
-            if ($pair.Target -eq $ContractTarget -and -not $contractPreviouslyPresent) {
-                Remove-Item -LiteralPath $ContractTarget -Force -ErrorAction SilentlyContinue
-            }
-            elseif (Test-Path -LiteralPath $pair.Backup -PathType Leaf) {
-                Copy-Item -LiteralPath $pair.Backup -Destination $pair.Target -Force
-            }
-        }
-        catch { $rollbackErrors += "file restore $($pair.Target): $($_.Exception.Message)" }
+    if ($orchestration.status -eq "SAFE_ROLLBACK") {
+        throw $failure
     }
-
-    try {
-        if (Test-Path -LiteralPath $archivedState -PathType Container) {
-            if (Test-Path -LiteralPath $State) {
-                Move-Item -LiteralPath $State -Destination (Join-Path $archive "failed-new-state")
-            }
-            Move-Item -LiteralPath $archivedState -Destination $State
-        }
+    if (-not $orchestration.persistent_gate_proven) {
+        throw "Super1 rollover failed: persistent daemon-consumed failure latch could not be proven; explicit NO_GO; automatic restart forbidden."
     }
-    catch { $rollbackErrors += "state restore: $($_.Exception.Message)" }
-
-    foreach ($pair in $candidatePairs) {
-        try {
-            if ((Test-Path -LiteralPath $pair.Staged -PathType Leaf) -and -not (Test-Path -LiteralPath $pair.Source)) {
-                Move-Item -LiteralPath $pair.Staged -Destination $pair.Source
-            }
-        }
-        catch { $rollbackErrors += "candidate restore $($pair.Source): $($_.Exception.Message)" }
-    }
-
-    if ($tasksStopped -and $rollbackErrors.Count -eq 0) {
-        try {
-            Start-ScheduledTask -TaskName $MainTask
-            Start-ScheduledTask -TaskName $WatchdogTask
-        }
-        catch {
-            $rollbackErrors += "task restart: $($_.Exception.Message)"
-            Stop-ScheduledTask -TaskName $WatchdogTask -ErrorAction SilentlyContinue
-            Stop-ScheduledTask -TaskName $MainTask -ErrorAction SilentlyContinue
-        }
-    }
-    if ($rollbackErrors.Count -ne 0) {
-        throw "Super1 rollover failed ($($failure.Exception.Message)); rollback incomplete: $($rollbackErrors -join '; ')"
-    }
-    throw $failure
+    throw "Super1 rollover failed after unsafe boundary; broker side effect is possible or rollback proof failed. Persistent failure latches and evidence were preserved; automatic restart is forbidden."
 }
 finally {
     if ($requestEvidence -and $requestEvidence.lock) {

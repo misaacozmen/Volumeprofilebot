@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import run_capital_forward as core
 import run_xm_mt5_forward as xm
 from candidate_artifact import ArtifactValidationError, load_artifact
+from super1_terminal_r import calculate_terminal_r
 
 
 RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config.json"
@@ -23,10 +25,152 @@ SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest.jso
 FORWARD_SHADOW_ADAPTER = ROOT / "scripts" / "run_forward_shadow.py"
 DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
 REQUIRED_ENV = ("XM_MT5_SERVER",)
+RTH_CALENDAR_RELATIVE = "live_forward/calendars/us_equity_rth_2026.json"
+RTH_CALENDAR_STATES = {"OPEN", "EARLY_CLOSE", "CLOSED"}
 
 
 class Super1FeatureError(core.CriticalLiveError):
     pass
+
+
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise Super1FeatureError(f"RTH calendar contains duplicate JSON key: {key}.")
+        result[key] = value
+    return result
+
+
+def _safe_repo_file(relative: object, label: str) -> Path:
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise Super1FeatureError(f"{label} must be a repository-relative file path.")
+    candidate = ROOT / Path(relative)
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise Super1FeatureError(f"{label} escapes the repository.") from exc
+    if any(part.is_symlink() for part in [candidate, *candidate.parents]):
+        raise Super1FeatureError(f"{label} resolves through a reparse/symlink path.")
+    if not resolved.is_file():
+        raise Super1FeatureError(f"{label} is missing.")
+    return resolved
+
+
+def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
+    reference = runtime.get("rth_session_calendar")
+    if not isinstance(reference, dict):
+        raise Super1FeatureError("Verified RTH calendar reference is missing.")
+    if (
+        reference.get("path") != RTH_CALENDAR_RELATIVE
+        or reference.get("calendar_id") != "US_EQUITY_RTH_2026"
+        or not isinstance(reference.get("sha256"), str)
+    ):
+        raise Super1FeatureError("RTH calendar reference is not the sealed production format.")
+    path = _safe_repo_file(reference["path"], "RTH calendar")
+    raw = path.read_bytes()
+    actual_hash = core.file_hash(path)
+    if actual_hash != reference["sha256"]:
+        raise Super1FeatureError("RTH calendar raw hash mismatch.")
+    try:
+        calendar = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Super1FeatureError("RTH calendar JSON is invalid.") from exc
+    if not isinstance(calendar, dict):
+        raise Super1FeatureError("RTH calendar root must be an object.")
+    if (
+        calendar.get("schema_version") != 1
+        or calendar.get("calendar_id") != "US_EQUITY_RTH_2026"
+        or calendar.get("timezone") != core.TZ
+    ):
+        raise Super1FeatureError("RTH calendar identity or timezone is invalid.")
+    coverage = calendar.get("coverage")
+    if not isinstance(coverage, dict) or set(coverage) != {"start", "end"}:
+        raise Super1FeatureError("RTH calendar coverage is invalid.")
+    try:
+        coverage_start = pd.Timestamp(coverage["start"]).date()
+        coverage_end = pd.Timestamp(coverage["end"]).date()
+    except (TypeError, ValueError) as exc:
+        raise Super1FeatureError("RTH calendar coverage dates are invalid.") from exc
+    expected_dates = pd.date_range(coverage_start, coverage_end, freq="1D")
+    session_rows = calendar.get("sessions")
+    if not isinstance(session_rows, list) or len(session_rows) != len(expected_dates):
+        raise Super1FeatureError("RTH calendar does not cover every date exactly once.")
+    sessions: dict[str, dict[str, Any]] = {}
+    for row in session_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("date"), str):
+            raise Super1FeatureError("RTH calendar contains an invalid session row.")
+        date_key = row["date"]
+        if date_key in sessions:
+            raise Super1FeatureError(f"RTH calendar contains duplicate date: {date_key}.")
+        try:
+            parsed_date = pd.Timestamp(date_key).date()
+        except (TypeError, ValueError) as exc:
+            raise Super1FeatureError(f"RTH calendar date is invalid: {date_key}.") from exc
+        if parsed_date < coverage_start or parsed_date > coverage_end:
+            raise Super1FeatureError(f"RTH calendar date is outside coverage: {date_key}.")
+        state = str(row.get("state") or "")
+        if state not in RTH_CALENDAR_STATES:
+            raise Super1FeatureError(f"RTH calendar state is invalid: {date_key}.")
+        if state == "CLOSED":
+            if "start" in row or "end" in row:
+                raise Super1FeatureError(f"Closed RTH row must not contain hours: {date_key}.")
+        else:
+            start = row.get("start")
+            end = row.get("end")
+            if not isinstance(start, str) or not isinstance(end, str):
+                raise Super1FeatureError(f"Open RTH row has no complete hours: {date_key}.")
+            try:
+                start_time = pd.Timestamp(f"{date_key} {start}", tz=core.TZ)
+                end_time = pd.Timestamp(f"{date_key} {end}", tz=core.TZ)
+            except (TypeError, ValueError) as exc:
+                raise Super1FeatureError(f"RTH hours are invalid: {date_key}.") from exc
+            if start_time.strftime("%H:%M") != start or end_time.strftime("%H:%M") != end:
+                raise Super1FeatureError(f"RTH hours are not canonical local times: {date_key}.")
+            if start_time >= end_time or start != "09:30" or end not in {"13:00", "16:00"}:
+                raise Super1FeatureError(f"RTH hours are outside the US equity core session: {date_key}.")
+            if state == "EARLY_CLOSE" and end != "13:00":
+                raise Super1FeatureError(f"Early-close row has the wrong end time: {date_key}.")
+            if state == "OPEN" and end != "16:00":
+                raise Super1FeatureError(f"Open row has the wrong end time: {date_key}.")
+        sessions[date_key] = row
+    if set(sessions) != {item.strftime("%Y-%m-%d") for item in expected_dates}:
+        raise Super1FeatureError("RTH calendar date coverage has gaps or extra dates.")
+    source_records = calendar.get("source_records")
+    if not isinstance(source_records, list) or not source_records:
+        raise Super1FeatureError("RTH calendar source provenance is missing.")
+    source_ids = [source.get("id") for source in source_records if isinstance(source, dict)]
+    if source_ids != ["NASDAQ_TRADING_CALENDAR_2026", "NYSE_TRADING_CALENDAR_2026"]:
+        raise Super1FeatureError("RTH calendar source provenance must contain both official 2026 records in order.")
+    expected_urls = {
+        "NASDAQ_TRADING_CALENDAR_2026": "https://www.nasdaqtrader.com/Trader.aspx?id=calendar",
+        "NYSE_TRADING_CALENDAR_2026": "https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf",
+    }
+    for source in source_records:
+        if not isinstance(source, dict):
+            raise Super1FeatureError("RTH calendar source provenance row is invalid.")
+        source_path = _safe_repo_file(source.get("provenance_path"), "RTH source provenance")
+        if source.get("sha256") != core.file_hash(source_path):
+            raise Super1FeatureError(
+                f"RTH source provenance hash mismatch: {source_path.name}."
+            )
+        if source.get("bytes") != source_path.stat().st_size:
+            raise Super1FeatureError(
+                f"RTH source provenance byte count mismatch: {source_path.name}."
+            )
+        if source.get("url") != expected_urls.get(source.get("id")):
+            raise Super1FeatureError("RTH source provenance URL is invalid.")
+    return {
+        "path": str(path),
+        "sha256": actual_hash,
+        "calendar_id": calendar["calendar_id"],
+        "coverage": coverage,
+        "sessions": sessions,
+        "source_records": source_records,
+    }
 
 
 def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +232,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     signal_source = contract.get("signal_source", {})
     overlay = contract.get("overlay_candidate", {})
     order_transport = contract.get("demo_order_transport", {})
+    calendar_contract = contract.get("rth_session_calendar", {})
     safety = contract.get("safety", {})
     source_config = (ROOT / str(signal_source.get("config_path") or "")).resolve()
     source_generator = (ROOT / str(signal_source.get("generator_path") or "")).resolve()
@@ -126,9 +271,10 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or core.file_hash(overlay_runtime) != overlay.get("runtime_sha256")
         or order_transport_path != Path(xm.__file__).resolve()
         or core.file_hash(order_transport_path) != order_transport.get("sha256")
-        or order_transport.get("account_identity_gate")
-        != "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
-        or safety.get("independent_super1_signal_producer_present") is not False
+            or order_transport.get("account_identity_gate")
+            != "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
+            or calendar_contract != runtime.get("rth_session_calendar")
+            or safety.get("independent_super1_signal_producer_present") is not False
         or safety.get("demo_order_execution_enabled") is not True
         or safety.get("real_money_live_enabled") is not False
         or safety.get("fresh_forward_required") is not True
@@ -178,6 +324,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or manifest.get("proven") is not False
     ):
         raise Super1FeatureError("Super1 manifest is not bound to runtime and candidate bytes.")
+    load_verified_rth_calendar(runtime)
     return candidate
 
 
@@ -249,31 +396,93 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         self._last_sizing: dict[str, Any] | None = None
 
     def _overnight_direction(self, symbol: str, trade_date: str) -> str:
+        calendar = load_verified_rth_calendar(self.config)
         end = core.utc_now()
         start = end - pd.Timedelta(days=max(10, int(self.config.get("history_days", 10))))
         _, rates = self.prices(symbol, start, end)
-        rows = []
+        rows: list[tuple[str, pd.Timestamp, float, float]] = []
         for row in rates:
-            timestamp = pd.Timestamp(str(row["snapshotTimeUTC"])).tz_convert(core.TZ)
-            minute = timestamp.hour * 60 + timestamp.minute
-            if 570 <= minute <= 959:
-                rows.append(
-                    (
-                        str(timestamp.date()),
-                        minute,
-                        float(row["openPrice"]["bid"]),
-                        float(row["closePrice"]["bid"]),
-                    )
+            try:
+                timestamp = pd.Timestamp(str(row["snapshotTimeUTC"])).tz_convert(core.TZ)
+                open_price = float(row["openPrice"]["bid"])
+                close_price = float(row["closePrice"]["bid"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise Super1FeatureError(f"{symbol}: RTH adapter price row is invalid.") from exc
+            rows.append(
+                (
+                    str(timestamp.date()),
+                    timestamp,
+                    open_price,
+                    close_price,
                 )
-        sessions: dict[str, list[tuple[int, float, float]]] = {}
-        for date_key, minute, open_price, close_price in rows:
-            sessions.setdefault(date_key, []).append((minute, open_price, close_price))
-        current = sorted(sessions.get(trade_date) or [])
-        previous_dates = sorted(date_key for date_key in sessions if date_key < trade_date)
-        if not current or current[0][0] != 570 or not previous_dates:
-            raise Super1FeatureError(f"{symbol}: causal RTH open/previous close cannot be proven.")
-        previous = sorted(sessions[previous_dates[-1]])
-        change = current[0][1] - previous[-1][2]
+            )
+
+        sessions: dict[str, list[tuple[pd.Timestamp, float, float]]] = {}
+        for date_key, timestamp, open_price, close_price in rows:
+            sessions.setdefault(date_key, []).append((timestamp, open_price, close_price))
+
+        def session_spec(day: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+            entry = calendar["sessions"].get(day.strftime("%Y-%m-%d"))
+            if entry is None:
+                raise Super1FeatureError(
+                    f"{symbol}: RTH calendar has no verified session for {day.date()}"
+                )
+            if entry["state"] == "CLOSED":
+                return None
+            return (
+                pd.Timestamp(f"{day.date()} {entry['start']}", tz=core.TZ),
+                pd.Timestamp(f"{day.date()} {entry['end']}", tz=core.TZ),
+            )
+
+        def verified_session(
+            day: pd.Timestamp,
+            *,
+            require_open: bool,
+            require_close: bool,
+        ) -> tuple[float, float] | None:
+            spec = session_spec(day)
+            if spec is None:
+                return None
+            session_start, session_end = spec
+            selected = [
+                item
+                for item in sessions.get(str(day.date()), [])
+                if session_start <= item[0] < session_end
+            ]
+            timestamps = [item[0] for item in selected]
+            if len(timestamps) != len(set(timestamps)) or timestamps != sorted(timestamps):
+                raise Super1FeatureError(
+                    f"{symbol}: duplicate or out-of-order RTH bars cannot be proven."
+                )
+            opening = [item for item in selected if item[0] == session_start]
+            closing = [item for item in selected if item[0] == session_end - pd.Timedelta(minutes=1)]
+            if (require_open and len(opening) != 1) or (require_close and len(closing) != 1):
+                raise Super1FeatureError(
+                    f"{symbol}: causal RTH open/previous close cannot be proven for {day.date()}."
+                )
+            return (
+                float(opening[0][1]) if opening else float("nan"),
+                float(closing[0][2]) if closing else float("nan"),
+            )
+
+        current_day = pd.Timestamp(trade_date, tz=core.TZ)
+        current = verified_session(current_day, require_open=True, require_close=False)
+        if current is None:
+            raise Super1FeatureError(f"{symbol}: current RTH opening cannot be proven.")
+
+        previous_day = current_day - pd.Timedelta(days=1)
+        previous_spec: tuple[pd.Timestamp, pd.Timestamp] | None = None
+        for _ in range(370):
+            previous_spec = session_spec(previous_day)
+            if previous_spec is not None:
+                break
+            previous_day -= pd.Timedelta(days=1)
+        if previous_spec is None:
+            raise Super1FeatureError(f"{symbol}: previous RTH session cannot be proven.")
+        previous = verified_session(previous_day, require_open=False, require_close=True)
+        if previous is None:
+            raise Super1FeatureError(f"{symbol}: previous RTH close cannot be proven.")
+        change = current[0] - previous[1]
         return "up" if change >= 0 else "down"
 
     def _terminal_r_state(self) -> dict[str, Any]:
@@ -281,48 +490,22 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         now = core.utc_now()
         start = (now - pd.Timedelta(days=int(rule["terminal_history_days"]))).to_pydatetime()
         end = (now + pd.Timedelta(minutes=1)).to_pydatetime()
-        open_positions = {
-            int(getattr(item, "ticket", 0) or getattr(item, "identifier", 0))
-            for item in self._mt5_collection("positions_get")
-            if int(getattr(item, "magic", -1)) == self.magic
-        }
-        terminal_by_position: dict[int, tuple[int, int, float]] = {}
         configs, _, _ = core.live_strategy_objects()
         rewards = {
             str(self.config["legs"][key]["epic"]): float(configs[key].reward_r)
             for key in core.LEG_ORDER
         }
-        for deal in self._mt5_collection("history_deals_get", start, end):
-            if int(getattr(deal, "magic", -1)) != self.magic:
-                continue
-            if int(getattr(deal, "entry", -1)) != int(getattr(self.mt5, "DEAL_ENTRY_OUT", 1)):
-                continue
-            position = int(getattr(deal, "position_id", 0))
-            if not position or position in open_positions:
-                continue
-            reason = int(getattr(deal, "reason", -1))
-            if reason == int(getattr(self.mt5, "DEAL_REASON_SL", 4)):
-                raw_r = -1.0
-            elif reason == int(getattr(self.mt5, "DEAL_REASON_TP", 5)):
-                symbol = str(getattr(deal, "symbol", ""))
-                if symbol not in rewards:
-                    raise Super1FeatureError(f"Unknown Super1 terminal symbol: {symbol}.")
-                raw_r = rewards[symbol]
-            else:
-                raise Super1FeatureError(
-                    f"Super1 terminal reason is not an unambiguous TP/SL: {reason}."
-                )
-            if position in terminal_by_position:
-                raise Super1FeatureError(
-                    f"Super1 position {position} has multiple terminal deals; exact R is unresolved."
-                )
-            terminal_by_position[position] = (
-                int(getattr(deal, "time_msc", 0)),
-                int(getattr(deal, "ticket", 0)),
-                raw_r,
-            )
-        ordered = sorted(terminal_by_position.values())
-        terminal = [item[2] for item in ordered]
+        terminal_rows = calculate_terminal_r(
+            self._mt5_collection("history_deals_get", start, end),
+            self._mt5_collection("positions_get"),
+            magic=self.magic,
+            reward_by_symbol=rewards,
+            lookback=int(rule["lookback"]),
+            entry_out=int(getattr(self.mt5, "DEAL_ENTRY_OUT", 1)),
+            reason_sl=int(getattr(self.mt5, "DEAL_REASON_SL", 4)),
+            reason_tp=int(getattr(self.mt5, "DEAL_REASON_TP", 5)),
+        )
+        terminal = [float(item["r"]) for item in terminal_rows]
         lookback = int(rule["lookback"])
         state_sum = float(sum(terminal[-lookback:]))
         scale = float(rule["negative_scale"] if state_sum < 0 else rule["nonnegative_scale"])
@@ -454,34 +637,175 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 }
         return {"state": "ALLOW", "rule": None, "features": features}
 
+    def _persist_filter_terminal(
+        self,
+        output_root: Path,
+        decision: dict[str, Any],
+        filter_state: dict[str, Any],
+        state: str,
+        reason: str,
+        prefix_record: dict[str, Any] | None,
+    ) -> dict[str, object]:
+        """Persist a filter terminal outcome atomically before any broker call."""
+        order_id = str(decision["order_id"])
+        comment = self._comment(str(decision["leg_key"]), order_id)
+        event_name = (
+            "SUPER1_FILTER_TERMINAL"
+            if state == "FILTER_BLOCKED"
+            else "SUPER1_FILTER_DEFERRED"
+        )
+        public_state = (
+            "SUPER1_FILTER_BLOCKED"
+            if state == "FILTER_BLOCKED"
+            else "SUPER1_FILTER_UNRESOLVED_NO_SEND"
+        )
+        prefix_bytes = (
+            core.canonical_json(prefix_record).encode("utf-8") if isinstance(prefix_record, dict) else b""
+        )
+        evidence = {
+            "filter_state": filter_state,
+            "reason": reason,
+            "decision": decision,
+            "cutoffs": {} if not isinstance(prefix_record, dict) else prefix_record.get("cutoffs", {}),
+        }
+        evidence_hash = hashlib.sha256(core.canonical_json(evidence).encode("utf-8")).hexdigest()
+        now = core.utc_now().isoformat()
+        connection = self._order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT status FROM order_intents WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            execution = connection.execute(
+                "SELECT state FROM broker_execution_states WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            if existing is not None or execution is not None:
+                current = str(existing[0]) if existing is not None else str(execution[0])
+                if current in {"FILTER_BLOCKED", "FILTER_UNRESOLVED_DEFERRED"}:
+                    connection.commit()
+                    return {
+                        "state": public_state,
+                        "persistent_state": current,
+                        "order_id": order_id,
+                        "idempotent": True,
+                        "filter_state": filter_state,
+                        "cancelled_pending": [],
+                    }
+                connection.commit()
+                return {
+                    "state": "FILTER_DEFERRED_TO_BASE_LIFECYCLE",
+                    "order_id": order_id,
+                    "existing_state": current,
+                }
+            broker_objects = self._broker_objects(comment)
+            if broker_objects:
+                connection.commit()
+                return {
+                    "state": "FILTER_DEFERRED_TO_BASE_LIFECYCLE",
+                    "order_id": order_id,
+                    "reason": "broker_object_exists_before_filter_terminal",
+                }
+            connection.execute(
+                """INSERT INTO order_intents
+                   (order_id, status, comment, request_json, broker_ticket, created_at, updated_at)
+                   VALUES (?, ?, ?, NULL, NULL, ?, ?)""",
+                (order_id, state, comment, now, now),
+            )
+            connection.execute(
+                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                (
+                    order_id,
+                    core.canonical_json(
+                        {
+                            "recorded_at": now,
+                            "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
+                            "event": event_name,
+                            "order_id": order_id,
+                            "comment": comment,
+                            "reason": reason,
+                            "prefix_sha256": hashlib.sha256(prefix_bytes).hexdigest(),
+                            "prefix_bytes": len(prefix_bytes),
+                            "cutoffs": evidence["cutoffs"],
+                            "filter_evidence_sha256": evidence_hash,
+                            "request_json": None,
+                            "broker_ticket": None,
+                        }
+                    ),
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
+        return {
+            "state": public_state,
+            "persistent_state": state,
+            "order_id": order_id,
+            "filter_state": filter_state,
+            "cancelled_pending": [],
+        }
+
     def _place_candidate(
         self,
         output_root: Path,
         decision: dict[str, Any],
         symbol: str,
         reward_r: float,
+        *,
+        prefix_record: dict[str, Any] | None = None,
+        send_now: pd.Timestamp | None = None,
     ) -> dict[str, object]:
         order_id = str(decision["order_id"])
         comment = self._comment(str(decision["leg_key"]), order_id)
 
-        def blocked_result(state: str, **fields: Any) -> dict[str, object]:
-            cancelled = []
-            for kind, item in self._broker_objects(comment):
-                if kind == "ORDER":
-                    cancelled.append(self._remove_order(output_root, item, state, order_id))
-            return {"state": state, "order_id": order_id, "cancelled_pending": cancelled, **fields}
-
         try:
             filter_state = self._filter_state(decision)
         except Super1FeatureError as exc:
-            return blocked_result("SUPER1_FILTER_UNRESOLVED_NO_SEND", reason=str(exc))
+            unresolved = {
+                    "state": "UNRESOLVED",
+                    "rule": None,
+                    "features": {
+                        "entry_weekday": pd.Timestamp(
+                            str(decision.get("date") or "")
+                        ).day_name(),
+                        "direction": str(decision.get("direction") or ""),
+                    },
+                }
+            return self._persist_filter_terminal(
+                output_root, decision, unresolved, "FILTER_UNRESOLVED_DEFERRED", str(exc), prefix_record
+            )
         if filter_state["state"] == "BLOCK":
-            return blocked_result("SUPER1_FILTER_BLOCKED", **filter_state)
+            return self._persist_filter_terminal(
+                output_root, decision, filter_state, "FILTER_BLOCKED", "FILTER_RULE_BLOCK", prefix_record
+            )
+        prior_filter = self._intent_state(output_root, order_id)
+        if prior_filter and prior_filter["status"] == "FILTER_UNRESOLVED_DEFERRED":
+            self._transition_order_intent(
+                output_root,
+                order_id,
+                "PRE_SEND_DEFERRED",
+                {
+                    "event": "SUPER1_FILTER_PROMOTED",
+                    "order_id": order_id,
+                    "reason": "NEWER_COMPLETE_FILTER_EVIDENCE",
+                    "filter_state": filter_state,
+                },
+            )
         risk_state = self._terminal_r_state()
         self._active_risk_scale = float(risk_state["risk_scale"])
         self._last_sizing = None
         try:
-            result = super()._place_candidate(output_root, decision, symbol, reward_r)
+            result = super()._place_candidate(
+                output_root,
+                decision,
+                symbol,
+                reward_r,
+                prefix_record=prefix_record,
+                send_now=send_now,
+            )
             if result.get("state") == "SUBMITTED" and self._last_sizing is not None:
                 self._append_order_event(
                     output_root,
@@ -494,7 +818,12 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                         "filter_features": filter_state["features"],
                     },
                 )
-            return {**result, "risk_state": risk_state, "filter_features": filter_state["features"]}
+            return {
+                **result,
+                "risk_state": risk_state,
+                "filter_state": filter_state,
+                "filter_features": filter_state["features"],
+            }
         finally:
             self._active_risk_scale = None
             self._last_sizing = None

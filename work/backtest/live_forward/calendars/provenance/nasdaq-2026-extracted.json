@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source_id": "NASDAQ_TRADING_CALENDAR_2026",
+  "source_url": "https://www.nasdaqtrader.com/Trader.aspx?id=calendar",
+  "raw_source_path": "live_forward/calendars/provenance/nasdaq-trading-calendar-2026.html",
+  "raw_source_sha256": "7157170ba5963e269401ad01f2b4215d1fffbf7408fa2187b2f74a04fafbb0b3",
+  "extraction_method": "HTML table row extraction from the downloaded 2026 holiday table",
+  "visual_manual_review": false,
+  "source_table": "2026 Holiday / Status",
+  "records": [
+    {"date": "2026-01-01", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 843}},
+    {"date": "2026-01-19", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 844}},
+    {"date": "2026-02-16", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 845}},
+    {"date": "2026-04-03", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 846}},
+    {"date": "2026-05-25", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 847}},
+    {"date": "2026-06-19", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 848}},
+    {"date": "2026-07-03", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 849}},
+    {"date": "2026-09-07", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 850}},
+    {"date": "2026-11-26", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 851}},
+    {"date": "2026-11-27", "status": "EARLY_CLOSE", "session_end": "13:00", "source_location": {"html_line": 852}},
+    {"date": "2026-12-24", "status": "EARLY_CLOSE", "session_end": "13:00", "source_location": {"html_line": 853}},
+    {"date": "2026-12-25", "status": "CLOSED", "session_end": null, "source_location": {"html_line": 854}}
+  ]
+}

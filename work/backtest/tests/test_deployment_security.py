@@ -521,6 +521,17 @@ def test_super1_rollover_consumes_two_sealed_flat_proofs_and_fixed_init() -> Non
     assert "previousRunScript" not in source
 
 
+def test_super1_rollover_preserves_state_after_runtime_start_attempt() -> None:
+    source = text("rollover_super1_campaign_windows.ps1")
+
+    assert "$brokerSideEffectPossible = $false" in source
+    assert "$brokerSideEffectPossible = $true" in source
+    assert 'state = "BROKER_SIDE_EFFECT_POSSIBLE"' in source
+    assert 'automatic_restart = $false' in source
+    assert "Invoke-Super1RolloverCatchPolicy" in source
+    assert "-BrokerSideEffectPossible ([bool]$brokerSideEffectPossible)" in source
+
+
 def test_super1_upgrade_pins_and_hardens_python_terminal_and_config() -> None:
     source = text("upgrade_super1_signed_app_windows.ps1")
     header = source[: source.index(")\n\n$ErrorActionPreference")]

@@ -1,0 +1,974 @@
+{
+  "schema_version": 1,
+  "contract_id": "SUPER1_SEMANTIC_DISCOVERY_CONTRACT_V10_20260903",
+  "status": "DISCOVERY_ONLY_REVIEW_REQUIRED",
+  "semantic_acceptance_authority": false,
+  "semantic_engine_implementation_allowed": false,
+  "discovery_scaffolding_changes_allowed": true,
+  "purpose": "Produce the missing architect-reviewable raw-schema and per-rule derivation map without allowing an engineer-selected semantic oracle.",
+  "authority": {
+    "owner": "project_architect",
+    "v08_path": "docs/SUPER1_REQUIRED_NODE_MANIFEST_V08_20260901.json",
+    "v08_sha256": "d58ec29ba93cdbc88a9978e1860bf8ae5eaf8fa5913778a6de1b5d1ff2c3fbdf",
+    "v09_path": "docs/SUPER1_SEMANTIC_CONTRACT_V09_20260902.json",
+    "v09_sha256": "6710b28110da8ca3289dba53241cf96b93f29bb29af8accf2ed93b550ba5cc33",
+    "instruction_09_path": "docs/SUPER1_MUHENDIS_TALIMATI_09_20260902.md",
+    "instruction_09_sha256": "1dba834113f24c947a6eeedfa2115a4bd16e7bb54661b6585d3ad2dd8742aa39",
+    "instruction_10_path": "docs/SUPER1_MUHENDIS_TALIMATI_10_20260903.md",
+    "precedence": "This discovery contract classifies ambiguities and fixes only discovery-package mechanics. V09 bytes remain immutable but are not executable as a complete semantic specification. No discovery classification becomes semantic authority until a later architect-owned execution contract publishes its SHA-256."
+  },
+  "immutable_history": {
+    "run_025_path": "outputs/super1_readiness_20260831/run-025.failed-61601d36e1cc449c9f84a99574ed2bcb",
+    "run_025_attempt_id": "61601d36e1cc449c9f84a99574ed2bcb",
+    "run_025_state": "QUARANTINED_NONAUTHORITATIVE",
+    "canonical_run_025_must_be_absent": true,
+    "run_025_receipt_must_be_absent": true,
+    "preserve_rule": "All existing canonical, receipt, temporary-failed, failed-run, failed-receipt, baseline, and architect files are byte-exact immutable.",
+    "new_readiness_run_forbidden_in_discovery": true,
+    "current_first_free_readiness_id_informational_only": "run-026",
+    "readiness_id_must_be_recomputed_later": true
+  },
+  "accepted_run_025_facts": {
+    "targeted_junit_pass": 217,
+    "full_junit_pass": 515,
+    "behavior_nodes_per_suite": 164,
+    "behavior_parent_observations_two_suites": 328,
+    "current_run_025_single_instance_capture_pairs_per_suite": 527,
+    "current_run_025_pair_count_is_normative_for_future_multiplicity": false,
+    "semantic_rules": 1179,
+    "clean_rule_evaluations_two_suites": 2358,
+    "clean_rule_pass": 192,
+    "clean_rule_fail": 2166,
+    "derived_null": 2018,
+    "semantic_node_fail": 328,
+    "negative_reported_pass": 53,
+    "counterfactual_not_executed": 1179,
+    "semantic_acceptance": false,
+    "counterfactual_semantics_ok": false,
+    "overall": "NO_GO",
+    "input_inventory_rows": 9459,
+    "input_inventory_before_after_equal_inside_attempt": true,
+    "post_attempt_current_source_changed_rows": 1,
+    "post_attempt_current_source_missing_rows": 0,
+    "sealed_runner_sha256": "1831eaab561ea480937209ae1e8a9f40dcc7e1cecd163b81fd3a98a062caeea0",
+    "sealed_runner_bytes": 54013,
+    "current_runner_sha256_at_architect_audit": "a731aae223a329a7bd3bc2fca6fdd23a9d13350bcac1debb9caf128e2af61f28",
+    "current_runner_bytes_at_architect_audit": 54059,
+    "runner_drift_timing": "POST_RUN_025_ATTEMPT",
+    "quarantine_file_count": 227081,
+    "quarantine_total_bytes": 1103393378,
+    "negative_case_directory_count": 53,
+    "negative_case_file_count": 222346,
+    "negative_case_hardcoded_name_pattern": "run-018-negative-*-22320",
+    "negative_result_absolute_python_path_occurrences": 106
+  },
+  "architect_gap_facts": {
+    "v09_rules_with_generic_source_pointer_only": 1179,
+    "v09_rules_with_counterfactual_pointer_placeholder": 1179,
+    "capture_fields_typed_as_closed_object_or_closed_object_of_scalar_without_nested_schema": 39,
+    "capture_fields_typed_as_closed_member_object_without_nested_schema": 2,
+    "v09_required_raw_fields_colliding_with_raw_projection_forbidden_keys": 6,
+    "unique_left_projection_paths": 190,
+    "generic_named_fact_rule_count": 764,
+    "generic_named_fact_unique_paths": 173,
+    "unique_left_capture_set_op_groups": 230,
+    "groups_with_multiple_distinct_right_literals": 61,
+    "consequence": "A semantic implementation cannot be architect-approved until an exact nested-schema and per-rule dependency/formula map is reviewed and sealed."
+  },
+  "rejected_as_proof": [
+    "The 53/53 negative summary because errors were substring-matched, any nonzero exit was accepted, several clean fixtures were fabricated, and final replay was absent.",
+    "The reporter process exit code 0 because semantic_acceptance was false while the CLI returned success.",
+    "The current raw captures because stack-frame discovery, root guessing, defaults, sentinels, and empty fixtures were used instead of registered SUT resources.",
+    "The current semantic verifier because it did not independently evaluate the 1179 assertions.",
+    "Any SEALED_CANDIDATE label inside the quarantined run because canonical_published and receipt_published are false and the directory is a failed namespace."
+  ],
+  "v09_raw_key_collision_discovery_classification": {
+    "reason": "V09 lists six source-native capture fields in raw_payload_forbidden_projection_keys while also requiring those exact fields in capture_schemas. This is an architect-contract contradiction, not an engineer-resolvable implementation choice.",
+    "conflicting_exact_capture_pointer": [
+      {
+        "capture_type": "snapshot_validation",
+        "pointer": "/source_tree"
+      },
+      {
+        "capture_type": "terminal_r_evaluation",
+        "pointer": "/last_n"
+      },
+      {
+        "capture_type": "terminal_r_evaluation",
+        "pointer": "/ordered_full_terminal_rows"
+      },
+      {
+        "capture_type": "terminal_r_evaluation",
+        "pointer": "/risk_scale"
+      },
+      {
+        "capture_type": "terminal_r_evaluation",
+        "pointer": "/state_sum"
+      },
+      {
+        "capture_type": "rollback_policy",
+        "pointer": "/input_vector"
+      }
+    ],
+    "discovery_handling": "Inventory these fields as source-native candidates at the named capture/pointer and flag the conflict in the proposal. Do not treat them as approved semantic inputs or as an exception to V09 during acceptance.",
+    "semantic_authority": false,
+    "future_resolution_required": "A later architect-owned execution contract must either approve exact source-native schema locations or rename the raw fields while retaining V09 projection prohibitions.",
+    "same_keys_elsewhere": "They remain prohibited as test-supplied summaries, parent observation projections, reporter-to-verifier actuals, or fields written merely to mirror a V09 projection."
+  },
+  "closed_scope": {
+    "allowed": [
+      "read-only source and artifact inspection",
+      "local synthetic fixture discovery",
+      "evidence producer registration refactor needed to expose actual synthetic SUT resources",
+      "proposal generator and proposal validators",
+      "local tests dedicated to the discovery package",
+      "a noncanonical review package under outputs/super1_semantic_discovery_20260903"
+    ],
+    "forbidden": [
+      "SSH",
+      "source or target server access",
+      "MT5 initialize or login",
+      "broker network access or order submission",
+      "scheduled task query or mutation",
+      "deployment, transfer, installation, service mutation, or rollover",
+      "successor release build",
+      "production package signing",
+      "canonical readiness run or receipt publication",
+      "setting semantic, local acceptance, delivery, proven, parity, safe_to_apply, or apply_allowed claims true"
+    ]
+  },
+  "discovery_stage_gate": {
+    "required_order": [
+      "verify immutable inputs and current source bytes",
+      "record a new source baseline without attributing current bytes to run-025",
+      "remove implicit resource discovery and fallback capture production",
+      "bind concrete resources outside behavior-test bodies",
+      "collect a noncanonical targeted and full discovery corpus",
+      "emit nested raw schema proposal",
+      "emit exactly 1179 per-rule derivation proposals",
+      "run structural proposal validators",
+      "publish only a REVIEW_REQUIRED discovery package",
+      "stop and return the package to the architect"
+    ],
+    "semantic_reporter_or_verifier_completion_forbidden": true,
+    "counterfactual_execution_forbidden_until_architect_mapping_approval": true,
+    "negative_53_reacceptance_forbidden_until_architect_mapping_approval": true,
+    "readiness_runner_execution_forbidden": true
+  },
+  "resource_registration_contract": {
+    "registration_owner": "pytest plugin typed registry",
+    "registration_location": "fixture or SUT factory setup; never the behavior-test body",
+    "behavior_test_api_exact": [
+      "checkpoint = actual_evidence.checkpoint()",
+      "actual_evidence.record_actual(checkpoint=checkpoint)"
+    ],
+    "test_may_supply": [],
+    "test_may_not_supply": [
+      "raw bytes",
+      "path",
+      "adapter",
+      "expected",
+      "actual",
+      "measurement",
+      "projection",
+      "state summary",
+      "counter",
+      "nonce",
+      "checkpoint id"
+    ],
+    "registered_handle_requirements": [
+      "capture_type equals one of the V09 required_capture_types for the node",
+      "each of the 527 required node/capture-type slots per suite registers every concrete resource instance used by the tested public path; a slot may contain one or more instances",
+      "each instance has a nonempty stable resource_role describing its domain role rather than its incidental filename or array index",
+      "the discovery package proposes the exact resource_role set per node/capture type; the engineer cannot mark that role set architect-approved",
+      "the handle is the same object, file, database, subprocess record, or broker stub consumed by the tested public SUT path",
+      "resource_instance_id is generated by the plugin at registration and remains identical across before and after",
+      "an unbound, ambiguous, or guessed resource instance is BLOCKED and cannot be replaced by the first matching resource",
+      "capture errors fail the test session; they never produce an empty or default payload"
+    ],
+    "required_capture_type_slots_per_suite": 527,
+    "minimum_resource_instances_per_suite": 527,
+    "exact_resource_instance_count_known_before_discovery": false,
+    "future_acceptance_requires_architect_approved_role_sets": true,
+    "forbidden_implementation_mechanisms": [
+      "inspect.currentframe or any frame/local/global scan",
+      "name-based first matching dictionary lookup",
+      "guessing a fixture root from arbitrary Path locals",
+      "walking the repository to guess the SUT resource",
+      "catching a capture exception and returning an empty collection",
+      "current wall-clock time as a substitute for an invocation time",
+      "hardcoded fixture-observation, observed-filter, test-boundary, observed-policy, argv python, empty release, empty rollback, empty AST, or default risk payloads"
+    ],
+    "capture_types_exact": [
+      "sdk_call_trace",
+      "order_store_sqlite",
+      "market_fetch_store_sqlite",
+      "broker_readback",
+      "filesystem_inventory",
+      "subprocess_trace",
+      "calendar_validation",
+      "filter_evidence",
+      "exclusive_writer_trace",
+      "release_archive_validation",
+      "transition_validation",
+      "snapshot_validation",
+      "terminal_r_evaluation",
+      "rollback_policy",
+      "powershell_ast",
+      "order_event_jsonl",
+      "scenario_invocation_trace"
+    ]
+  },
+  "sdk_call_row_minimum_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sequence",
+      "method",
+      "request_canonical",
+      "request_sha256",
+      "action_raw",
+      "trade_action_pending_raw",
+      "trade_action_remove_raw",
+      "response_raw_ref",
+      "exception_class"
+    ],
+    "properties": {
+      "sequence": "integer>=0",
+      "method": "nonempty_string",
+      "request_canonical": "object_validated_by_exact_request_schema_id_from_raw_schema_bundle_proposal",
+      "request_sha256": "sha256_of_rfc8785_request_canonical",
+      "action_raw": "integer_or_null",
+      "trade_action_pending_raw": "integer_exact_5_for_current_synthetic_mt5_contract",
+      "trade_action_remove_raw": "integer_exact_8_for_current_synthetic_mt5_contract",
+      "response_raw_ref": "normalized_relative_path_or_null",
+      "exception_class": "nonempty_string_or_null"
+    },
+    "count_rule": "Count only after-slice rows whose action_raw strictly equals the corresponding captured integer constant. String containment and sent-count fabrication are forbidden."
+  },
+  "proposal_package": {
+    "base_path": "outputs/super1_semantic_discovery_20260903",
+    "attempt_name": "proposal-NNN.review-required-<32-lower-hex-attempt-id>",
+    "temp_name": ".proposal-NNN.tmp-<32-lower-hex-attempt-id>",
+    "failed_name": "proposal-NNN.failed-<32-lower-hex-attempt-id>",
+    "id_selection": "first positive three-digit proposal id absent across temp, review-required, failed, and receipt namespaces",
+    "canonical_or_receipt_forbidden": true,
+    "publication_status_exact": "REVIEW_REQUIRED",
+    "authoritative": false,
+    "implementation_allowed": false,
+    "required_top_level_members": [
+      "discovery-readiness.json",
+      "source-inventory-before.json",
+      "source-inventory-after.json",
+      "source-allowed-diff-ledger.json",
+      "history-integrity-before.json",
+      "history-integrity-after.json",
+      "capture-registration-ledger.json",
+      "capture-role-set-proposal.json",
+      "raw-blob-inventory.json",
+      "raw-schema-bundle-proposal.json",
+      "semantic-derivation-proposal.json",
+      "semantic-derivation-proposal-validation.json",
+      "unresolved-rules.json",
+      "discovery-process-metadata.json",
+      "discovery-output-manifest.json"
+    ],
+    "required_subtrees": [
+      "inputs/architect",
+      "probe/targeted",
+      "probe/full",
+      "probe/collection"
+    ],
+    "architect_input_members_exact": [
+      "inputs/architect/SUPER1_REQUIRED_NODE_MANIFEST_V08_20260901.json",
+      "inputs/architect/SUPER1_SEMANTIC_CONTRACT_V09_20260902.json",
+      "inputs/architect/SUPER1_SEMANTIC_DISCOVERY_CONTRACT_V10_20260903.json",
+      "inputs/architect/SUPER1_MUHENDIS_TALIMATI_09_20260902.md",
+      "inputs/architect/SUPER1_MUHENDIS_TALIMATI_10_20260903.md"
+    ],
+    "probe_suite_members_minimum": [
+      "junit.xml",
+      "stdout.bin",
+      "stderr.bin",
+      "registration-status.json",
+      "observations",
+      "raw"
+    ],
+    "probe_collection_members_exact": [
+      "inventory.json",
+      "stdout.bin",
+      "stderr.bin"
+    ],
+    "manifest_rule": "Every package member except discovery-output-manifest.json appears exactly once with normalized relative path, byte count, and SHA-256; manifest is create-new and last.",
+    "final_state_rule": "The package is review evidence only. PUBLISHED, SEALED, PASS_FOR_IMPLEMENTATION, or AUTHORITATIVE may not be used as a state value; authoritative must remain the boolean false."
+  },
+  "capture_registration_ledger_entry": {
+    "unique_key": [
+      "suite",
+      "nodeid",
+      "capture_type",
+      "resource_role"
+    ],
+    "required_exact": [
+      "suite",
+      "nodeid",
+      "scenario_id",
+      "capture_type",
+      "resource_role",
+      "resource_instance_id",
+      "adapter_id",
+      "sut_owner_path",
+      "sut_owner_symbol",
+      "fixture_factory_path",
+      "fixture_factory_symbol",
+      "binding_method",
+      "before_raw_blob_refs",
+      "after_raw_blob_refs",
+      "before_envelope_ref",
+      "after_envelope_ref",
+      "blocker_codes",
+      "status"
+    ],
+    "status_enum": [
+      "CONCRETE_BOUND",
+      "BLOCKED_AMBIGUOUS_RESOURCE",
+      "BLOCKED_MISSING_RESOURCE"
+    ],
+    "binding_method_exact": "EXPLICIT_FACTORY_REGISTRATION",
+    "captured_entry_requires_nonempty_resource_role_and_raw_blob_refs": true,
+    "blocked_entry_requires_empty_raw_refs_and_nonempty_blocker_codes": true,
+    "resource_instance_id_attempt_global_unique_and_before_after_stable": true,
+    "source_paths_must_be_repo_relative": true,
+    "absolute_or_temp_paths_forbidden": true
+  },
+  "capture_role_set_proposal_entry": {
+    "key": [
+      "nodeid",
+      "capture_type"
+    ],
+    "required_exact": [
+      "nodeid",
+      "scenario_id",
+      "capture_type",
+      "resource_roles_targeted",
+      "resource_roles_full",
+      "role_sets_equal",
+      "source_citations",
+      "architect_approved",
+      "blocker_codes",
+      "status"
+    ],
+    "cardinality": 527,
+    "architect_approved_exact": false,
+    "status_enum": [
+      "PROPOSED_SINGLE_CANDIDATE",
+      "BLOCKED_AMBIGUOUS_ROLE_SET",
+      "BLOCKED_MISSING_RESOURCE"
+    ]
+  },
+  "raw_blob_inventory_entry": {
+    "unique_key": [
+      "suite",
+      "nodeid",
+      "capture_type",
+      "resource_role",
+      "phase",
+      "blob_role",
+      "relative_path"
+    ],
+    "required_exact": [
+      "suite",
+      "nodeid",
+      "capture_type",
+      "resource_role",
+      "resource_instance_id",
+      "phase",
+      "blob_role",
+      "relative_path",
+      "media_type",
+      "bytes",
+      "sha256",
+      "source_byte_identity_method"
+    ],
+    "blob_roles_include_when_applicable": [
+      "sqlite_backup",
+      "sqlite_wal",
+      "filesystem_member",
+      "stdout",
+      "stderr",
+      "calendar_source",
+      "archive",
+      "archive_manifest",
+      "signature",
+      "trust_root",
+      "powershell_source",
+      "jsonl_source",
+      "invocation_args",
+      "invocation_response",
+      "sdk_request",
+      "sdk_response",
+      "broker_readback"
+    ],
+    "producer_semantic_summary_forbidden": true,
+    "truncation_forbidden": true
+  },
+  "raw_schema_bundle_proposal_contract": {
+    "dialect": "https://json-schema.org/draft/2020-12/schema",
+    "root_binding_key": [
+      "nodeid",
+      "capture_type",
+      "resource_role",
+      "phase"
+    ],
+    "root_binding_value_requires_schema_id": true,
+    "required_bundle_members": [
+      "$schema",
+      "$defs",
+      "root_bindings",
+      "source_citations",
+      "architect_approved",
+      "blockers"
+    ],
+    "architect_approved_exact": false,
+    "requirements": [
+      "every captured resource instance phase has exactly one root schema binding",
+      "all object schemas declare required and additionalProperties false",
+      "all arrays declare items and exact ordering/cardinality rules",
+      "variants use oneOf with a closed discriminator and const values",
+      "dynamic maps are represented as arrays of closed key/value records with uniqueness and deterministic key ordering",
+      "SHA-256, RFC3339, normalized path, finite-number, duplicate-key, canonical JSON, and raw-byte rules are explicit",
+      "schema exhaustiveness cites a production source model, SQLite DDL, public serializer, or public harness serializer; observed examples alone are insufficient",
+      "the 39 closed_object fields and two closed_member_object fields identified in V09 are recursively resolved or explicitly BLOCKED"
+    ],
+    "blocked_statuses": [
+      "BLOCKED_SCHEMA_VARIANCE",
+      "BLOCKED_SOURCE_MODEL_MISSING",
+      "BLOCKED_SERIALIZER_NOT_EXHAUSTIVE"
+    ],
+    "empty_schema_or_wildcard_forbidden": true
+  },
+  "semantic_derivation_proposal_entry": {
+    "cardinality": 1179,
+    "key": "rule_id",
+    "required_exact": [
+      "rule_id",
+      "nodeid",
+      "scenario_id",
+      "assertion_index",
+      "algorithm",
+      "op",
+      "left_projection_pointer",
+      "right_operand_kind",
+      "output_json_type",
+      "dependency_specs",
+      "reference_dependency_specs",
+      "left_formula_ast",
+      "right_formula_ast",
+      "source_citations",
+      "targeted_probe",
+      "full_probe",
+      "counterfactual_witness_proposal",
+      "ambiguities",
+      "architect_approved",
+      "status"
+    ],
+    "rule_set": "exact key set of all V09 behavior_bindings assertions",
+    "node_set": "exact 164 V09 behavior binding keys",
+    "algorithm_must_equal_v09": true,
+    "op_must_equal_v09": true,
+    "left_must_equal_v09": true,
+    "right_operand_kind_enum": [
+      "V09_LITERAL",
+      "SAME_BINDING_DERIVED_REFERENCE",
+      "NONE"
+    ],
+    "op_to_right_operand_kind": {
+      "EQ_REF": "SAME_BINDING_DERIVED_REFERENCE",
+      "NE_REF": "SAME_BINDING_DERIVED_REFERENCE",
+      "UNCHANGED": "NONE",
+      "CHANGED": "NONE",
+      "all_other_v09_ops_used_by_a_rule": "V09_LITERAL"
+    },
+    "dependency_spec_required_exact": [
+      "dependency_id",
+      "capture_type",
+      "resource_role",
+      "phase",
+      "schema_id",
+      "typed_selector_ast",
+      "dependency_kind",
+      "semantic_role"
+    ],
+    "dependency_kind_enum": [
+      "scalar",
+      "array_membership",
+      "array_order",
+      "object_presence",
+      "raw_blob",
+      "sqlite_relation"
+    ],
+    "reference_dependencies_empty_unless_eq_ref_or_ne_ref": true,
+    "right_formula_null_unless_eq_ref_or_ne_ref": true,
+    "reference_dependencies_nonempty_for_eq_ref_or_ne_ref": true,
+    "right_formula_required_for_eq_ref_or_ne_ref": true,
+    "source_citation_required_exact": [
+      "repo_relative_path",
+      "symbol",
+      "line_start",
+      "line_end",
+      "file_sha256",
+      "reason"
+    ],
+    "architect_approved_exact": false,
+    "status_enum": [
+      "PROPOSED_SINGLE_CANDIDATE",
+      "BLOCKED_RAW_FIELD_MISSING",
+      "BLOCKED_MULTIPLE_PLAUSIBLE_SOURCES",
+      "BLOCKED_FORMULA_UNSPECIFIED",
+      "BLOCKED_TYPE_VARIANCE",
+      "BLOCKED_SOURCE_BEHAVIOR_MISMATCH"
+    ],
+    "proposed_single_candidate_requires": [
+      "dependency specs are nonempty and every logical selector resolves in targeted and full probe captures",
+      "targeted and full formulas produce the same V09 expected value without consuming test assertions, reporter output, or runtime expected fields",
+      "source citations include at least one SEMANTIC_OWNER public production or public harness source and one ADAPTER_OR_SOURCE_MODEL source; a behavior test is never the sole semantic authority",
+      "a format-valid counterfactual witness recipe is proposed"
+    ],
+    "blocked_entry_rule": "A BLOCKED entry may use empty dependency specs, null formula ASTs, null probe derivations, and a null witness proposal, but must have nonempty ambiguities and exactly one matching unresolved-rules entry.",
+    "engineer_self_approval_forbidden": true
+  },
+  "typed_selector_ast_proposal_contract": {
+    "status": "PROPOSED_NOT_ARCHITECT_APPROVED",
+    "allowed_ops": [
+      "ROOT",
+      "OBJECT_KEY",
+      "ARRAY_ALL",
+      "ARRAY_FILTER_EQ",
+      "ARRAY_FILTER_NE",
+      "ARRAY_SORT",
+      "ARRAY_PROJECT",
+      "SQLITE_TABLE",
+      "SQLITE_ROW_BY_PRIMARY_KEY",
+      "SQLITE_COLUMN",
+      "RAW_BLOB"
+    ],
+    "requirements": [
+      "selectors identify logical records by schema fields, primary keys, resource role, and deterministic sort keys rather than incidental array indexes",
+      "every scalar read while filtering, sorting, discriminating, or projecting is included in the resolved access set",
+      "missing and multiple-match behavior is explicitly BLOCKED; first-match behavior is forbidden",
+      "each node has a closed selector object shape with no unknown fields"
+    ],
+    "formal_operator_semantics_approved": false,
+    "future_contract_requirement": "A later architect-owned contract must publish exact arity, operand type, return type, collation, cardinality, missing/multiple-match, timestamp, and numeric semantics for every approved selector op."
+  },
+  "probe_result_exact_shape": {
+    "required_exact": [
+      "suite",
+      "parent_observation_ref",
+      "envelope_refs",
+      "raw_blob_refs",
+      "resolved_accesses",
+      "derived_value_type",
+      "derived_value_sha256",
+      "candidate_matches_v09_expected",
+      "blocker_codes",
+      "status"
+    ],
+    "resolved_access_entry_required_exact": [
+      "dependency_id",
+      "capture_type",
+      "resource_role",
+      "phase",
+      "schema_id",
+      "resolved_rfc6901_pointer_or_sql_locator",
+      "json_or_sql_type",
+      "source_blob_sha256"
+    ],
+    "status_enum": [
+      "PROPOSED_MATCH",
+      "PROPOSED_MISMATCH",
+      "BLOCKED_MISSING_CAPTURE",
+      "BLOCKED_SELECTOR_CARDINALITY",
+      "BLOCKED_TYPE_VARIANCE"
+    ],
+    "raw_value_forbidden": true,
+    "expected_value_copy_forbidden": true
+  },
+  "counterfactual_witness_proposal_exact_shape": {
+    "required_exact": [
+      "source_suite",
+      "dependency_id",
+      "capture_type",
+      "resource_role",
+      "phase",
+      "schema_id",
+      "dependency_kind",
+      "target_locator",
+      "mutation_op",
+      "mutation_operand_source",
+      "post_mutation_schema_expected",
+      "expected_semantic_error",
+      "allowed_diff_roles",
+      "architect_approved"
+    ],
+    "source_suite_exact": "targeted",
+    "mutation_ops": [
+      "BOOLEAN_INVERT",
+      "INTEGER_ADD_ONE",
+      "FINITE_NONINTEGER_ADD_ONE",
+      "RFC3339_ADD_ONE_SECOND",
+      "SHA256_FLIP_FIRST_NIBBLE",
+      "PLAIN_STRING_APPEND_CF",
+      "NORMALIZED_RELATIVE_PATH_RENAME_SEGMENT",
+      "ENUM_REPLACE_WITH_PROPOSED_ALTERNATE",
+      "ARRAY_INSERT_SCHEMA_VALID_ROW",
+      "ARRAY_DELETE_SELECTED_ROW",
+      "ARRAY_SWAP_ADJACENT_ROWS",
+      "OBJECT_DELETE_DECLARED_OPTIONAL_KEY",
+      "OBJECT_ADD_DECLARED_OPTIONAL_KEY",
+      "COPY_BEFORE_VALUE_TO_AFTER",
+      "MUTATE_AFTER_SCHEMA_VALID_VALUE",
+      "SQLITE_UPDATE_TYPED_CELL",
+      "SQLITE_INSERT_SCHEMA_VALID_ROW",
+      "SQLITE_DELETE_SELECTED_ROW",
+      "REBUILD_RAW_BLOB_FROM_SCHEMA_VALID_FIXTURE"
+    ],
+    "post_mutation_schema_expected_exact": "PASS",
+    "expected_semantic_error_template": "V09_SEMANTIC_CHECK_FAILED:<rule_id>",
+    "proposal_entry_must_resolve_error_template": true,
+    "architect_approved_exact": false,
+    "plain_string_append_disallowed_formats": [
+      "sha256",
+      "rfc3339",
+      "normalized_path",
+      "enum"
+    ],
+    "sqlite_target_locator_required": [
+      "database_resource_role",
+      "table",
+      "primary_key_columns",
+      "primary_key_values",
+      "column"
+    ],
+    "allowed_diff_roles_exact": [
+      "selected raw blob content",
+      "raw blob byte count and SHA-256",
+      "selected payload reference byte count and SHA-256",
+      "envelope payload_bytes and payload_sha256 plus envelope byte count and SHA-256",
+      "parent raw_sources phase bytes, sha256, payload_bytes, and payload_sha256",
+      "case-local manifest and tree hashes"
+    ]
+  },
+  "formula_ast_contract": {
+    "status": "PROPOSED_NOT_ARCHITECT_APPROVED",
+    "allowed_ops": [
+      "RAW",
+      "V09_CONST_REF",
+      "OBJECT",
+      "ARRAY",
+      "GET",
+      "FILTER_EQ",
+      "FILTER_NE",
+      "MAP",
+      "SORT",
+      "COUNT",
+      "SUM",
+      "MIN",
+      "MAX",
+      "UNIQUE",
+      "SET",
+      "ADD",
+      "SUBTRACT",
+      "EQ",
+      "NE",
+      "LT",
+      "LE",
+      "GT",
+      "GE",
+      "AND",
+      "OR",
+      "NOT",
+      "IF",
+      "CASE",
+      "SHA256_RAW_BYTES",
+      "SHA256_RFC8785",
+      "PARSE_RFC3339_UTC",
+      "NORMALIZE_RELATIVE_PATH",
+      "BEFORE_AFTER_CHANGED",
+      "BEFORE_AFTER_UNCHANGED",
+      "ERRORS_IN_SOURCE_ORDER"
+    ],
+    "terminal_raw_access": "Only RAW with a dependency_id declared by the same rule is permitted.",
+    "constant_access": "V09_CONST_REF may not point to the same assertion right/expected/projection subtree or reproduce its serialized/hash value. Any other proposed constant must identify an exact V09 pointer and a non-assertion domain role.",
+    "domain_outcome_exception": "DERIVE_DOMAIN_OUTCOME may emit its exact V09 right literal only after raw branch predicates are true; the literal may not be used as a predicate.",
+    "root_constant_forbidden": true,
+    "case_or_if_requirements": "Predicates must read declared raw dependencies, branches must be exhaustive and type-equal, and an unconditional/default branch that merely emits the expected literal is forbidden.",
+    "all_declared_dependencies_must_be_used": true,
+    "formal_operator_semantics_approved": false,
+    "future_contract_requirement": "A later architect-owned execution contract must publish a closed AST object schema and exact arity, input/output type, missing/type error, sort collation, cardinality, timestamp normalization, numeric, and CASE evaluation semantics for every approved op.",
+    "forbidden": [
+      "Python or PowerShell source strings",
+      "eval or dynamic import",
+      "regex",
+      "wildcard",
+      "default or fallback",
+      "copy actual",
+      "expected-value search in raw bytes",
+      "recursive key-name search",
+      "test assertion or JUnit message as semantic input",
+      "reporter or verifier output as the other evaluator input"
+    ]
+  },
+  "counterfactual_design_policy": {
+    "clean_evaluation_suites": [
+      "targeted",
+      "full"
+    ],
+    "clean_evaluation_count_per_engine": 2358,
+    "counterfactual_case_source_suite": "targeted",
+    "counterfactual_unique_case_count": 1179,
+    "engines_required_later": [
+      "reporter",
+      "semantic_verifier"
+    ],
+    "selection": "Every rule requires its own architect-approved witness recipe. A global first capture, after phase, lexicographic scalar, or primitive-type-only mutation rule is forbidden.",
+    "reason_global_selection_is_invalid": [
+      "zero-count rules may depend on empty array membership and have no eligible scalar",
+      "SHA-256, RFC3339, normalized path, and enum strings require format-specific mutations",
+      "state_before and clean-snapshot rules cannot be invalidated by blindly mutating an after scalar",
+      "SQLite dependencies require typed table/primary-key/column operations rather than a JSON pointer or corrupting byte flip"
+    ],
+    "witness_shape": "counterfactual_witness_proposal_exact_shape",
+    "same_rule_must_fail_in_both_engines_later": true,
+    "exact_error_template": "V09_SEMANTIC_CHECK_FAILED:<rule_id>",
+    "decoded_error_array_later": "exact ordered singleton; exit code exactly 1; no schema, identity, hash, or unrelated semantic error",
+    "post_mutation_schema_must_pass_later": true,
+    "placeholder_pointer_forbidden": true,
+    "hardlink_or_shared_mutable_copy_forbidden": true,
+    "proposal_only_now": true
+  },
+  "source_inventory_contract": {
+    "before_inventory_required": true,
+    "after_inventory_required": true,
+    "allowed_diff_ledger_required": true,
+    "allowed_existing_files": [
+      "work/backtest/scripts/super1_observation.py",
+      "work/backtest/tests/v08_helpers.py",
+      "work/backtest/tests/test_capital_forward.py",
+      "work/backtest/tests/test_super1_calendar.py",
+      "work/backtest/tests/test_super1_continuation.py",
+      "work/backtest/tests/test_super1_rollback_harness.py",
+      "work/backtest/tests/test_super1_xm_forward.py",
+      "work/backtest/tests/test_xm_mt5_forward.py"
+    ],
+    "allowed_new_files": [
+      "work/backtest/scripts/build_super1_v10_discovery.py",
+      "work/backtest/scripts/verify_super1_v10_discovery.py",
+      "work/backtest/tests/test_super1_v10_discovery.py"
+    ],
+    "allowed_diff_purpose": "Concrete-resource registration and discovery-package generation/validation only; production inputs, assertions, expected literals, and public SUT behavior may not change.",
+    "non_allowlisted_files_before_after_equal": true,
+    "current_readiness_runner_must_remain_sha256": "a731aae223a329a7bd3bc2fca6fdd23a9d13350bcac1debb9caf128e2af61f28",
+    "run_025_attribution_rule": "The one runner change occurred after run-025. It is current baseline drift, not an inside-attempt integrity failure and not source that may be attributed to run-025."
+  },
+  "future_mandatory_rejections": {
+    "publication": [
+      "Writing SEALED_CANDIDATE to all JSON before semantic gates and then renaming the same bytes to a failed namespace",
+      "Treating a receipt-candidate verification before final receipt rename as post-rename authority",
+      "Claiming external authority without invoking the independent receipt verifier after final receipt no-overwrite rename and parent fsync; sealed run and receipt bytes themselves must retain authoritative=false",
+      "Publishing unsanitized absolute final_path or resolved_parent fields that the receipt verifier later rejects"
+    ],
+    "negative_evidence": [
+      "Cloning the complete parent run into every negative case",
+      "Hardcoded run id or PID in case identity",
+      "Sealing negative scratch trees or absolute executable paths",
+      "Retaining more than raw stdout/stderr plus minimal mutation receipts and detached minimal fixtures in the final evidence package"
+    ],
+    "current_run_025_scale_fact": "227081 files and 1103393378 bytes total; 222346 files are under 53 negative-case directories, so this structure is rejected for future evidence."
+  },
+  "unresolved_rules_contract": {
+    "top_level_required_exact": [
+      "schema_version",
+      "contract_id",
+      "proposal_id",
+      "attempt_id",
+      "rule_blockers",
+      "resource_blockers",
+      "schema_blockers",
+      "citation_blockers",
+      "witness_blockers",
+      "counts"
+    ],
+    "blocker_entry_required_exact": [
+      "blocker_id",
+      "class",
+      "nodeid",
+      "rule_id_or_null",
+      "capture_type_or_null",
+      "resource_role_or_null",
+      "error_code",
+      "evidence_refs",
+      "candidate_options",
+      "architect_decision_required"
+    ],
+    "architect_decision_required_exact": true,
+    "empty_lists_required_when_none": true
+  },
+  "discovery_process_metadata_contract": {
+    "top_level_required_exact": [
+      "schema_version",
+      "contract_id",
+      "proposal_id",
+      "attempt_id",
+      "processes",
+      "source_diff_ledger_ref",
+      "history_before_ref",
+      "history_after_ref",
+      "scope"
+    ],
+    "process_entry_required_exact": [
+      "process_id",
+      "argv",
+      "cwd_role",
+      "env_allowlist",
+      "started_at_utc",
+      "ended_at_utc",
+      "exit_code",
+      "stdout_ref",
+      "stdout_bytes",
+      "stdout_sha256",
+      "stderr_ref",
+      "stderr_bytes",
+      "stderr_sha256",
+      "entrypoint_source_ref",
+      "entrypoint_source_sha256"
+    ],
+    "raw_stdout_stderr_required": true,
+    "sanitized_argv_required": true,
+    "absolute_executable_path_forbidden": true
+  },
+  "proposal_validation_artifact_contract": {
+    "top_level_required_exact": [
+      "schema_version",
+      "contract_id",
+      "proposal_id",
+      "attempt_id",
+      "checks",
+      "fatal_errors",
+      "review_blockers",
+      "proposal_complete",
+      "structurally_valid",
+      "status"
+    ],
+    "check_entry_required_exact": [
+      "check_id",
+      "expected",
+      "recomputed_actual",
+      "evidence_refs",
+      "status",
+      "error_codes"
+    ],
+    "status_exact": "REVIEW_REQUIRED",
+    "proposal_complete_is_not_approval": true
+  },
+  "source_allowed_diff_ledger_contract": {
+    "entry_required_exact": [
+      "repo_relative_path",
+      "before_bytes_or_null",
+      "before_sha256_or_null",
+      "after_bytes_or_null",
+      "after_sha256_or_null",
+      "change_kind",
+      "allowlist_match",
+      "discovery_only_reason"
+    ],
+    "change_kind_enum": [
+      "MODIFIED",
+      "CREATED"
+    ],
+    "non_allowlist_change_fatal": true
+  },
+  "probe_registration_status_contract": {
+    "node_entry_required_exact": [
+      "suite",
+      "nodeid",
+      "scenario_id",
+      "underlying_test_status",
+      "required_capture_types",
+      "captured_resource_roles",
+      "blocker_codes",
+      "status"
+    ],
+    "status_enum": [
+      "CAPTURED",
+      "BLOCKED"
+    ],
+    "blocked_behavior": "Run the underlying local synthetic behavior test but emit no parent observation or raw capture for the blocked slot; record only the blocker in the discovery ledger.",
+    "blocked_is_never_semantic_pass": true
+  },
+  "proposal_validation": {
+    "required_checks": [
+      "all input hashes match",
+      "history bytes match before and after",
+      "1179 unique rule entries equal the V09 rule set",
+      "164 unique node ids equal the V09 behavior set",
+      "all 17 capture types have recursively closed Draft 2020-12 schema candidates when captured or an exact review blocker",
+      "every rule has a nonempty logical dependency proposal or an exact BLOCKED status",
+      "no logical selector uses /payload as its terminal selection",
+      "no selector or witness contains a placeholder",
+      "no formula contains a forbidden op",
+      "no source citation uses an absolute or temp path",
+      "no probe consumes a test expected, assertion output, reporter output, or verifier output",
+      "527 required node/capture-type slots per suite are represented in the role-set proposal; actual instance cardinality is recomputed from proposed roles and never hardcoded to 527",
+      "captured entries contain real raw blobs and blocked entries contain no fabricated observation or payload",
+      "parent raw refs bind envelope bytes and SHA-256; envelopes bind raw blob bytes and SHA-256; all envelope/ref schemas, identities, phases, resource roles, instance ids, canonical serialization, and multiplicities are exact",
+      "all JSON identity fields and manifests are internally consistent",
+      "discovery-readiness remains REVIEW_REQUIRED and every readiness/apply/proof claim remains false"
+    ],
+    "proposal_complete_formula": "unresolved_rule_count == 0 AND blocked_schema_count == 0 AND all 527 capture-role-set rows have status PROPOSED_SINGLE_CANDIDATE AND each targeted role set equals its full role set AND each suite ledger captured-entry count equals the sum of proposed role cardinalities AND every captured instance phase has a closed root schema binding",
+    "implementation_allowed_formula": "false until a later architect-owned immutable semantic mapping contract publishes its SHA-256",
+    "review_blockers": [
+      "BLOCKED resource, role set, raw schema, selector, formula, source citation, type, or counterfactual witness",
+      "targeted/full proposed source-model variance that requires an architect decision"
+    ],
+    "fatal_structural_errors": [
+      "immutable architect or history mismatch",
+      "source change outside the explicit discovery allowlist",
+      "missing, duplicate, or extra V09 rule or node/capture-type slot",
+      "fabricated raw payload for a blocked slot",
+      "proposal or manifest schema/hash/identity/path failure",
+      "untruthful readiness or review status"
+    ],
+    "exit_policy": "A structurally valid REVIEW_REQUIRED package may exit 0 with review blockers and proposal_complete=false. Fatal structural errors exit nonzero and retain the attempt under the exact failed name. Exit 0 never means semantic PASS or implementation approval."
+  },
+  "discovery_readiness_exact": {
+    "overall": "NO_GO",
+    "decision": "NO_GO",
+    "status": "REVIEW_REQUIRED",
+    "authoritative": false,
+    "semantic_acceptance": false,
+    "implementation_allowed": false,
+    "semantic_engine_implementation_allowed": false,
+    "discovery_scaffolding_changes_allowed": true,
+    "safe_to_apply": false,
+    "apply_allowed": false,
+    "proven": false,
+    "parity": false,
+    "source_runtime_state": "NOT_READ",
+    "target_runtime_state": "NOT_READ",
+    "broker_state": "NOT_RUN",
+    "scheduler_state": "NOT_RUN",
+    "deployment_state": "NOT_RUN",
+    "successor_release_state": "NOT_BUILT",
+    "successor_signature_state": "NOT_SIGNED"
+  },
+  "stop_conditions": [
+    "Any immutable input or history mismatch",
+    "Any source change outside the explicit discovery allowlist",
+    "Any attempt to fabricate a raw capture for a review blocker",
+    "Any proposal package structural, identity, path, or manifest failure",
+    "Any real environment, broker, MT5, scheduler, deployment, release, or signing action would be required"
+  ],
+  "review_blocker_handling": "Ambiguous or missing resource, role, schema, selector, formula, citation, type, or witness is recorded as BLOCKED with no fabricated raw evidence; complete the structurally valid REVIEW_REQUIRED package and return it to the architect.",
+  "handoff_rule": "Return the review package and unresolved lists to the architect. Do not implement the semantic engines, execute the 1179 counterfactuals, rerun the 53 negative acceptance gate, select a readiness run id, or publish a canonical run until a later architect instruction binds an immutable per-rule mapping SHA-256."
+}
