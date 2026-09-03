@@ -26,6 +26,77 @@ $Wheelhouse = Join-Path $Stage "wheelhouse"
 $LinuxWheelhouse = Join-Path $Stage "wheelhouse-linux"
 $Super1ProvenanceFiles = @()
 
+function Get-CollectionNodeIds {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+    $nodeIds = @()
+    foreach ($line in $Output) {
+        $trimmed = ([string]$line).Trim()
+        if ($trimmed -match '^(\S+::\S+)(?:\s+.*)?$') {
+            $nodeIds += $Matches[1]
+        }
+    }
+    return $nodeIds
+}
+
+function Get-JunitNodeIds {
+    param([Parameter(Mandatory = $true)][xml]$Document)
+    $nodeIds = @()
+    foreach ($testcase in @($Document.SelectNodes("//testcase"))) {
+        $modulePath = ([string]$testcase.classname).Replace('.', '/')
+        $nodeIds += "$modulePath.py::$([string]$testcase.name)"
+    }
+    return $nodeIds
+}
+
+function Write-NodeIdInventory {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$NodeIds,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $sorted = @($NodeIds | Sort-Object -CaseSensitive -Culture en-US)
+    [IO.File]::WriteAllLines(
+        $Path,
+        $sorted,
+        (New-Object Text.UTF8Encoding($false))
+    )
+    return [ordered]@{
+        count = $sorted.Count
+        sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function Assert-JunitMatchesInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$InventoryPath,
+        [Parameter(Mandatory = $true)][xml]$Junit,
+        [Parameter(Mandatory = $true)][string]$SuiteName
+    )
+    $expected = @(Get-Content -LiteralPath $InventoryPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $actual = @(Get-JunitNodeIds -Document $Junit)
+    $badCases = @(
+        $Junit.SelectNodes("//testcase") | Where-Object {
+            $null -ne $_.SelectSingleNode("failure") -or
+            $null -ne $_.SelectSingleNode("error") -or
+            $null -ne $_.SelectSingleNode("skipped")
+        }
+    )
+    if ($actual.Count -eq 0 -or $badCases.Count -ne 0) {
+        throw "$SuiteName JUnit suite must contain only passing, non-skipped testcases. actual=$($actual.Count) bad=$($badCases.Count)"
+    }
+    $expectedSorted = @($expected | Sort-Object -CaseSensitive -Culture en-US)
+    $actualSorted = @($actual | Sort-Object -CaseSensitive -Culture en-US)
+    if ($expectedSorted.Count -ne $actualSorted.Count -or
+        (($expectedSorted -join "`n") -cne ($actualSorted -join "`n"))) {
+        throw "$SuiteName JUnit nodeid multiset differs from collect-only inventory. collected=$($expectedSorted.Count) junit=$($actualSorted.Count)"
+    }
+    return [ordered]@{
+        collected_count = $expectedSorted.Count
+        pass_count = $actualSorted.Count
+        skipped_count = 0
+        nodeid_sha256 = (Get-FileHash -LiteralPath $InventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
     throw "DPAPI release signing key is missing: $PrivateKeyPath"
 }
@@ -57,23 +128,30 @@ $pythonExe = (& $Python -c "import sys; print(sys.executable)").Trim()
 $pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # 3. Pre-build test suite execution
-$pytestCmd = "$Python -m pytest $SourceRoot"
-$pytestOutput = & $Python -m pytest $SourceRoot
+$fullCollectPath = Join-Path $TempRoot "full.collect.txt"
+$fullJunitPath = Join-Path $TempRoot "full.junit.xml"
+$pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"
+$fullCollectOutput = & $Python -m pytest --collect-only -q $SourceRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Release build aborted: full collect-only inventory failed."
+}
+$fullNodeIds = @(Get-CollectionNodeIds -Output $fullCollectOutput)
+$fullInventory = Write-NodeIdInventory -NodeIds $fullNodeIds -Path $fullCollectPath
+$pytestOutput = & $Python -m pytest -q $SourceRoot "--junitxml=$fullJunitPath"
 if ($LASTEXITCODE -ne 0) {
     throw "Release build aborted: pytest test suite failed."
 }
-$pytestOutputText = $pytestOutput -join "`n"
-$passedCount = 0
-if ($pytestOutputText -match '(\d+)\s+passed') {
-    $passedCount = [int]$Matches[1]
-} else {
-    throw "Could not determine pytest passed count from output."
+if (-not (Test-Path -LiteralPath $fullJunitPath -PathType Leaf)) {
+    throw "Release build aborted: full JUnit report is missing."
 }
-if ($passedCount -ne 268) {
-    throw "Release build aborted: pytest count must equal 268: $passedCount."
-}
+[xml]$fullJunit = Get-Content -LiteralPath $fullJunitPath -Raw
+$fullGate = Assert-JunitMatchesInventory -InventoryPath $fullCollectPath -Junit $fullJunit -SuiteName "Full"
+$passedCount = [int]$fullGate.pass_count
 $pytestPassed = $true
-$pytestPassedCount = $passedCount
+$pytestCollectedCount = [int]$fullGate.collected_count
+$pytestPassedCount = [int]$fullGate.pass_count
+$pytestSkippedCount = [int]$fullGate.skipped_count
+$pytestNodeIdSha256 = [string]$fullGate.nodeid_sha256
 $postTestGitStatus = (& git -C $RepoRoot status --porcelain)
 if ($postTestGitStatus) {
     throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
@@ -190,20 +268,33 @@ try {
     & $Python -m venv $artifactVenv
     if ($LASTEXITCODE -ne 0) { throw "Artifact venv creation failed." }
     $artifactPython = Join-Path $artifactVenv "Scripts\python.exe"
+    $artifactTestPaths = @($artifactTestFiles | ForEach-Object { Join-Path "artifact_tests" $_ })
+    $artifactCollectPath = Join-Path $TempRoot "artifact.collect.txt"
+    $artifactJunitPath = Join-Path $TempRoot "artifact.junit.xml"
     Push-Location -LiteralPath $Stage
     try {
         & $artifactPython -m pip install --disable-pip-version-check --no-index --require-hashes -r requirements-windows.lock
         if ($LASTEXITCODE -ne 0) { throw "Locked artifact dependency installation failed." }
-        $artifactOutput = & $artifactPython -m pytest -q ($artifactTestFiles | ForEach-Object { Join-Path "artifact_tests" $_ })
+        $artifactCollectOutput = & $artifactPython -m pytest --collect-only -q $artifactTestPaths
+        if ($LASTEXITCODE -ne 0) { throw "Locked artifact collect-only inventory failed." }
+        $artifactOutput = & $artifactPython -m pytest -q $artifactTestPaths "--junitxml=$artifactJunitPath"
         if ($LASTEXITCODE -ne 0) { throw "Locked artifact tests failed." }
     }
     finally { Pop-Location }
-    $artifactOutputText = $artifactOutput -join "`n"
-    $artifactPassedCount = 0
-    if ($artifactOutputText -match '(\d+)\s+passed') { $artifactPassedCount = [int]$Matches[1] }
-    if ($artifactPassedCount -ne 139) { throw "Locked artifact pytest count must equal 139: $artifactPassedCount" }
-    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v16_deployment_contract.py"
-    $artifactPytestPassed = $true
+    if (-not (Test-Path -LiteralPath $artifactJunitPath -PathType Leaf)) {
+        throw "Locked artifact JUnit report is missing."
+    }
+    $artifactNodeIds = @(Get-CollectionNodeIds -Output $artifactCollectOutput)
+    $artifactInventory = Write-NodeIdInventory -NodeIds $artifactNodeIds -Path $artifactCollectPath
+    [xml]$artifactJunit = Get-Content -LiteralPath $artifactJunitPath -Raw
+    $artifactGate = Assert-JunitMatchesInventory -InventoryPath $artifactCollectPath -Junit $artifactJunit -SuiteName "Artifact"
+    $artifactPassedCount = [int]$artifactGate.pass_count
+    $artifactPytestCollectedCount = [int]$artifactGate.collected_count
+    $artifactPytestPassCount = [int]$artifactGate.pass_count
+    $artifactPytestSkippedCount = [int]$artifactGate.skipped_count
+    $artifactPytestNodeIdSha256 = [string]$artifactGate.nodeid_sha256
+    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v16_deployment_contract.py --junitxml=<artifact-suite>"
+    $artifactPytestPassed = ($artifactPytestSkippedCount -eq 0 -and $artifactPytestPassCount -eq $artifactPytestCollectedCount)
     $lockedDependencies = @($lockLines)
     Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force
     Get-ChildItem -LiteralPath $Stage -Recurse -Directory -Force | Where-Object { $_.Name -eq ".pytest_cache" } | Remove-Item -Recurse -Force
@@ -344,6 +435,10 @@ try {
         python_executable_sha256 = $pythonExeSha256
         pytest_command = $pytestCmd
         pytest_passed = $pytestPassed
+        pytest_collected_count = $pytestCollectedCount
+        pytest_pass_count = $pytestPassedCount
+        pytest_skipped_count = $pytestSkippedCount
+        pytest_nodeid_sha256 = $pytestNodeIdSha256
         pytest_passed_count = $pytestPassedCount
         dependencies = [ordered]@{
             pandas = "3.0.3"
@@ -353,6 +448,10 @@ try {
             pytest = "8.4.1"
         }
         artifact_pytest_passed = $artifactPytestPassed
+        artifact_pytest_collected_count = $artifactPytestCollectedCount
+        artifact_pytest_pass_count = $artifactPytestPassCount
+        artifact_pytest_skipped_count = $artifactPytestSkippedCount
+        artifact_pytest_nodeid_sha256 = $artifactPytestNodeIdSha256
         artifact_pytest_count = $artifactPassedCount
         artifact_pytest_command = $artifactPytestCommand
         artifact_test_files = $artifactTestFiles

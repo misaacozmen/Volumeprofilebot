@@ -571,6 +571,7 @@ def _create_real_state(root: Path) -> None:
         encoding="utf-8",
     )
     client = object.__new__(XmMt5DemoOrderClient)
+    client._initialize_order_db(root)
     connection = client._order_connection(root)
     try:
         for index in range(13):

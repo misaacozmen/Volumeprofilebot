@@ -611,10 +611,12 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert 'git -C $RepoRoot rev-parse HEAD' in source
     assert '$pyParts[0] -ne "3.11" -or $pyParts[1] -ne "CPython"' in source
     assert "Release build requires CPython 3.11" in source
-    assert '$pytestCmd = "$Python -m pytest $SourceRoot"' in source
+    assert '$pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"' in source
     assert "Release build aborted: pytest test suite failed" in source
-    assert "$passedCount -ne 268" in source
-    assert "must equal 268" in source
+    assert "Assert-JunitMatchesInventory" in source
+    assert "Get-CollectionNodeIds" in source
+    assert "pytest_nodeid_sha256" in source
+    assert "artifact_pytest_nodeid_sha256" in source
     assert "deploy/stage_signed_upgrader_windows.ps1" in source
     for key in (
         "release_id",
@@ -625,7 +627,15 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
         "python_executable_sha256",
         "pytest_command",
         "pytest_passed",
+        "pytest_collected_count",
+        "pytest_pass_count",
+        "pytest_skipped_count",
+        "pytest_nodeid_sha256",
         "pytest_passed_count",
+        "artifact_pytest_collected_count",
+        "artifact_pytest_pass_count",
+        "artifact_pytest_skipped_count",
+        "artifact_pytest_nodeid_sha256",
         "archive_sha256",
         "files = $manifestFiles",
     ):

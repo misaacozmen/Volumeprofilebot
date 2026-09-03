@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import hashlib
+import sqlite3
 import sys
 from types import SimpleNamespace
 
@@ -1630,6 +1632,7 @@ def test_overnight_direction_requires_verified_rth_calendar(monkeypatch) -> None
 def _make_filter_client(monkeypatch):
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
     client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.magic = int(client.config["magic_number"])
     client._super1_record = record("custom_low", 20004.0)
     monkeypatch.setattr(
         MODULE.core,
@@ -1724,16 +1727,226 @@ def test_c02_unresolved_requires_strictly_newer_evidence(case: str, tmp_path: Pa
     client = _make_filter_client(monkeypatch)
     client._broker_objects = lambda comment: []
     order_id = f"newer-{case}"
+    decision = {
+        "order_id": order_id,
+        "leg_key": "nq",
+        "direction": "long",
+        "date": "2026-08-05",
+    }
+    initial_prefix = {
+        "date": "2026-08-05",
+        "recorded_at": "2026-08-05T14:20:00Z",
+        "cutoffs": {
+            "nq": "2026-08-05T10:26:00-04:00",
+            "spx": "2026-08-05T10:24:00-04:00",
+        },
+    }
+    initial_raw = b'{"prefix":"initial"}'
     initial = client._persist_filter_terminal(
         tmp_path,
-        {"order_id": order_id, "leg_key": "nq", "direction": "long"},
+        decision,
         {"state": "UNRESOLVED", "rule": None, "features": {"case": case}},
         "FILTER_UNRESOLVED_DEFERRED",
         "FILTER_UNRESOLVED_DEFERRED",
-        None,
+        initial_prefix,
+        initial_raw,
     )
     assert initial["persistent_state"] == "FILTER_UNRESOLVED_DEFERRED"
-    event_rows = [json.loads(line) for line in (tmp_path / "orders" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert event_rows[-1]["event"] == "SUPER1_FILTER_DEFERRED"
+    newer_prefix = {
+        **initial_prefix,
+        "recorded_at": "2026-08-05T14:30:00Z",
+        "cutoffs": {
+            "nq": "2026-08-05T10:27:00-04:00",
+            "spx": "2026-08-05T10:25:00-04:00",
+        },
+    }
+    newer_raw = b'{"prefix":"new"}'
+    if case == "cutoff_regression":
+        newer_prefix["cutoffs"]["nq"] = "2026-08-05T10:25:00-04:00"
+    elif case == "observed_at_not_later":
+        newer_prefix["recorded_at"] = initial_prefix["recorded_at"]
+    elif case == "raw_sha_unchanged":
+        newer_raw = initial_raw
+    elif case == "revision_not_higher":
+        newer_prefix["cutoffs"] = dict(initial_prefix["cutoffs"])
+
+    promotion = client._promote_filter_if_newer(
+        tmp_path,
+        decision,
+        {"state": "ALLOW", "rule": None, "features": {"case": case}},
+        "NEWER_COMPLETE_FILTER_EVIDENCE",
+        newer_prefix,
+        newer_raw,
+    )
+    assert promotion["promoted"] is False
+    assert client._intent_state(tmp_path, order_id)["status"] == "FILTER_UNRESOLVED_DEFERRED"
+    event_rows = [
+        json.loads(line)
+        for line in (tmp_path / "orders" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["event"] for row in event_rows] == ["SUPER1_FILTER_DEFERRED"]
     assert len(event_rows[-1]["filter_evidence_sha256"]) == 64
+    evidence = sqlite3.connect(client._order_db(tmp_path))
+    try:
+        stored = evidence.execute(
+            "SELECT state, raw_sha256 FROM strategy_filter_evidence WHERE strategy = 'Super1' AND order_id = ?",
+            (order_id,),
+        ).fetchone()
+    finally:
+        evidence.close()
+    assert stored == (
+        "UNRESOLVED",
+        hashlib.sha256(initial_raw).hexdigest(),
+    )
+    record_if_enabled(request, evidence_token)
+
+
+@pytest.mark.parametrize("window_open", [True, False], ids=["window-open", "window-closed"])
+def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
+    window_open: bool, tmp_path: Path, monkeypatch, request
+) -> None:
+    evidence_token = checkpoint_if_enabled(request)
+    monkeypatch.setattr(MODULE.core, "TZ", "America/New_York")
+    config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    configs = {
+        "nq": SimpleNamespace(
+            timeframe="3m", symbol="US100Cash", trade_window_start="09:30",
+            trade_window_end="10:30", reward_r=3.0, vah_val_tolerance=5.0,
+        ),
+        "spx": SimpleNamespace(
+            timeframe="5m", symbol="US500Cash", trade_window_start="09:30",
+            trade_window_end="11:00", reward_r=2.5, vah_val_tolerance=5.0,
+        ),
+    }
+    monkeypatch.setattr(MODULE.core, "live_strategy_objects", lambda: (configs, None, None))
+    now = MODULE.pd.Timestamp("2026-08-05T14:28:00Z" if window_open else "2026-08-05T14:31:00Z")
+    monkeypatch.setattr(MODULE.core, "utc_now", lambda: now)
+
+    class PromotionMt5:
+        ACCOUNT_TRADE_MODE_DEMO = 0
+        TRADE_ACTION_PENDING = 5
+        ORDER_TYPE_BUY_LIMIT = 2
+        ORDER_TYPE_BUY = 0
+        ORDER_TYPE_SELL = 1
+        ORDER_FILLING_RETURN = 2
+        ORDER_TIME_SPECIFIED = 2
+        TRADE_RETCODE_PLACED = 10008
+
+        def __init__(self) -> None:
+            self.sent = 0
+            self.pending = []
+
+        def account_info(self):
+            return SimpleNamespace(
+                login=1301910045, server="XMGlobal-MT5 6", company="XM Global Limited",
+                trade_mode=0, trade_allowed=True, trade_expert=True, equity=10_000.0,
+            )
+
+        def terminal_info(self):
+            return SimpleNamespace(connected=True, trade_allowed=True, tradeapi_disabled=False)
+
+        def symbol_select(self, symbol, selected):
+            return selected
+
+        def symbol_info(self, symbol):
+            return SimpleNamespace(
+                digits=2, point=0.01, trade_tick_size=0.01, trade_stops_level=0,
+                volume_min=0.1, volume_step=0.1, volume_max=10.0,
+            )
+
+        def symbol_info_tick(self, symbol):
+            return SimpleNamespace(bid=99.0, ask=101.0)
+
+        def order_calc_profit(self, order_type, symbol, volume, entry, stop):
+            return -100.0
+
+        def order_check(self, request):
+            return SimpleNamespace(retcode=0, comment="Done")
+
+        def order_send(self, request):
+            self.sent += 1
+            self.pending = [SimpleNamespace(
+                ticket=900 + self.sent,
+                magic=request["magic"], comment=request["comment"], symbol=request["symbol"],
+                type=request["type"], volume_initial=request["volume"],
+                volume_current=request["volume"], price_open=request["price"],
+                sl=request["sl"], tp=request["tp"], time_expiration=request["expiration"],
+            )]
+            return SimpleNamespace(retcode=self.TRADE_RETCODE_PLACED, order=900 + self.sent, deal=0)
+
+        def orders_get(self, ticket=None):
+            return tuple(self.pending)
+
+        def positions_get(self, ticket=None):
+            return ()
+
+        def history_orders_get(self, *args, **kwargs):
+            return ()
+
+        def history_deals_get(self, *args, **kwargs):
+            return ()
+
+        def initialize(self, **kwargs):
+            return True
+
+        def shutdown(self):
+            pass
+
+        def last_error(self):
+            return (0, "ok")
+
+    client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
+    client.mt5 = PromotionMt5()
+    client.config = config
+    client.login_id = int(config["account_login"])
+    client.server = config["expected_server"]
+    client.password = ""
+    client.terminal_path = ""
+    client.connected = True
+    client.demo_verified = True
+    client.account = client.mt5.account_info()
+    client.terminal = client.mt5.terminal_info()
+    client.magic = int(config["magic_number"])
+    client._super1_record = record("custom_low", 20004.0)
+    client._filter_state = lambda decision: {
+        "state": "ALLOW", "rule": None, "features": {"test": "strictly-newer"}
+    }
+    client._terminal_r_state = lambda: {"risk_scale": 1.0}
+
+    decision = {
+        "order_id": "promote-window-order", "thesis_id": "promote-thesis",
+        "leg_key": "nq", "date": "2026-08-05", "direction": "long",
+        "stop_price": 90.0, "target_price": 120.0,
+        "fvg_time": "2026-08-05T13:00:00Z", "fvg_known_time": "2026-08-05T13:03:00Z",
+    }
+    old_prefix = {
+        "date": "2026-08-05", "recorded_at": "2026-08-05T14:20:00Z",
+        "cutoffs": {"nq": "2026-08-05T10:26:00-04:00", "spx": "2026-08-05T10:24:00-04:00"},
+    }
+    new_prefix = {
+        "date": "2026-08-05", "recorded_at": "2026-08-05T14:27:00Z",
+        "cutoffs": {"nq": "2026-08-05T10:27:00-04:00", "spx": "2026-08-05T10:25:00-04:00"},
+    }
+    old_raw = json.dumps(old_prefix, sort_keys=True).encode("utf-8")
+    new_raw = json.dumps(new_prefix, sort_keys=True).encode("utf-8")
+    client._broker_objects = lambda comment: []
+    client._persist_filter_terminal(
+        tmp_path, decision, {"state": "UNRESOLVED", "rule": None, "features": {}},
+        "FILTER_UNRESOLVED_DEFERRED", "FILTER_UNRESOLVED_DEFERRED", old_prefix, old_raw,
+    )
+    result = client._place_candidate(
+        tmp_path, decision, "US100Cash", 3.0,
+        prefix_record=new_prefix, prefix_raw=new_raw, send_now=now,
+    )
+
+    if window_open:
+        assert result["state"] == "SUBMITTED"
+        assert client.mt5.sent == 1
+        assert client._intent_state(tmp_path, decision["order_id"])["status"] == "SUBMITTED"
+        assert [event["event"] for event in client._events(tmp_path)].count("SUPER1_FILTER_PROMOTED") == 1
+    else:
+        assert result["state"] == "FILTER_EXPIRED_NO_SEND"
+        assert client.mt5.sent == 0
+        assert client._intent_state(tmp_path, decision["order_id"])["status"] == "FILTER_EXPIRED_NO_SEND"
+        assert not any(event["event"] == "SUPER1_FILTER_PROMOTED" for event in client._events(tmp_path))
     record_if_enabled(request, evidence_token)

@@ -637,6 +637,217 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 }
         return {"state": "ALLOW", "rule": None, "features": features}
 
+    def _filter_evidence_fields(
+        self,
+        decision: dict[str, Any],
+        filter_state: dict[str, Any],
+        reason: str,
+        prefix_record: dict[str, Any] | None,
+        prefix_raw: bytes | None,
+    ) -> dict[str, object]:
+        raw = (
+            prefix_raw
+            if isinstance(prefix_raw, bytes)
+            else (
+                core.canonical_json(prefix_record).encode("utf-8")
+                if isinstance(prefix_record, dict)
+                else b""
+            )
+        )
+        cutoffs = (
+            dict(prefix_record.get("cutoffs") or {})
+            if isinstance(prefix_record, dict)
+            else {}
+        )
+        observed_at = (
+            str(prefix_record.get("recorded_at") or prefix_record.get("decision_produced_at"))
+            if isinstance(prefix_record, dict)
+            else ""
+        ) or core.utc_now().isoformat()
+        trade_date = str(
+            (prefix_record or {}).get("date") or decision.get("date") or ""
+        )
+        targeted_cutoff = str(cutoffs.get(str(decision["leg_key"]), ""))
+        full_cutoff = core.canonical_json(cutoffs)
+        raw_sha256 = hashlib.sha256(raw).hexdigest()
+        evidence = {
+            "filter_state": filter_state,
+            "reason": reason,
+            "decision": decision,
+            "cutoffs": cutoffs,
+            "raw_sha256": raw_sha256,
+        }
+        return {
+            "strategy": "Super1",
+            "order_id": str(decision["order_id"]),
+            "state": str(filter_state["state"]),
+            "trade_date": trade_date,
+            "targeted_cutoff": targeted_cutoff,
+            "full_cutoff": full_cutoff,
+            "full_cutoffs_json": full_cutoff,
+            "observed_at": observed_at,
+            "raw_byte_count": len(raw),
+            "raw_sha256": raw_sha256,
+            "filter_evidence_sha256": hashlib.sha256(
+                core.canonical_json(evidence).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _upsert_filter_evidence(self, fields: dict[str, object], output_root: Path) -> None:
+        now = core.utc_now().isoformat()
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO strategy_filter_evidence (
+                    strategy, order_id, state, trade_date, targeted_cutoff,
+                    full_cutoff, full_cutoffs_json, observed_at, raw_byte_count,
+                    raw_sha256, filter_evidence_sha256, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strategy, order_id) DO UPDATE SET
+                    state=excluded.state,
+                    trade_date=excluded.trade_date,
+                    targeted_cutoff=excluded.targeted_cutoff,
+                    full_cutoff=excluded.full_cutoff,
+                    full_cutoffs_json=excluded.full_cutoffs_json,
+                    observed_at=excluded.observed_at,
+                    raw_byte_count=excluded.raw_byte_count,
+                    raw_sha256=excluded.raw_sha256,
+                    filter_evidence_sha256=excluded.filter_evidence_sha256,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    fields["strategy"],
+                    fields["order_id"],
+                    fields["state"],
+                    fields["trade_date"],
+                    fields["targeted_cutoff"],
+                    fields["full_cutoff"],
+                    fields["full_cutoffs_json"],
+                    fields["observed_at"],
+                    fields["raw_byte_count"],
+                    fields["raw_sha256"],
+                    fields["filter_evidence_sha256"],
+                    now,
+                    now,
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _promote_filter_if_newer(
+        self,
+        output_root: Path,
+        decision: dict[str, Any],
+        filter_state: dict[str, Any],
+        reason: str,
+        prefix_record: dict[str, Any] | None,
+        prefix_raw: bytes | None,
+    ) -> dict[str, object]:
+        fields = self._filter_evidence_fields(
+            decision, filter_state, reason, prefix_record, prefix_raw
+        )
+        order_id = str(decision["order_id"])
+        now = core.utc_now().isoformat()
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            intent = connection.execute(
+                "SELECT status FROM order_intents WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            old = connection.execute(
+                "SELECT observed_at, full_cutoffs_json, full_cutoff, raw_sha256 "
+                "FROM strategy_filter_evidence WHERE strategy = 'Super1' AND order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if intent is None or str(intent[0]) != "FILTER_UNRESOLVED_DEFERRED" or old is None:
+                connection.commit()
+                return {"promoted": False, "state": None if intent is None else str(intent[0])}
+            try:
+                old_observed = pd.Timestamp(str(old[0]))
+                new_observed = pd.Timestamp(str(fields["observed_at"]))
+                old_cutoffs = json.loads(str(old[1] or old[2] or "{}"))
+                new_cutoffs = json.loads(str(fields["full_cutoffs_json"]))
+                cutoff_non_regression = all(
+                    pd.Timestamp(new_cutoffs[key]) >= pd.Timestamp(old_cutoffs[key])
+                    for key in ("nq", "spx")
+                )
+                cutoff_advanced = any(
+                    pd.Timestamp(new_cutoffs[key]) > pd.Timestamp(old_cutoffs[key])
+                    for key in ("nq", "spx")
+                )
+                strictly_newer = (
+                    new_observed > old_observed
+                    and cutoff_non_regression
+                    and cutoff_advanced
+                    and str(fields["raw_sha256"]) != str(old[3])
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                strictly_newer = False
+            if not strictly_newer:
+                connection.commit()
+                return {
+                    "promoted": False,
+                    "state": "FILTER_UNRESOLVED_DEFERRED",
+                    "reason": "FILTER_EVIDENCE_NOT_STRICTLY_NEWER",
+                }
+            connection.execute(
+                "UPDATE order_intents SET status = 'PRE_SEND_DEFERRED', updated_at = ? "
+                "WHERE order_id = ? AND status = 'FILTER_UNRESOLVED_DEFERRED'",
+                (now, order_id),
+            )
+            connection.execute(
+                """
+                UPDATE strategy_filter_evidence SET
+                    state = 'PRE_SEND_DEFERRED', trade_date = ?, targeted_cutoff = ?,
+                    full_cutoff = ?, full_cutoffs_json = ?, observed_at = ?,
+                    raw_byte_count = ?, raw_sha256 = ?, filter_evidence_sha256 = ?,
+                    updated_at = ?
+                WHERE strategy = 'Super1' AND order_id = ?
+                """,
+                (
+                    fields["trade_date"],
+                    fields["targeted_cutoff"],
+                    fields["full_cutoff"],
+                    fields["full_cutoffs_json"],
+                    fields["observed_at"],
+                    fields["raw_byte_count"],
+                    fields["raw_sha256"],
+                    fields["filter_evidence_sha256"],
+                    now,
+                    order_id,
+                ),
+            )
+            event = {
+                "event": "SUPER1_FILTER_PROMOTED",
+                "order_id": order_id,
+                "reason": "NEWER_COMPLETE_FILTER_EVIDENCE",
+                "observed_at": fields["observed_at"],
+                "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
+                "raw_sha256": fields["raw_sha256"],
+                "prefix_sha256": fields["raw_sha256"],
+                "raw_byte_count": fields["raw_byte_count"],
+                "filter_evidence_sha256": fields["filter_evidence_sha256"],
+            }
+            if not self._outbox_event_exists(connection, order_id, "SUPER1_FILTER_PROMOTED"):
+                connection.execute(
+                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                    (order_id, core.canonical_json({"recorded_at": now, "magic": self.magic, **event})),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
+        return {"promoted": True, "state": "PRE_SEND_DEFERRED"}
+
     def _persist_filter_terminal(
         self,
         output_root: Path,
@@ -645,32 +856,28 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         state: str,
         reason: str,
         prefix_record: dict[str, Any] | None,
+        prefix_raw: bytes | None = None,
     ) -> dict[str, object]:
         """Persist a filter terminal outcome atomically before any broker call."""
         order_id = str(decision["order_id"])
         comment = self._comment(str(decision["leg_key"]), order_id)
-        event_name = (
-            "SUPER1_FILTER_TERMINAL"
-            if state == "FILTER_BLOCKED"
-            else "SUPER1_FILTER_DEFERRED"
-        )
+        event_name = {
+            "FILTER_BLOCKED": "SUPER1_FILTER_TERMINAL",
+            "FILTER_UNRESOLVED_DEFERRED": "SUPER1_FILTER_DEFERRED",
+            "FILTER_EXPIRED_NO_SEND": "SUPER1_FILTER_EXPIRED",
+        }.get(state, "SUPER1_FILTER_TERMINAL")
         public_state = (
             "SUPER1_FILTER_BLOCKED"
             if state == "FILTER_BLOCKED"
             else "SUPER1_FILTER_UNRESOLVED_NO_SEND"
+            if state == "FILTER_UNRESOLVED_DEFERRED"
+            else "FILTER_EXPIRED_NO_SEND"
         )
-        prefix_bytes = (
-            core.canonical_json(prefix_record).encode("utf-8") if isinstance(prefix_record, dict) else b""
+        fields = self._filter_evidence_fields(
+            decision, filter_state, reason, prefix_record, prefix_raw
         )
-        evidence = {
-            "filter_state": filter_state,
-            "reason": reason,
-            "decision": decision,
-            "cutoffs": {} if not isinstance(prefix_record, dict) else prefix_record.get("cutoffs", {}),
-        }
-        evidence_hash = hashlib.sha256(core.canonical_json(evidence).encode("utf-8")).hexdigest()
         now = core.utc_now().isoformat()
-        connection = self._order_connection(output_root)
+        connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -681,16 +888,84 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             ).fetchone()
             if existing is not None or execution is not None:
                 current = str(existing[0]) if existing is not None else str(execution[0])
-                if current in {"FILTER_BLOCKED", "FILTER_UNRESOLVED_DEFERRED"}:
-                    connection.commit()
-                    return {
-                        "state": public_state,
-                        "persistent_state": current,
-                        "order_id": order_id,
-                        "idempotent": True,
-                        "filter_state": filter_state,
-                        "cancelled_pending": [],
-                    }
+                if current in {"FILTER_BLOCKED", "FILTER_UNRESOLVED_DEFERRED", "FILTER_EXPIRED_NO_SEND"}:
+                    if current == "FILTER_UNRESOLVED_DEFERRED" and state == "FILTER_EXPIRED_NO_SEND":
+                        connection.execute(
+                            "UPDATE order_intents SET status = ?, updated_at = ? WHERE order_id = ?",
+                            (state, now, order_id),
+                        )
+                        connection.execute(
+                            """
+                            UPDATE strategy_filter_evidence SET state = ?, trade_date = ?,
+                                targeted_cutoff = ?, full_cutoff = ?, full_cutoffs_json = ?,
+                                observed_at = ?, raw_byte_count = ?, raw_sha256 = ?,
+                                filter_evidence_sha256 = ?, updated_at = ?
+                            WHERE strategy = 'Super1' AND order_id = ?
+                            """,
+                            (
+                                state,
+                                fields["trade_date"],
+                                fields["targeted_cutoff"],
+                                fields["full_cutoff"],
+                                fields["full_cutoffs_json"],
+                                fields["observed_at"],
+                                fields["raw_byte_count"],
+                                fields["raw_sha256"],
+                                fields["filter_evidence_sha256"],
+                                now,
+                                order_id,
+                            ),
+                        )
+                        connection.execute(
+                            "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                            (
+                                order_id,
+                                core.canonical_json(
+                                    {
+                                        "recorded_at": now,
+                                        "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
+                                        "event": event_name,
+                                        "order_id": order_id,
+                                        "comment": comment,
+                                        "reason": reason,
+                                        "raw_sha256": fields["raw_sha256"],
+                                        "prefix_sha256": fields["raw_sha256"],
+                                        "raw_byte_count": fields["raw_byte_count"],
+                                        "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
+                                        "filter_evidence_sha256": fields["filter_evidence_sha256"],
+                                    }
+                                ),
+                            ),
+                        )
+                        connection.commit()
+                        transitioned = True
+                    else:
+                        transitioned = False
+                    if transitioned:
+                        pass
+                    else:
+                        connection.commit()
+                    if transitioned:
+                        result = {
+                            "state": public_state,
+                            "persistent_state": state,
+                            "order_id": order_id,
+                            "idempotent": False,
+                            "filter_state": filter_state,
+                            "cancelled_pending": [],
+                        }
+                    else:
+                        result = {
+                            "state": public_state,
+                            "persistent_state": current,
+                            "order_id": order_id,
+                            "idempotent": True,
+                            "filter_state": filter_state,
+                            "cancelled_pending": [],
+                        }
+                    if transitioned:
+                        self._drain_order_outbox(output_root)
+                    return result
                 connection.commit()
                 return {
                     "state": "FILTER_DEFERRED_TO_BASE_LIFECYCLE",
@@ -712,6 +987,21 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 (order_id, state, comment, now, now),
             )
             connection.execute(
+                """
+                INSERT INTO strategy_filter_evidence (
+                    strategy, order_id, state, trade_date, targeted_cutoff,
+                    full_cutoff, full_cutoffs_json, observed_at, raw_byte_count,
+                    raw_sha256, filter_evidence_sha256, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fields["strategy"], fields["order_id"], fields["state"], fields["trade_date"],
+                    fields["targeted_cutoff"], fields["full_cutoff"], fields["full_cutoffs_json"],
+                    fields["observed_at"], fields["raw_byte_count"], fields["raw_sha256"],
+                    fields["filter_evidence_sha256"], now, now,
+                ),
+            )
+            connection.execute(
                 "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
                 (
                     order_id,
@@ -723,10 +1013,12 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                             "order_id": order_id,
                             "comment": comment,
                             "reason": reason,
-                            "prefix_sha256": hashlib.sha256(prefix_bytes).hexdigest(),
-                            "prefix_bytes": len(prefix_bytes),
-                            "cutoffs": evidence["cutoffs"],
-                            "filter_evidence_sha256": evidence_hash,
+                            "raw_sha256": fields["raw_sha256"],
+                            "prefix_sha256": fields["raw_sha256"],
+                            "raw_byte_count": fields["raw_byte_count"],
+                            "prefix_bytes": fields["raw_byte_count"],
+                            "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
+                            "filter_evidence_sha256": fields["filter_evidence_sha256"],
                             "request_json": None,
                             "broker_ticket": None,
                         }
@@ -756,6 +1048,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         reward_r: float,
         *,
         prefix_record: dict[str, Any] | None = None,
+        prefix_raw: bytes | None = None,
         send_now: pd.Timestamp | None = None,
     ) -> dict[str, object]:
         order_id = str(decision["order_id"])
@@ -774,25 +1067,82 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                         "direction": str(decision.get("direction") or ""),
                     },
                 }
+            guard = self._candidate_send_context(
+                decision,
+                prefix_record,
+                pd.Timestamp(send_now()) if callable(send_now) else send_now,
+            )
+            unresolved_state = (
+                "FILTER_EXPIRED_NO_SEND"
+                if guard["state"] == "WINDOW_EXPIRED"
+                else "FILTER_UNRESOLVED_DEFERRED"
+            )
             return self._persist_filter_terminal(
-                output_root, decision, unresolved, "FILTER_UNRESOLVED_DEFERRED", str(exc), prefix_record
+                output_root,
+                decision,
+                unresolved,
+                unresolved_state,
+                str(exc),
+                prefix_record,
+                prefix_raw,
             )
         if filter_state["state"] == "BLOCK":
             return self._persist_filter_terminal(
-                output_root, decision, filter_state, "FILTER_BLOCKED", "FILTER_RULE_BLOCK", prefix_record
+                output_root,
+                decision,
+                filter_state,
+                "FILTER_BLOCKED",
+                "FILTER_RULE_BLOCK",
+                prefix_record,
+                prefix_raw,
             )
         prior_filter = self._intent_state(output_root, order_id)
         if prior_filter and prior_filter["status"] == "FILTER_UNRESOLVED_DEFERRED":
-            self._transition_order_intent(
+            guard = self._candidate_send_context(
+                decision,
+                prefix_record,
+                pd.Timestamp(send_now()) if callable(send_now) else send_now,
+            )
+            if guard["state"] == "WINDOW_EXPIRED":
+                return self._persist_filter_terminal(
+                    output_root,
+                    decision,
+                    filter_state,
+                    "FILTER_EXPIRED_NO_SEND",
+                    "FILTER_WINDOW_EXPIRED",
+                    prefix_record,
+                    prefix_raw,
+                )
+            promotion = self._promote_filter_if_newer(
                 output_root,
-                order_id,
-                "PRE_SEND_DEFERRED",
-                {
-                    "event": "SUPER1_FILTER_PROMOTED",
+                decision,
+                filter_state,
+                "NEWER_COMPLETE_FILTER_EVIDENCE",
+                prefix_record,
+                prefix_raw,
+            )
+            if not promotion.get("promoted"):
+                return {
+                    "state": "SUPER1_FILTER_UNRESOLVED_NO_SEND",
+                    "persistent_state": "FILTER_UNRESOLVED_DEFERRED",
                     "order_id": order_id,
-                    "reason": "NEWER_COMPLETE_FILTER_EVIDENCE",
+                    "reason": promotion.get("reason", "FILTER_EVIDENCE_NOT_STRICTLY_NEWER"),
                     "filter_state": filter_state,
-                },
+                    "cancelled_pending": [],
+                }
+        elif not prior_filter or prior_filter["status"] not in {
+            "FILTER_BLOCKED",
+            "FILTER_EXPIRED_NO_SEND",
+        }:
+            self._upsert_filter_evidence(
+                self._filter_evidence_fields(
+                    decision,
+                    filter_state,
+                    "FILTER_ALLOW",
+                    prefix_record,
+                    prefix_raw,
+                ),
+                output_root,
             )
         risk_state = self._terminal_r_state()
         self._active_risk_scale = float(risk_state["risk_scale"])
@@ -804,6 +1154,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 symbol,
                 reward_r,
                 prefix_record=prefix_record,
+                prefix_raw=prefix_raw,
                 send_now=send_now,
             )
             if result.get("state") == "SUBMITTED" and self._last_sizing is not None:
@@ -836,8 +1187,17 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         lock: dict[str, Any],
     ) -> dict[str, object]:
         self._super1_record = None
+        self._prefix_raw_path = None
+        self._prefix_raw_bytes = None
         if prefix.get("path") and Path(str(prefix["path"])).exists():
-            self._super1_record = core.read_json(Path(str(prefix["path"])))
+            prefix_path = Path(str(prefix["path"]))
+            prefix_raw = prefix_path.read_bytes()
+            parsed = json.loads(prefix_raw.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise Super1FeatureError("Super1 prefix JSON root must be an object.")
+            self._super1_record = parsed
+            self._prefix_raw_path = prefix_path
+            self._prefix_raw_bytes = prefix_raw
         try:
             result = super().reconcile_orders(output_root, prefix, now, lock)
             result["strategy"] = "Super1"
@@ -845,6 +1205,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             return result
         finally:
             self._super1_record = None
+            self._prefix_raw_path = None
+            self._prefix_raw_bytes = None
 
 
 def configure_core() -> None:
