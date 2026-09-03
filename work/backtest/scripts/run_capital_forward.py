@@ -375,6 +375,7 @@ class BarStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA wal_autocheckpoint=0")
         self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS minute_bars (
@@ -456,15 +457,29 @@ class BarStore:
         self.db.commit()
         return {"inserted": inserted, "duplicates": duplicate, "conflicts": conflict, "rejected": rejected}
 
-    def minute_frame(self, epic: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    def minute_frame(
+        self,
+        epic: str,
+        start: pd.Timestamp,
+        end: pd.Timestamp,
+        knowledge_asof: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """Return only rows known by the explicit causal knowledge cutoff."""
+        knowledge_utc = pd.Timestamp(knowledge_asof).tz_convert(UTC)
         rows = self.db.execute(
             """
             SELECT bar_time_utc, open, high, low, close, volume, first_known_time_utc
             FROM minute_bars
             WHERE epic=? AND bar_time_utc>=? AND bar_time_utc<?
+              AND first_known_time_utc<=?
             ORDER BY bar_time_utc
             """,
-            (epic, start.tz_convert(UTC).isoformat(), end.tz_convert(UTC).isoformat()),
+            (
+                epic,
+                start.tz_convert(UTC).isoformat(),
+                end.tz_convert(UTC).isoformat(),
+                knowledge_utc.isoformat(),
+            ),
         ).fetchall()
         frame = pd.DataFrame(
             rows,
@@ -474,6 +489,8 @@ class BarStore:
             return frame
         frame["time"] = pd.to_datetime(frame["time"], utc=True).dt.tz_convert(TZ)
         frame["known_time"] = pd.to_datetime(frame["known_time"], utc=True)
+        if frame["known_time"].max() > knowledge_utc:
+            raise CriticalLiveError("minute_frame returned data newer than knowledge_asof.")
         return frame
 
     def conflict_count(self, epic: str, start: pd.Timestamp, end: pd.Timestamp) -> int:
@@ -485,6 +502,28 @@ class BarStore:
             (epic, start.tz_convert(UTC).isoformat(), end.tz_convert(UTC).isoformat()),
         ).fetchone()
         return int(row[0])
+
+    def future_known_summary(
+        self, epic: str, start: pd.Timestamp, end: pd.Timestamp, knowledge_asof: pd.Timestamp
+    ) -> dict[str, object]:
+        row = self.db.execute(
+            """
+            SELECT COUNT(*), MAX(first_known_time_utc)
+            FROM minute_bars
+            WHERE epic=? AND bar_time_utc>=? AND bar_time_utc<?
+              AND first_known_time_utc>?
+            """,
+            (
+                epic,
+                start.tz_convert(UTC).isoformat(),
+                end.tz_convert(UTC).isoformat(),
+                pd.Timestamp(knowledge_asof).tz_convert(UTC).isoformat(),
+            ),
+        ).fetchone()
+        return {
+            "excluded_future_known_count": int(row[0] or 0),
+            "excluded_future_known_max": None if row[1] is None else str(row[1]),
+        }
 
     def latest_time(self, epic: str) -> pd.Timestamp | None:
         row = self.db.execute(
@@ -751,6 +790,11 @@ def frame_gate(
         "scheduled_closed_bar_count": len(scheduled_closed),
         "scheduled_closed_ranges": timestamp_ranges(scheduled_closed, minutes),
         "schedule_evidence": runtime.get("market_schedule_ny", {}).get("evidence"),
+        "data_known_at": (
+            None
+            if relevant.empty or "known_time" not in relevant.columns
+            else pd.Timestamp(relevant["known_time"].max()).isoformat()
+        ),
         "data_hash": stable_frame_hash(relevant[["time", "open", "high", "low", "close", "volume"]]),
     }
 
@@ -822,10 +866,15 @@ def fetch_window(
     totals = {"inserted": 0, "duplicates": 0, "conflicts": 0, "rejected": 0}
     cursor = start.tz_convert(UTC)
     end_utc = end.tz_convert(UTC)
+    provider_observations: list[pd.Timestamp] = []
     while cursor < end_utc:
         touch_health(output_root, "FETCHING_MARKET_DATA")
         chunk_end = min(cursor + pd.Timedelta(hours=12), end_utc)
         known_time, prices = client.prices(epic, cursor, chunk_end)
+        # Keep the provider's real observation time.  The requested endpoint
+        # remains the independent market-data-as-of/fetch-scope boundary.
+        known_time = pd.Timestamp(known_time).tz_convert(UTC)
+        provider_observations.append(known_time)
         result = store.ingest(epic, known_time, prices)
         for key, value in result.items():
             totals[key] += value
@@ -833,6 +882,8 @@ def fetch_window(
             output_root / "raw" / known_time.strftime("%Y-%m-%d") / "fetches.jsonl",
             {
                 "known_time": known_time.isoformat(),
+                "provider_observation_at": known_time.isoformat(),
+                "market_data_asof": end_utc.isoformat(),
                 "epic": epic,
                 "from": cursor.isoformat(),
                 "to": chunk_end.isoformat(),
@@ -845,23 +896,39 @@ def fetch_window(
         touch_health(output_root, "FETCHING_MARKET_DATA")
         cursor = chunk_end
     latest = store.latest_time(epic)
-    return {**totals, "latest_bar_utc": None if latest is None else latest.isoformat()}
+    return {
+        **totals,
+        "latest_bar_utc": None if latest is None else latest.isoformat(),
+        "market_data_asof": end_utc.isoformat(),
+        "fetch_scope_end": end_utc.isoformat(),
+        "provider_observation_at": (
+            None
+            if not provider_observations
+            else max(provider_observations).isoformat()
+        ),
+        "data_known_at": (
+            None
+            if not provider_observations
+            else max(provider_observations).isoformat()
+        ),
+    }
 
 
 def build_frames(
     store: BarStore,
     runtime: dict[str, Any],
-    now: pd.Timestamp,
+    market_data_asof: pd.Timestamp,
+    knowledge_asof: pd.Timestamp,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.Timestamp]]:
-    start = now.tz_convert(TZ).normalize() - pd.Timedelta(days=int(runtime["history_days"]))
-    end = now.tz_convert(TZ) + pd.Timedelta(minutes=1)
+    start = market_data_asof.tz_convert(TZ).normalize() - pd.Timedelta(days=int(runtime["history_days"]))
+    end = market_data_asof.tz_convert(TZ) + pd.Timedelta(minutes=1)
     frames: dict[str, pd.DataFrame] = {}
     cutoffs: dict[str, pd.Timestamp] = {}
     for key in LEG_ORDER:
         minutes = int(str(runtime["legs"][key]["timeframe"]).removesuffix("m"))
         epic = runtime["legs"][key]["epic"]
-        minute = store.minute_frame(epic, start, end)
-        cutoff = closed_cutoff(now, minutes, int(runtime["closed_bar_delay_seconds"]))
+        minute = store.minute_frame(epic, start, end, knowledge_asof)
+        cutoff = closed_cutoff(market_data_asof, minutes, int(runtime["closed_bar_delay_seconds"]))
         frames[key] = aggregate_minutes(minute, minutes, cutoff)
         cutoffs[key] = cutoff
     return frames, cutoffs
@@ -915,14 +982,22 @@ def invalid_payload(
 def run_prefix(
     output_root: Path,
     store: BarStore,
-    now: pd.Timestamp,
+    market_data_asof: pd.Timestamp,
+    knowledge_asof: pd.Timestamp,
 ) -> dict[str, Any]:
     runtime = runtime_config()
     configs, state_config, _ = live_strategy_objects()
-    trade_date = now.tz_convert(TZ).date()
+    trade_date = market_data_asof.tz_convert(TZ).date()
     if pd.Timestamp(trade_date).weekday() >= 5:
         return {"state": "OUTSIDE_TRADE_WINDOW", "reason": "WEEKEND"}
-    frames, cutoffs = build_frames(store, runtime, now)
+    market_data_utc = pd.Timestamp(market_data_asof).tz_convert(UTC)
+    observed_knowledge_asof = pd.Timestamp(knowledge_asof).tz_convert(UTC)
+    decision_produced_at = pd.Timestamp(utc_now()).tz_convert(UTC)
+    if not market_data_utc <= observed_knowledge_asof <= decision_produced_at:
+        raise CriticalLiveError(
+            "Prefix causality violation: market_data_asof <= knowledge_asof <= decision_produced_at is required."
+        )
+    frames, cutoffs = build_frames(store, runtime, market_data_asof, observed_knowledge_asof)
     cutoffs = {
         key: min(cutoffs[key], pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ))
         for key in LEG_ORDER
@@ -955,7 +1030,7 @@ def run_prefix(
 
     valid = all(gate["state"] == "VALID" for gate in gates.values())
     snapshots: dict[str, object] = {}
-    payload: dict[str, object] = invalid_payload(trade_date, gates, now)
+    payload: dict[str, object] = invalid_payload(trade_date, gates, utc_now())
     deterministic = True
     invariant_errors: list[str] = []
     if valid:
@@ -982,9 +1057,13 @@ def run_prefix(
     else:
         graph_features = {}
     state = "CRITICAL_STOP" if (not deterministic or invariant_errors) else ("VALID" if valid else "DATA_INVALID")
+    decision_produced_at_text = decision_produced_at.isoformat()
     record = {
         "schema_version": 1,
-        "recorded_at": utc_now().isoformat(),
+        "market_data_asof": market_data_asof.isoformat(),
+        "knowledge_asof": observed_knowledge_asof.isoformat(),
+        "recorded_at": decision_produced_at_text,
+        "decision_produced_at": decision_produced_at_text,
         "date": str(trade_date),
         "state": state,
         "cutoffs": {key: value.isoformat() for key, value in cutoffs.items()},
@@ -993,6 +1072,9 @@ def run_prefix(
         "order_transport_present": order_transport_present(runtime),
         "deterministic_rerun": deterministic,
         "invariant_errors": invariant_errors,
+        "data_known_at": {
+            key: gates[key].get("data_known_at") for key in LEG_ORDER
+        },
         "snapshots": snapshots,
         "graph_features": graph_features,
         "payload": payload,
@@ -1018,10 +1100,22 @@ def snapshots_equal(expected: object, observed: object) -> bool:
     return object_hash(expected) == object_hash(observed)
 
 
-def finalize_session(output_root: Path, store: BarStore, now: pd.Timestamp) -> dict[str, Any]:
+def finalize_session(
+    output_root: Path,
+    store: BarStore,
+    *,
+    market_data_asof: pd.Timestamp,
+    knowledge_asof: pd.Timestamp,
+    finalization_asof: pd.Timestamp,
+    fetches: dict[str, dict[str, object]],
+) -> dict[str, Any]:
     runtime = runtime_config()
     configs, state_config, _ = live_strategy_objects()
-    trade_date = now.tz_convert(TZ).date()
+    market_data_utc = pd.Timestamp(market_data_asof).tz_convert(UTC)
+    knowledge_utc = pd.Timestamp(knowledge_asof).tz_convert(UTC)
+    finalization_utc = pd.Timestamp(finalization_asof).tz_convert(UTC)
+    decision_produced_at = pd.Timestamp(utc_now()).tz_convert(UTC)
+    trade_date = finalization_asof.tz_convert(TZ).date()
     if pd.Timestamp(trade_date).weekday() >= 5:
         return {"state": "NON_TRADING_DAY", "reason": "WEEKEND"}
     marker = output_root / "finalized" / f"{trade_date}.json"
@@ -1032,14 +1126,145 @@ def finalize_session(output_root: Path, store: BarStore, now: pd.Timestamp) -> d
         + pd.Timedelta(minutes=int(runtime["legs"][key]["timeframe"].removesuffix("m")))
         for key in LEG_ORDER
     )
-    if now.tz_convert(TZ) < final_ready + pd.Timedelta(seconds=int(runtime["closed_bar_delay_seconds"])):
+    if finalization_asof.tz_convert(TZ) < final_ready + pd.Timedelta(seconds=int(runtime["closed_bar_delay_seconds"])):
         return {"state": "SESSION_OPEN"}
 
-    frames, _ = build_frames(store, runtime, now)
+    shared_asof = market_data_asof
+    # Final data must cover the frozen window end, and the shared observation
+    # must have made that last bucket usable under the closed-bar delay.
+    required_cutoffs = {
+        key: pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ)
+        for key in LEG_ORDER
+    }
+    closed_cutoffs = {
+        key: min(
+            closed_cutoff(
+                shared_asof,
+                int(runtime["legs"][key]["timeframe"].removesuffix("m")),
+                int(runtime["closed_bar_delay_seconds"]),
+            ),
+            required_cutoffs[key],
+        )
+        for key in LEG_ORDER
+    }
+    missing_closed = {
+        key: closed_cutoffs[key].isoformat()
+        for key in LEG_ORDER
+        if closed_cutoffs[key] < required_cutoffs[key]
+    }
+    if fetches is not None:
+        fetch_scope_ends = {
+            key: (
+                None
+                if not isinstance(fetches.get(key), dict)
+                else fetches[key].get("fetch_scope_end")
+            )
+            for key in LEG_ORDER
+        }
+        metadata_missing = {
+            key: [field for field in ("provider_observation_at", "data_known_at")
+                  if not isinstance(fetches.get(key), dict) or fetches[key].get(field) is None]
+            for key in LEG_ORDER
+        }
+        metadata_missing = {key: fields for key, fields in metadata_missing.items() if fields}
+        metadata_before_market: dict[str, dict[str, str]] = {}
+        for key in LEG_ORDER:
+            item = fetches.get(key)
+            if not isinstance(item, dict):
+                continue
+            for field in ("provider_observation_at", "data_known_at"):
+                value = item.get(field)
+                if value is not None and pd.Timestamp(value).tz_convert(UTC) < market_data_utc:
+                    metadata_before_market.setdefault(key, {})[field] = str(value)
+        missing_scope = {
+            key: None if value is None else str(value)
+            for key, value in fetch_scope_ends.items()
+            if value is None or pd.Timestamp(value) < required_cutoffs[key].tz_convert(UTC)
+        }
+        future_metadata: dict[str, dict[str, str]] = {}
+        for key in LEG_ORDER:
+            item = fetches.get(key)
+            if not isinstance(item, dict):
+                continue
+            for field in ("provider_observation_at", "data_known_at"):
+                value = item.get(field)
+                if value is not None and pd.Timestamp(value).tz_convert(UTC) > knowledge_utc:
+                    future_metadata.setdefault(key, {})[field] = str(value)
+        if future_metadata:
+            future_values = [value for fields in future_metadata.values() for value in fields.values()]
+            return {
+                "state": "WAIT_FOR_KNOWLEDGE",
+                "knowledge_asof": knowledge_utc.isoformat(),
+                "excluded_future_known_count": len(future_values),
+                "excluded_future_known_max": max(future_values),
+                "excluded_future_known_by_leg": future_metadata,
+            }
+        if metadata_missing or metadata_before_market or missing_scope or missing_closed or not market_data_utc <= knowledge_utc <= finalization_utc <= decision_produced_at:
+            return {
+                "state": "WAIT_FOR_FINAL_DATA",
+                "market_data_asof": shared_asof.isoformat(),
+                "required_cutoffs": {
+                    key: value.isoformat() for key, value in required_cutoffs.items()
+                },
+                "fetch_scope_ends": {
+                    key: None if value is None else str(value)
+                    for key, value in fetch_scope_ends.items()
+                },
+                "missing_scope": missing_scope,
+                "missing_metadata": metadata_missing,
+                "metadata_before_market": metadata_before_market,
+                "closed_cutoffs": {
+                    key: value.isoformat() for key, value in closed_cutoffs.items()
+                },
+                "missing_closed_cutoff": missing_closed,
+            }
+    else:
+        metadata_missing = {
+            key: ["provider_observation_at", "data_known_at"] for key in LEG_ORDER
+        }
+    if fetches is None or metadata_missing:
+        return {
+            "state": "WAIT_FOR_FINAL_DATA",
+            "market_data_asof": shared_asof.isoformat(),
+            "knowledge_asof": knowledge_utc.isoformat(),
+            "finalization_asof": finalization_utc.isoformat(),
+            "required_cutoffs": {
+                key: value.isoformat() for key, value in required_cutoffs.items()
+            },
+            "closed_cutoffs": {
+                key: value.isoformat() for key, value in closed_cutoffs.items()
+            },
+            "missing_scope": {},
+            "missing_metadata": metadata_missing,
+            "missing_closed_cutoff": missing_closed,
+        }
+
+    future_known = {}
+    for key in LEG_ORDER:
+        profile_start = pd.Timestamp(trade_date, tz=TZ) - pd.Timedelta(hours=6)
+        future_known[key] = store.future_known_summary(
+            runtime["legs"][key]["epic"], profile_start, required_cutoffs[key], knowledge_utc
+        )
+    excluded_future_known_count = sum(
+        int(item["excluded_future_known_count"]) for item in future_known.values()
+    )
+    if excluded_future_known_count:
+        return {
+            "state": "WAIT_FOR_KNOWLEDGE",
+            "knowledge_asof": knowledge_utc.isoformat(),
+            "excluded_future_known_count": excluded_future_known_count,
+            "excluded_future_known_max": max(
+                (item["excluded_future_known_max"] for item in future_known.values() if item["excluded_future_known_max"]),
+                default=None,
+            ),
+            "excluded_future_known_by_leg": future_known,
+        }
+
+    frames, _ = build_frames(store, runtime, shared_asof, knowledge_utc)
     gates: dict[str, dict[str, Any]] = {}
     for key in LEG_ORDER:
         minutes = int(runtime["legs"][key]["timeframe"].removesuffix("m"))
-        cutoff = pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ)
+        cutoff = required_cutoffs[key]
         gates[key] = frame_gate(
             store,
             runtime["legs"][key]["epic"],
@@ -1049,7 +1274,7 @@ def finalize_session(output_root: Path, store: BarStore, now: pd.Timestamp) -> d
             minutes,
         )
     valid = all(gate["state"] == "VALID" for gate in gates.values())
-    payload: dict[str, object] = invalid_payload(trade_date, gates, now)
+    payload: dict[str, object] = invalid_payload(trade_date, gates, finalization_utc)
     deterministic = True
     invariant_errors: list[str] = []
     prefix_violations: list[dict[str, object]] = []
@@ -1096,7 +1321,11 @@ def finalize_session(output_root: Path, store: BarStore, now: pd.Timestamp) -> d
     write_new_json(attempt / "session.json", {
         "schema_version": 1,
         "date": str(trade_date),
-        "completed_at": utc_now().isoformat(),
+        "completed_at": decision_produced_at.isoformat(),
+        "market_data_asof": shared_asof.isoformat(),
+        "knowledge_asof": knowledge_utc.isoformat(),
+        "finalization_asof": finalization_utc.isoformat(),
+        "decision_produced_at": decision_produced_at.isoformat(),
         "state": state,
         "execution": runtime["execution"],
         "order_transport_present": order_transport_present(runtime),
@@ -1258,15 +1487,16 @@ def verify_markets(client: CapitalDemoClient, runtime: dict[str, Any]) -> dict[s
 def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> dict[str, object]:
     runtime = runtime_config()
     lock = campaign_lock(output_root)
-    now = utc_now()
-    history_start = now - pd.Timedelta(days=int(runtime["history_days"]))
+    cycle_started_at = utc_now()
+    history_start = cycle_started_at - pd.Timedelta(days=int(runtime["history_days"]))
     fetches = {}
     for key in LEG_ORDER:
         epic = runtime["legs"][key]["epic"]
         latest = store.latest_time(epic)
         start = history_start if latest is None else max(history_start, latest - pd.Timedelta(minutes=10))
-        fetches[key] = fetch_window(client, store, output_root, epic, start, now)
-    if not campaign_session_eligible(now, lock):
+        fetches[key] = fetch_window(client, store, output_root, epic, start, cycle_started_at)
+    evaluation_now = utc_now()
+    if not campaign_session_eligible(evaluation_now, lock):
         return {
             "fetches": fetches,
             "preflight": {"state": "CAMPAIGN_WARMUP"},
@@ -1274,18 +1504,34 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
             "execution": {"state": "CAMPAIGN_WARMUP"},
             "final": {"state": "CAMPAIGN_WARMUP"},
             "daily_report": {"state": "NOT_AVAILABLE"},
+            "timing": {
+                "cycle_started_at": cycle_started_at.isoformat(),
+                "evaluation_at": evaluation_now.isoformat(),
+            },
         }
     preflight: dict[str, object] = {"state": "NOT_APPLICABLE"}
     preflight_order_transport = getattr(client, "preflight_order_transport", None)
     if callable(preflight_order_transport):
-        preflight = preflight_order_transport(output_root, now)
-    prefix = run_prefix(output_root, store, now)
+        preflight = preflight_order_transport(output_root, evaluation_now)
+    prefix = run_prefix(output_root, store, cycle_started_at, evaluation_now)
     execution: dict[str, object] = {"state": "NO_ORDER_TRANSPORT"}
     reconcile = getattr(client, "reconcile_orders", None)
     preflight_ready = str(preflight.get("state")) in {"NOT_APPLICABLE", "PASS", "ALREADY_PASSED"}
+    send_guard_at: pd.Timestamp | None = None
     if callable(reconcile) and preflight_ready:
-        execution = reconcile(output_root, prefix, now, lock)
+        send_guard_at = utc_now()
+        prefix_record = None
+        if prefix.get("path") and Path(str(prefix["path"])).is_file():
+            prefix_record = read_json(Path(str(prefix["path"])))
+            prefix_decision_at = pd.Timestamp(prefix_record["decision_produced_at"]).tz_convert(UTC)
+            if prefix_decision_at > send_guard_at.tz_convert(UTC):
+                raise CriticalLiveError("Prefix decision was produced after the send guard.")
+        execution = reconcile(output_root, prefix, send_guard_at, lock)
+        if isinstance(execution, dict):
+            execution["decision_produced_at"] = prefix_record.get("decision_produced_at") if prefix_record else None
+            execution["send_guard_at"] = send_guard_at.isoformat()
     elif callable(reconcile):
+        send_guard_at = utc_now()
         execution = {
             "state": "PREFLIGHT_PENDING",
             "preflight_state": preflight.get("state"),
@@ -1295,7 +1541,15 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
             "Broker state is UNKNOWN_NO_SEND; verified pending-order recovery is required: "
             f"{execution.get('reason') or 'broker readback unavailable'}"
         )
-    final = finalize_session(output_root, store, now)
+    finalization_at = utc_now()
+    final = finalize_session(
+        output_root,
+        store,
+        market_data_asof=cycle_started_at,
+        knowledge_asof=evaluation_now,
+        finalization_asof=finalization_at,
+        fetches=fetches,
+    )
     daily_report: dict[str, object] = {"state": "NOT_AVAILABLE"}
     report = getattr(client, "daily_health_report", None)
     if str(execution.get("state")) == "UNKNOWN_NO_SEND":
@@ -1304,7 +1558,7 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
             "reason": execution.get("reason"),
         }
     elif callable(report):
-        daily_report = report(output_root, now, prefix, final, lock)
+        daily_report = report(output_root, finalization_at, prefix, final, lock)
     return {
         "fetches": fetches,
         "preflight": preflight,
@@ -1312,6 +1566,13 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
         "execution": execution,
         "final": final,
         "daily_report": daily_report,
+        "timing": {
+            "cycle_started_at": cycle_started_at.isoformat(),
+            "market_data_asof": cycle_started_at.isoformat(),
+            "evaluation_at": evaluation_now.isoformat(),
+            "send_guard_at": None if send_guard_at is None else send_guard_at.isoformat(),
+            "finalization_at": finalization_at.isoformat(),
+        },
     }
 
 

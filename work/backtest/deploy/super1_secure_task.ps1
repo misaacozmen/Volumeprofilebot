@@ -12,7 +12,17 @@ foreach ($trustedExecutable in @($script:Super1SecureIcaclsExe, $script:Super1Se
 
 function Get-Super1SecureSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha.Dispose()
+    }
 }
 
 function Get-Super1SecureTaskXml {

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source_id": "NYSE_TRADING_CALENDAR_2026",
+  "source_url": "https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf",
+  "raw_source_path": "live_forward/calendars/provenance/nyse-2026-yearly-trading-calendar.pdf",
+  "raw_source_sha256": "70f5577eb43e60a9dbbecaae3cec23d0f02028c05c7f175013bb3e97816d394f",
+  "extraction_method": "Manual visual transcription of the rendered one-page calendar and legend",
+  "visual_manual_review": true,
+  "source_locations": "PDF page 1 calendar cells; blue cells are Closed and the early-close legend marks 1:00 p.m.",
+  "records": [
+    {"date": "2026-01-01", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "January 1", "legend": "Closed"}},
+    {"date": "2026-01-19", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "January 19", "legend": "Closed"}},
+    {"date": "2026-02-16", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "February 16", "legend": "Closed"}},
+    {"date": "2026-04-03", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "April 3", "legend": "Closed"}},
+    {"date": "2026-05-25", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "May 25", "legend": "Closed"}},
+    {"date": "2026-06-19", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "June 19", "legend": "Closed"}},
+    {"date": "2026-07-03", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "July 3", "legend": "Closed"}},
+    {"date": "2026-09-07", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "September 7", "legend": "Closed"}},
+    {"date": "2026-11-26", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "November 26", "legend": "Closed"}},
+    {"date": "2026-11-27", "status": "EARLY_CLOSE", "session_end": "13:00", "source_location": {"page": 1, "calendar_cell": "November 27", "legend": "Early close 1:00 p.m."}},
+    {"date": "2026-12-24", "status": "EARLY_CLOSE", "session_end": "13:00", "source_location": {"page": 1, "calendar_cell": "December 24", "legend": "Early close 1:00 p.m."}},
+    {"date": "2026-12-25", "status": "CLOSED", "session_end": null, "source_location": {"page": 1, "calendar_cell": "December 25", "legend": "Closed"}}
+  ]
+}

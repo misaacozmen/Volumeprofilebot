@@ -47,6 +47,14 @@ class CandidateRetryableError(Exception):
         self.code = code
 
 
+CANCEL_CONTROL_STATES = {
+    "CANCEL_ARMED",
+    "CANCEL_ACKNOWLEDGED",
+    "CANCEL_UNKNOWN",
+    "CANCEL_REJECTED",
+}
+
+
 class XmMt5ReadOnlyClient:
     """Read-only market-data adapter. This class intentionally has no order method."""
 
@@ -387,9 +395,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         request: dict[str, object],
         *,
         require_open_permission: bool = True,
+        permission_checked: bool = False,
     ) -> Any:
         if require_open_permission:
-            self._require_order_permission()
+            if not permission_checked:
+                self._require_order_permission()
         else:
             self._ensure_demo()
         return self.mt5.order_send(request)
@@ -399,6 +409,8 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=30.0, isolation_level=None)
         connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA wal_autocheckpoint=0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS order_intents (
@@ -419,6 +431,26 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 order_id TEXT NOT NULL,
                 event_json TEXT NOT NULL,
                 delivered_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broker_execution_states (
+                order_id TEXT PRIMARY KEY,
+                account_login INTEGER,
+                strategy_order_id TEXT NOT NULL,
+                broker_order_ticket INTEGER,
+                deal_ticket INTEGER,
+                position_id INTEGER,
+                state TEXT NOT NULL,
+                requested_volume REAL,
+                filled_volume REAL,
+                fill_price REAL,
+                protection_state TEXT,
+                details_json TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -457,6 +489,137 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         if row is None:
             return None
         return {"status": str(row[0]), "comment": str(row[1]), "broker_ticket": row[2]}
+
+    def _intent_request(self, output_root: Path, order_id: str) -> dict[str, Any] | None:
+        connection = self._order_connection(output_root)
+        try:
+            row = connection.execute(
+                "SELECT request_json FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None or row[0] is None:
+            return None
+        payload = json.loads(str(row[0]))
+        return payload if isinstance(payload, dict) else None
+
+    def _resume_pre_send_intent(
+        self,
+        output_root: Path,
+        order_id: str,
+        request: dict[str, object],
+        event: dict[str, object],
+    ) -> None:
+        now = core.utc_now().isoformat()
+        connection = self._order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE order_intents SET status = 'INTENT', request_json = ?, updated_at = ? "
+                "WHERE order_id = ? AND status = 'PRE_SEND_DEFERRED'",
+                (core.canonical_json(request), now, order_id),
+            ).rowcount
+            if updated != 1:
+                raise core.CriticalLiveError(
+                    f"{order_id}: PRE_SEND_DEFERRED intent could not be atomically resumed."
+                )
+            payload = {"recorded_at": now, "magic": self.magic, **event}
+            connection.execute(
+                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                (order_id, core.canonical_json(payload)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
+
+    def _request_from_pending_order(self, order: Any) -> dict[str, object]:
+        fields = {
+            "symbol": getattr(order, "symbol", None),
+            "type": getattr(order, "type", None),
+            "volume": getattr(order, "volume_initial", None),
+            "price": getattr(order, "price_open", None),
+            "sl": getattr(order, "sl", None),
+            "tp": getattr(order, "tp", None),
+            "expiration": getattr(order, "time_expiration", None),
+        }
+        if any(value is None for value in fields.values()):
+            raise UnsafeOpenOrdersError(
+                f"Pending order {getattr(order, 'ticket', '?')} lacks immutable broker fields."
+            )
+        return {
+            "action": self.mt5.TRADE_ACTION_PENDING,
+            **fields,
+            "magic": self.magic,
+            "comment": str(getattr(order, "comment", "")),
+        }
+
+    def _record_broker_state(
+        self,
+        output_root: Path,
+        order_id: str,
+        state: str,
+        details: dict[str, object],
+    ) -> None:
+        now = core.utc_now().isoformat()
+        connection = self._order_connection(output_root)
+        try:
+            connection.execute(
+                """
+                INSERT INTO broker_execution_states (
+                    order_id, account_login, strategy_order_id, broker_order_ticket,
+                    deal_ticket, position_id, state, requested_volume, filled_volume,
+                    fill_price, protection_state, details_json, checked_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    account_login=excluded.account_login,
+                    broker_order_ticket=excluded.broker_order_ticket,
+                    deal_ticket=excluded.deal_ticket,
+                    position_id=excluded.position_id,
+                    state=excluded.state,
+                    requested_volume=excluded.requested_volume,
+                    filled_volume=excluded.filled_volume,
+                    fill_price=excluded.fill_price,
+                    protection_state=excluded.protection_state,
+                    details_json=excluded.details_json,
+                    checked_at=excluded.checked_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    order_id,
+                    int(getattr(self, "login_id", 0) or 0) or None,
+                    order_id,
+                    details.get("broker_order_ticket"),
+                    details.get("deal_ticket"),
+                    details.get("position_id"),
+                    state,
+                    details.get("requested_volume"),
+                    details.get("filled_volume"),
+                    details.get("fill_price"),
+                    details.get("protection_state"),
+                    core.canonical_json(details),
+                    now,
+                    now,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self._append_order_event(
+            output_root,
+            {
+                "event": "BROKER_STATE",
+                "order_id": order_id,
+                "broker_state": state,
+                "account_login": int(getattr(self, "login_id", 0) or 0),
+                "checked_at": now,
+                **details,
+            },
+        )
 
     def _claim_order_intent(
         self,
@@ -540,6 +703,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         status: str,
         event: dict[str, object],
         broker_ticket: int | None = None,
+        request: dict[str, object] | None = None,
     ) -> None:
         now = core.utc_now().isoformat()
         connection = self._order_connection(output_root)
@@ -548,13 +712,27 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             connection.execute(
                 "INSERT OR IGNORE INTO order_intents "
                 "(order_id, status, comment, request_json, broker_ticket, created_at, updated_at) "
-                "VALUES (?, ?, ?, NULL, ?, ?, ?)",
-                (order_id, status, comment, broker_ticket, now, now),
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    order_id,
+                    status,
+                    comment,
+                    None if request is None else core.canonical_json(request),
+                    broker_ticket,
+                    now,
+                    now,
+                ),
             )
             connection.execute(
-                "UPDATE order_intents SET status = ?, broker_ticket = COALESCE(?, broker_ticket), "
-                "updated_at = ? WHERE order_id = ?",
-                (status, broker_ticket, now, order_id),
+                "UPDATE order_intents SET status = ?, request_json = COALESCE(?, request_json), "
+                "broker_ticket = COALESCE(?, broker_ticket), updated_at = ? WHERE order_id = ?",
+                (
+                    status,
+                    None if request is None else core.canonical_json(request),
+                    broker_ticket,
+                    now,
+                    order_id,
+                ),
             )
             payload = {"recorded_at": now, "magic": self.magic, **event}
             connection.execute(
@@ -628,19 +806,1094 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             inserted += 1
         return inserted
 
-    def _broker_objects(self, comment: str) -> list[tuple[str, Any]]:
+    def _broker_objects(
+        self,
+        comment: str,
+        *,
+        broker_ticket: int | None = None,
+        request: dict[str, Any] | None = None,
+    ) -> list[tuple[str, Any]]:
         self._ensure_demo()
         found: list[tuple[str, Any]] = []
-        for kind, operation in (("ORDER", "orders_get"), ("POSITION", "positions_get")):
-            for item in self._mt5_collection(operation):
-                if int(getattr(item, "magic", -1)) == self.magic and str(getattr(item, "comment", "")) == comment:
-                    found.append((kind, item))
+        for item in self._mt5_collection(
+            "orders_get", **({"ticket": int(broker_ticket)} if broker_ticket else {})
+        ):
+            if int(getattr(item, "magic", -1)) != self.magic:
+                continue
+            if broker_ticket and int(getattr(item, "ticket", 0) or 0) != int(broker_ticket):
+                continue
+            if not broker_ticket and str(getattr(item, "comment", "")) != comment:
+                continue
+            if request is not None and not self._broker_request_matches(item, request):
+                found.append(("ORDER_MISMATCH", item))
+            else:
+                found.append(("ORDER", item))
+        for item in self._mt5_collection("positions_get"):
+            if int(getattr(item, "magic", -1)) != self.magic:
+                continue
+            if not broker_ticket and str(getattr(item, "comment", "")) != comment:
+                continue
+            if request is not None and str(getattr(item, "symbol", request.get("symbol"))) != str(
+                request.get("symbol")
+            ):
+                continue
+            found.append(("POSITION", item))
         start = (core.utc_now() - pd.Timedelta(days=35)).to_pydatetime()
         end = (core.utc_now() + pd.Timedelta(minutes=1)).to_pydatetime()
         for item in self._mt5_collection("history_orders_get", start, end):
-            if int(getattr(item, "magic", -1)) == self.magic and str(getattr(item, "comment", "")) == comment:
-                found.append(("HISTORY_ORDER", item))
+            if int(getattr(item, "magic", -1)) != self.magic:
+                continue
+            if broker_ticket and int(getattr(item, "ticket", 0) or 0) != int(broker_ticket):
+                continue
+            if not broker_ticket and str(getattr(item, "comment", "")) != comment:
+                continue
+            found.append(("HISTORY_ORDER", item))
         return found
+
+    def _broker_request_matches(self, item: Any, request: dict[str, Any]) -> bool:
+        def matches_number(actual: object, expected: object, tolerance: float = 1e-8) -> bool:
+            if actual is None or expected is None:
+                return False
+            try:
+                return abs(float(actual) - float(expected)) <= tolerance
+            except (TypeError, ValueError):
+                return False
+
+        for field in ("symbol", "type"):
+            actual = getattr(item, field, None)
+            if actual is None or str(actual) != str(request.get(field)):
+                return False
+        # Identity is bound to the broker's initial order volume.  The
+        # current volume is a lifecycle remainder and may legitimately be
+        # zero after a full fill or smaller after a partial fill.
+        initial_volume = getattr(item, "volume_initial", None)
+        if initial_volume is None or not matches_number(initial_volume, request.get("volume")):
+            return False
+        for names, expected_name in (
+            (("price_open", "price"), "price"),
+            (("sl",), "sl"),
+            (("tp",), "tp"),
+            (("time_expiration", "expiration"), "expiration"),
+        ):
+            actuals = [getattr(item, name, None) for name in names]
+            actual = next((value for value in actuals if value is not None), None)
+            tolerance = 1e-8 if expected_name == "expiration" else 1e-6
+            if not matches_number(actual, request.get(expected_name), tolerance):
+                return False
+            if any(
+                value is not None
+                and not matches_number(value, request.get(expected_name), tolerance)
+                for value in actuals
+            ):
+                return False
+        return True
+
+    def _broker_execution_chain(
+        self,
+        order_id: str,
+        comment: str,
+        request: dict[str, Any],
+        broker_ticket: int | None,
+        now: pd.Timestamp,
+    ) -> tuple[str, dict[str, object]]:
+        self._ensure_demo()
+        start = (now - pd.Timedelta(days=35)).to_pydatetime()
+        end = (now + pd.Timedelta(minutes=1)).to_pydatetime()
+
+        if broker_ticket:
+            current_orders = list(
+                self._mt5_collection("orders_get", ticket=int(broker_ticket))
+            )
+            history_orders = list(
+                self._mt5_collection("history_orders_get", ticket=int(broker_ticket))
+            )
+        else:
+            current_orders = [
+                item
+                for item in self._mt5_collection("orders_get")
+                if int(getattr(item, "magic", -1)) == self.magic
+                and str(getattr(item, "comment", "")) == comment
+            ]
+            history_candidates = [
+                item
+                for item in self._mt5_collection("history_orders_get", start, end)
+                if int(getattr(item, "magic", -1)) == self.magic
+                and str(getattr(item, "comment", "")) == comment
+            ]
+            tickets = {
+                int(getattr(item, "ticket", 0) or 0)
+                for item in [*current_orders, *history_candidates]
+                if int(getattr(item, "ticket", 0) or 0)
+            }
+            if len(tickets) > 1:
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", {
+                    "account_login": int(getattr(self, "login_id", 0) or 0),
+                    "strategy_order_id": order_id,
+                    "requested_volume": float(request.get("volume") or 0.0),
+                    "reason": "Multiple broker entry order tickets match one strategy intent.",
+                    "matching_order_tickets": sorted(tickets),
+                    "checked_at": now.isoformat(),
+                }
+            broker_ticket = next(iter(tickets), None)
+            history_orders = (
+                list(self._mt5_collection("history_orders_get", ticket=int(broker_ticket)))
+                if broker_ticket
+                else history_candidates
+            )
+
+        if broker_ticket:
+            # MetaTrader5 history_deals_get(ticket=...) means the deals
+            # belonging to this entry order.  `order=` is not a documented
+            # keyword for this API and must never be used as a ticket alias.
+            entry_deals = list(
+                self._mt5_collection("history_deals_get", ticket=int(broker_ticket))
+            )
+        else:
+            entry_deals = []
+
+        details: dict[str, object] = {
+            "account_login": int(getattr(self, "login_id", 0) or 0),
+            "strategy_order_id": order_id,
+            "broker_order_ticket": broker_ticket,
+            "requested_volume": float(request.get("volume") or 0.0),
+            "history_order_count": len(history_orders),
+            "deal_count": len(entry_deals),
+            "checked_at": now.isoformat(),
+        }
+
+        order_evidence = [*current_orders, *history_orders]
+        if broker_ticket and not order_evidence:
+            details["reason"] = "Entry order readback is missing."
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+        if any(
+            int(getattr(item, "magic", -1)) != self.magic
+            or str(getattr(item, "comment", "")) != comment
+            or not self._broker_request_matches(item, request)
+            for item in order_evidence
+        ):
+            details["mismatched_order_tickets"] = [
+                int(getattr(item, "ticket", 0) or 0) for item in order_evidence
+            ]
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+
+        info = self.mt5.symbol_info(str(request.get("symbol") or ""))
+        volume_step = float(getattr(info, "volume_step", 0.0) or 0.0) if info is not None else 0.0
+        volume_tolerance = max(volume_step * 1e-6, 1e-8)
+        if current_orders:
+            if len(current_orders) != 1:
+                details["reason"] = "Multiple current broker orders match one strategy intent."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            orders = current_orders
+            details["broker_order_ticket"] = int(
+                getattr(orders[0], "ticket", broker_ticket or 0) or broker_ticket or 0
+            )
+            current_volume = getattr(orders[0], "volume_current", None)
+            if current_volume is None:
+                details["reason"] = "Current pending order volume is missing."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            pending_volume = float(current_volume)
+            if pending_volume < -volume_tolerance:
+                details["reason"] = "Current pending order volume is negative."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            details["pending_volume"] = pending_volume
+        else:
+            pending_volume = 0.0
+
+        order_state = int(getattr(history_orders[-1], "state", -1)) if history_orders else -1
+        state_rejected = int(getattr(self.mt5, "ORDER_STATE_REJECTED", 5))
+        state_canceled = int(getattr(self.mt5, "ORDER_STATE_CANCELED", 2))
+        state_expired = int(getattr(self.mt5, "ORDER_STATE_EXPIRED", 6))
+        if history_orders and order_state == state_rejected and not entry_deals:
+            details["history_order_state"] = order_state
+            return "REJECTED", details
+        if history_orders and order_state == state_canceled and not entry_deals:
+            details["history_order_state"] = order_state
+            return "CANCELLED", details
+        if history_orders and order_state == state_expired and not entry_deals:
+            details["history_order_state"] = order_state
+            return "EXPIRED", details
+
+        entry_in = int(getattr(self.mt5, "DEAL_ENTRY_IN", 0))
+        entry_out = int(getattr(self.mt5, "DEAL_ENTRY_OUT", 1))
+        expected_deal_type: int | None = None
+        if int(request.get("type", -1)) == int(getattr(self.mt5, "ORDER_TYPE_BUY_LIMIT", -2)):
+            expected_deal_type = int(getattr(self.mt5, "ORDER_TYPE_BUY", 0))
+        elif int(request.get("type", -1)) == int(getattr(self.mt5, "ORDER_TYPE_SELL_LIMIT", -3)):
+            expected_deal_type = int(getattr(self.mt5, "ORDER_TYPE_SELL", 1))
+        if expected_deal_type is None:
+            details["reason"] = "The pending order type cannot determine entry direction."
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+
+        if any(
+            int(getattr(item, "entry", -1)) != entry_in
+            or int(getattr(item, "order", 0) or 0) != int(broker_ticket or 0)
+            or str(getattr(item, "symbol", "")) != str(request.get("symbol"))
+            or int(getattr(item, "type", -1)) != expected_deal_type
+            or float(getattr(item, "volume", 0.0) or 0.0) <= 0
+            or int(getattr(item, "position_id", 0) or 0) <= 0
+            for item in entry_deals
+        ):
+            details["reason"] = "Entry deal is missing exact order, position, symbol, direction, or role evidence."
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+        fills = list(entry_deals)
+        position_ids = {
+            int(getattr(item, "position_id", 0) or 0) for item in fills
+        }
+        position_id = next(iter(position_ids), None) if len(position_ids) == 1 else None
+        if len(position_ids) > 1:
+            details["position_ids"] = sorted(position_ids)
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+
+        filled_volume = sum(float(getattr(item, "volume", 0.0) or 0.0) for item in entry_deals)
+        exits: list[Any] = []
+        if position_id is not None:
+            position_deals = list(
+                self._mt5_collection("history_deals_get", position=int(position_id))
+            )
+            if not position_deals:
+                details["reason"] = "Position-linked deal history is missing."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            position_entry_volume = 0.0
+            for item in position_deals:
+                if int(getattr(item, "position_id", 0) or 0) != position_id:
+                    continue
+                if str(getattr(item, "symbol", "")) != str(request.get("symbol")):
+                    details["reason"] = "Position history contains a different symbol."
+                    return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+                role = int(getattr(item, "entry", -1))
+                if role == entry_in:
+                    if (
+                        int(getattr(item, "type", -1)) != expected_deal_type
+                        or int(getattr(item, "order", 0) or 0) != int(broker_ticket or 0)
+                    ):
+                        details["reason"] = "Position-linked entry deal is not owned by the entry order."
+                        return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+                    position_entry_volume += float(getattr(item, "volume", 0.0) or 0.0)
+                elif role == entry_out:
+                    expected_exit_type = (
+                        int(getattr(self.mt5, "ORDER_TYPE_SELL", 1))
+                        if expected_deal_type == int(getattr(self.mt5, "ORDER_TYPE_BUY", 0))
+                        else int(getattr(self.mt5, "ORDER_TYPE_BUY", 0))
+                    )
+                    if int(getattr(item, "type", -1)) != expected_exit_type:
+                        return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+                    exits.append(item)
+                else:
+                    details["reason"] = "Position history contains a deal with an unknown entry role."
+                    return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            if abs(position_entry_volume - filled_volume) > volume_tolerance:
+                details["reason"] = "Position-linked entry volume does not match entry-order deals."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+
+        exit_volume = sum(float(getattr(item, "volume", 0.0) or 0.0) for item in exits)
+        requested_volume = float(request.get("volume") or 0.0)
+        details.update(
+            {
+                "filled_volume": filled_volume,
+                "entry_filled_volume": filled_volume,
+                "exit_volume": exit_volume,
+                "position_id": position_id,
+                "entry_deal_tickets": [int(getattr(item, "ticket", 0) or 0) for item in fills],
+                "exit_deal_tickets": [int(getattr(item, "ticket", 0) or 0) for item in exits],
+            }
+        )
+        if fills:
+            details["deal_ticket"] = int(getattr(fills[-1], "ticket", 0) or 0) or None
+            details["fill_price"] = (
+                sum(
+                    float(getattr(item, "price", 0.0) or 0.0)
+                    * float(getattr(item, "volume", 0.0) or 0.0)
+                    for item in fills
+                )
+                / filled_volume
+                if filled_volume
+                else None
+            )
+
+        position: Any | None = None
+        if position_id is not None:
+            positions = list(
+                self._mt5_collection("positions_get", ticket=int(position_id))
+            )
+            details["position_count"] = len(positions)
+            if len(positions) > 1:
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            position = positions[0] if positions else None
+        else:
+            details["position_count"] = 0
+
+        if current_orders and (not fills or pending_volume > volume_tolerance):
+            expected_remainder = max(requested_volume - filled_volume, 0.0)
+            if abs(pending_volume - expected_remainder) > volume_tolerance:
+                details["reason"] = "Pending remainder does not balance initial and entry volumes."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            if not fills:
+                return "PENDING_CONFIRMED", details
+
+        if not fills:
+            details["reason"] = "No exact entry deal is visible yet; broker state remains unresolved."
+            return "UNKNOWN_NO_SEND", details
+
+        # A half-step fill is a genuine partial, not a rounding tolerance.
+        details["pending_remainder_volume"] = max(requested_volume - filled_volume, 0.0)
+        details["open_position_volume"] = (
+            float(getattr(position, "volume", 0.0) or 0.0) if position is not None else 0.0
+        )
+
+        if filled_volume - requested_volume > volume_tolerance:
+            details["reason"] = "Entry fill volume exceeds the broker order initial volume."
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+        if exit_volume - filled_volume > volume_tolerance:
+            details["reason"] = "Exit volume exceeds verified entry volume."
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+
+        if position is not None:
+            expected_position_type = (
+                int(getattr(self.mt5, "POSITION_TYPE_BUY", 0))
+                if expected_deal_type == int(getattr(self.mt5, "ORDER_TYPE_BUY", 0))
+                else int(getattr(self.mt5, "POSITION_TYPE_SELL", 1))
+            )
+            if (
+                str(getattr(position, "symbol", "")) != str(request.get("symbol"))
+                or int(getattr(position, "type", -1)) != expected_position_type
+            ):
+                details["reason"] = "Broker position symbol or direction does not match the strategy request."
+                return "BROKER_REQUEST_MISMATCH_NO_SEND", details
+            open_volume = float(getattr(position, "volume", 0.0) or 0.0)
+            expected_open_volume = max(filled_volume - exit_volume, 0.0)
+            if abs(open_volume - expected_open_volume) > volume_tolerance:
+                details["reason"] = "Open position volume does not balance entry and exit deal volumes."
+                return "POSITION_VOLUME_MISMATCH_NO_SEND", details
+            expected_sl = float(request.get("sl") or 0.0)
+            expected_tp = float(request.get("tp") or 0.0)
+            actual_sl = float(getattr(position, "sl", 0.0) or 0.0)
+            actual_tp = float(getattr(position, "tp", 0.0) or 0.0)
+            tolerance = max(volume_tolerance, 1e-6)
+            if info is not None:
+                point = float(getattr(info, "point", 0.0) or 0.0)
+                tick_size = float(getattr(info, "trade_tick_size", 0.0) or point)
+                tolerance = max(tolerance, tick_size)
+            protected = (
+                actual_sl > 0
+                and actual_tp > 0
+                and abs(actual_sl - expected_sl) <= tolerance
+                and abs(actual_tp - expected_tp) <= tolerance
+            )
+            details.update(
+                {
+                    "position_ticket": int(getattr(position, "ticket", 0) or 0),
+                    "protection_state": "PROTECTED" if protected else "MISMATCH",
+                    "position_sl": actual_sl,
+                    "position_tp": actual_tp,
+                }
+            )
+            if not protected:
+                return "PROTECTION_MISMATCH_NO_SEND", details
+
+        if abs(exit_volume - filled_volume) <= volume_tolerance and not current_orders and exits:
+            sl_reason = int(getattr(self.mt5, "DEAL_REASON_SL", 4))
+            tp_reason = int(getattr(self.mt5, "DEAL_REASON_TP", 5))
+            reasons = {int(getattr(item, "reason", -1)) for item in exits}
+            details["close_volume_balanced"] = True
+            if reasons == {sl_reason}:
+                return "CLOSED_SL", details
+            if reasons == {tp_reason}:
+                return "CLOSED_TP", details
+            return "CLOSED_UNKNOWN", details
+        if filled_volume + volume_tolerance < requested_volume:
+            return "PARTIAL_FILL", details
+
+        if position is not None:
+            return "OPEN_PROTECTED", details
+
+        if exits and exit_volume + volume_tolerance < filled_volume:
+            return "PARTIAL_EXIT_NO_SEND", details
+        details["reason"] = "Entry deal exists without a visible position or complete exit evidence."
+        return "ENTRY_UNPROTECTED_NO_SEND", details
+
+    def _reconcile_persistent_intents(
+        self,
+        output_root: Path,
+        now: pd.Timestamp,
+    ) -> list[dict[str, object]]:
+        connection = self._order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT order_id, status, comment, request_json, broker_ticket "
+                "FROM order_intents ORDER BY created_at"
+            ).fetchall()
+        finally:
+            connection.close()
+        terminal = {
+            "PRE_SEND_DEFERRED",
+            "NOT_EXECUTABLE",
+            "CHECK_RETRYABLE",
+            "CHECK_REJECTED",
+            "SEND_REJECTED",
+            "WINDOW_EXPIRED",
+            "WINDOW_NOT_OPEN",
+            "PREFIX_REQUIRED",
+        }
+        verified_terminal = {"CLOSED_SL", "CLOSED_TP", "REJECTED", "CANCELLED", "EXPIRED"}
+        results: list[dict[str, object]] = []
+        for order_id, status, comment, request_json, broker_ticket in rows:
+            if str(status) in CANCEL_CONTROL_STATES:
+                legacy_ticket, legacy_error = self._legacy_cancel_ticket(output_root, str(order_id))
+                if legacy_error or (
+                    broker_ticket is not None
+                    and legacy_ticket is not None
+                    and int(broker_ticket) != legacy_ticket
+                ):
+                    details = {
+                        "strategy_order_id": str(order_id),
+                        "broker_order_ticket": None if broker_ticket is None else int(broker_ticket),
+                        "legacy_outbox_ticket": legacy_ticket,
+                        "reason": legacy_error or "Ledger and legacy outbox cancellation tickets disagree.",
+                        "checked_at": now.isoformat(),
+                    }
+                    self._record_broker_state(
+                        output_root, str(order_id), "BROKER_REQUEST_MISMATCH_NO_SEND", details
+                    )
+                    results.append(
+                        {
+                            "order_id": str(order_id),
+                            "state": "BROKER_REQUEST_MISMATCH_NO_SEND",
+                            **details,
+                        }
+                    )
+                    continue
+                effective_ticket = (
+                    None
+                    if broker_ticket is None and legacy_ticket is None
+                    else int(broker_ticket if broker_ticket is not None else legacy_ticket)
+                )
+                request = None
+                if request_json:
+                    try:
+                        parsed_request = json.loads(str(request_json))
+                        if isinstance(parsed_request, dict):
+                            request = parsed_request
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        request = None
+                results.append(
+                    self._resolve_cancel_unknown(
+                        output_root,
+                        str(order_id),
+                        str(comment),
+                        effective_ticket,
+                        now,
+                        request=request,
+                        control_status=str(status),
+                    )
+                )
+                continue
+            if str(status) in terminal or not request_json:
+                continue
+            stored = self._stored_broker_state(output_root, str(order_id))
+            if stored is not None and stored[0] in verified_terminal:
+                continue
+            request = json.loads(str(request_json))
+            state, details = self._broker_execution_chain(
+                str(order_id),
+                str(comment),
+                request,
+                None if broker_ticket is None else int(broker_ticket),
+                now,
+            )
+            self._record_broker_state(output_root, str(order_id), state, details)
+            if str(status) == "LINKED_EXISTING" and state in verified_terminal:
+                self._transition_order_intent(
+                    output_root,
+                    str(order_id),
+                    state,
+                    {
+                        "event": "LIFECYCLE_TERMINAL",
+                        "order_id": str(order_id),
+                        "broker_order_ticket": details.get("broker_order_ticket"),
+                        "broker_execution_state": state,
+                        "reason": "Linked economic exposure reached a verified terminal state.",
+                    },
+                    broker_ticket=(
+                        int(details["broker_order_ticket"])
+                        if details.get("broker_order_ticket") is not None
+                        else None
+                    ),
+                )
+            if str(status) in {"SEND_UNKNOWN", "SEND_PARTIAL"} and state in {
+                "PENDING_CONFIRMED",
+                "PARTIAL_FILL",
+                "OPEN_PROTECTED",
+            }:
+                self._transition_order_intent(
+                    output_root,
+                    str(order_id),
+                    "LINKED_EXISTING",
+                    {
+                        "event": "LINKED_EXISTING",
+                        "order_id": str(order_id),
+                        "broker_order_ticket": details.get("broker_order_ticket"),
+                        "broker_state": state,
+                        "reason": "Later broker evidence linked the original uncertain send.",
+                    },
+                    broker_ticket=(
+                        int(details["broker_order_ticket"])
+                        if details.get("broker_order_ticket") is not None
+                        else None
+                    ),
+                )
+            results.append({"order_id": str(order_id), "state": state, **details})
+        return results
+
+    def _persistent_cancel_controls(self, output_root: Path) -> list[dict[str, object]]:
+        connection = self._order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT order_id, status, comment, broker_ticket FROM order_intents "
+                "WHERE status IN ('CANCEL_ARMED', 'CANCEL_ACKNOWLEDGED', "
+                "'CANCEL_UNKNOWN', 'CANCEL_REJECTED') ORDER BY created_at"
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            {
+                "order_id": str(order_id),
+                "status": str(status),
+                "comment": str(comment),
+                "broker_ticket": None if ticket is None else int(ticket),
+            }
+            for order_id, status, comment, ticket in rows
+        ]
+
+    def _legacy_cancel_ticket(
+        self, output_root: Path, order_id: str
+    ) -> tuple[int | None, str | None]:
+        """Recover a legacy cancellation ticket from immutable outbox evidence."""
+        connection = self._order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT event_json FROM order_event_outbox "
+                "WHERE order_id = ? ORDER BY sequence DESC",
+                (order_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        tickets: set[int] = set()
+        for (event_json,) in rows:
+            try:
+                event = json.loads(str(event_json))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if str(event.get("event")) not in CANCEL_CONTROL_STATES:
+                continue
+            value = event.get("broker_order_ticket", event.get("ticket"))
+            try:
+                ticket = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ticket > 0:
+                tickets.add(ticket)
+        if len(tickets) > 1:
+            return None, "Multiple cancellation tickets exist in legacy outbox evidence."
+        return (next(iter(tickets)) if tickets else None), None
+
+    def _arm_cancel_attempt(
+        self,
+        output_root: Path,
+        order: Any,
+        order_id: str,
+        remove_request: dict[str, object],
+        original_request: dict[str, object] | None,
+        reason: str,
+    ) -> dict[str, object]:
+        """Atomically record the one permitted REMOVE attempt before SDK I/O."""
+        ticket = int(order.ticket)
+        comment = str(getattr(order, "comment", ""))
+        connection = self._order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT order_id, status, request_json, broker_ticket FROM order_intents "
+                "WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if row is not None and row[3] is not None and int(row[3]) != ticket:
+                raise core.CriticalLiveError(
+                    f"{order_id}: pending order ticket conflicts with the idempotency ledger."
+                )
+            if row is None:
+                matching = connection.execute(
+                    "SELECT order_id, status, request_json, broker_ticket FROM order_intents "
+                    "WHERE broker_ticket = ? ORDER BY created_at",
+                    (ticket,),
+                ).fetchall()
+                if len(matching) > 1:
+                    raise core.CriticalLiveError(
+                        f"broker ticket {ticket}: multiple strategy intents claim one order."
+                    )
+                row = matching[0] if matching else None
+            bound_order_id = str(row[0]) if row is not None else order_id
+            status = str(row[1]) if row is not None else None
+            stored_request = None
+            if row is not None and row[2]:
+                try:
+                    parsed = json.loads(str(row[2]))
+                    if isinstance(parsed, dict):
+                        stored_request = parsed
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    stored_request = None
+            prior_status = status in CANCEL_CONTROL_STATES or status in {
+                "CANCELLED",
+                "EXPIRED",
+                "REJECTED",
+            }
+            prior_events = connection.execute(
+                "SELECT event_json FROM order_event_outbox WHERE order_id = ?",
+                (bound_order_id,),
+            ).fetchall()
+            prior_event = False
+            for (event_json,) in prior_events:
+                try:
+                    event = json.loads(str(event_json))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if (
+                    str(event.get("event")) in CANCEL_CONTROL_STATES
+                    and int(event.get("broker_order_ticket", event.get("ticket", 0)) or 0)
+                    == ticket
+                ):
+                    prior_event = True
+                    break
+            original = stored_request or original_request
+            if prior_status or prior_event:
+                connection.commit()
+                return {
+                    "order_id": bound_order_id,
+                    "status": status,
+                    "request": original,
+                    "prior_attempt": True,
+                }
+            now = core.utc_now().isoformat()
+            event = {
+                "event": "CANCEL_ARMED",
+                "order_id": bound_order_id,
+                "comment": comment,
+                "broker_order_ticket": ticket,
+                "ticket": ticket,
+                "reason": reason,
+                "request": original,
+                "cancel_request": remove_request,
+                "requested_volume": None if original is None else original.get("volume"),
+                "position_id": getattr(order, "position_id", None),
+                "position_ticket": getattr(order, "position_ticket", None),
+                "send_started": False,
+            }
+            if row is None:
+                connection.execute(
+                    "INSERT INTO order_intents "
+                    "(order_id, status, comment, request_json, broker_ticket, created_at, updated_at) "
+                    "VALUES (?, 'CANCEL_ARMED', ?, ?, ?, ?, ?)",
+                    (
+                        bound_order_id,
+                        comment,
+                        None if original is None else core.canonical_json(original),
+                        ticket,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                connection.execute(
+                    "UPDATE order_intents SET status = 'CANCEL_ARMED', "
+                    "request_json = COALESCE(?, request_json), broker_ticket = ?, updated_at = ? "
+                    "WHERE order_id = ?",
+                    (
+                        None if original is None else core.canonical_json(original),
+                        ticket,
+                        now,
+                        bound_order_id,
+                    ),
+                )
+            payload = {"recorded_at": now, "magic": self.magic, **event}
+            connection.execute(
+                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                (bound_order_id, core.canonical_json(payload)),
+            )
+            connection.commit()
+            return {
+                "order_id": bound_order_id,
+                "status": "CANCEL_ARMED",
+                "request": original,
+                "prior_attempt": False,
+            }
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _persist_cancel_unresolved(
+        self,
+        output_root: Path,
+        order_id: str,
+        comment: str,
+        ticket: int,
+        control_status: str,
+        reason: str,
+    ) -> str:
+        next_status = (
+            "CANCEL_REJECTED"
+            if control_status == "CANCEL_REJECTED"
+            else "CANCEL_UNKNOWN"
+        )
+        current = self._intent_state(output_root, order_id)
+        if current is None:
+            self._adopt_order_intent(
+                output_root,
+                order_id,
+                comment,
+                next_status,
+                {
+                    "event": next_status,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "broker_order_ticket": ticket,
+                    "ticket": ticket,
+                    "detail": reason,
+                },
+                broker_ticket=ticket,
+            )
+        elif str(current["status"]) != next_status:
+            self._transition_order_intent(
+                output_root,
+                order_id,
+                next_status,
+                {
+                    "event": next_status,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "broker_order_ticket": ticket,
+                    "ticket": ticket,
+                    "detail": reason,
+                },
+                broker_ticket=ticket,
+            )
+        return next_status
+
+    def _record_cancel_control_if_missing(
+        self,
+        output_root: Path,
+        order_id: str,
+        state: str,
+        details: dict[str, object],
+    ) -> None:
+        """Keep an existing economic state; only create a control-only state if needed."""
+        stored = self._stored_broker_state(output_root, order_id)
+        if stored is None or stored[0] in CANCEL_CONTROL_STATES:
+            self._record_broker_state(output_root, order_id, state, details)
+
+    def _cancel_control_evidence(
+        self,
+        history_orders: list[Any],
+        current_orders: list[Any],
+        entry_deals: list[Any],
+        request: dict[str, Any],
+        broker_ticket: int,
+    ) -> tuple[str, dict[str, object]] | None:
+        """Prove the cancelled remainder independently from economic exposure."""
+        if current_orders or not history_orders:
+            return None
+        history = history_orders[-1]
+        state_map = {
+            int(getattr(self.mt5, "ORDER_STATE_CANCELED", 2)): "CANCELLED",
+            int(getattr(self.mt5, "ORDER_STATE_EXPIRED", 6)): "EXPIRED",
+            int(getattr(self.mt5, "ORDER_STATE_REJECTED", 5)): "REJECTED",
+        }
+        terminal_state = state_map.get(int(getattr(history, "state", -1)))
+        if terminal_state is None:
+            return None
+        requested = float(request.get("volume") or 0.0)
+        initial = getattr(history, "volume_initial", None)
+        if initial is None or abs(float(initial) - requested) > 1e-8:
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", {
+                "broker_order_ticket": broker_ticket,
+                "reason": "Cancellation history volume_initial disagrees with original request.",
+            }
+        entry_in = int(getattr(self.mt5, "DEAL_ENTRY_IN", 0))
+        fills = [
+            item
+            for item in entry_deals
+            if int(getattr(item, "entry", -1)) == entry_in
+            and int(getattr(item, "order", 0) or 0) == broker_ticket
+        ]
+        filled = sum(float(getattr(item, "volume", 0.0) or 0.0) for item in fills)
+        remainder = round(max(requested - filled, 0.0), 8)
+        current_remainder = getattr(history, "volume_current", None)
+        if current_remainder is not None and abs(float(current_remainder) - remainder) > 1e-8:
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", {
+                "broker_order_ticket": broker_ticket,
+                "requested_volume": requested,
+                "entry_filled_volume": filled,
+                "expected_cancelled_remainder": remainder,
+                "history_volume_current": float(current_remainder),
+                "reason": "Cancellation history volume_current does not balance the remainder.",
+            }
+        if terminal_state == "REJECTED" and fills:
+            return "BROKER_REQUEST_MISMATCH_NO_SEND", {
+                "broker_order_ticket": broker_ticket,
+                "reason": "Rejected order history cannot also prove an entry fill.",
+            }
+        return "CANCEL_RESOLVED", {
+            "broker_order_ticket": broker_ticket,
+            "cancelled_order_state": terminal_state,
+            "requested_volume": requested,
+            "entry_filled_volume": filled,
+            "cancelled_remainder_volume": remainder,
+            "history_volume_current": (
+                None if current_remainder is None else float(current_remainder)
+            ),
+            "entry_deal_tickets": [int(getattr(item, "ticket", 0) or 0) for item in fills],
+        }
+
+    def _resolve_cancel_unknown(
+        self,
+        output_root: Path,
+        order_id: str,
+        comment: str,
+        broker_ticket: int | None,
+        now: pd.Timestamp,
+        *,
+        request: dict[str, Any] | None = None,
+        control_status: str | None = None,
+    ) -> dict[str, object]:
+        """Resolve cancellation control without overwriting economic evidence."""
+        control_status = control_status or str(
+            (self._intent_state(output_root, order_id) or {}).get(
+                "status", "CANCEL_UNKNOWN"
+            )
+        )
+        if broker_ticket is None:
+            stored = self._stored_broker_state(output_root, order_id)
+            if stored is not None:
+                broker_ticket = int(stored[1].get("broker_order_ticket") or 0) or None
+        if broker_ticket is None:
+            return {
+                "order_id": order_id,
+                "ticket": None,
+                "state": control_status,
+                "reason": "cancel ticket missing",
+            }
+        try:
+            current = list(self._mt5_collection("orders_get", ticket=broker_ticket))
+            history = list(self._mt5_collection("history_orders_get", ticket=broker_ticket))
+            deals = list(self._mt5_collection("history_deals_get", ticket=broker_ticket))
+        except BrokerStateUnknownError as exc:
+            details = {
+                "broker_order_ticket": broker_ticket,
+                "comment": comment,
+                "reason": str(exc),
+                "checked_at": now.isoformat(),
+            }
+            self._persist_cancel_unresolved(
+                output_root, order_id, comment, broker_ticket, control_status, str(exc)
+            )
+            return {"order_id": order_id, "ticket": broker_ticket, "state": "CANCEL_UNKNOWN", **details}
+        cancel_evidence = None
+        if request is not None:
+            cancel_evidence = self._cancel_control_evidence(
+                history, current, deals, request, broker_ticket
+            )
+            if cancel_evidence is not None and cancel_evidence[0] == "BROKER_REQUEST_MISMATCH_NO_SEND":
+                details = {
+                    "broker_order_ticket": broker_ticket,
+                    "comment": comment,
+                    **cancel_evidence[1],
+                    "checked_at": now.isoformat(),
+                }
+                self._record_broker_state(output_root, order_id, cancel_evidence[0], details)
+                self._persist_cancel_unresolved(
+                    output_root, order_id, comment, broker_ticket, control_status, details["reason"]
+                )
+                return {"order_id": order_id, "ticket": broker_ticket, "state": cancel_evidence[0], **details}
+        if (current or deals) and request is not None:
+            chain_state, chain_details = self._broker_execution_chain(
+                order_id, comment, request, broker_ticket, now
+            )
+            self._record_broker_state(output_root, order_id, chain_state, chain_details)
+            if cancel_evidence is not None and cancel_evidence[0] == "CANCEL_RESOLVED":
+                resolved_details = {
+                    **chain_details,
+                    **cancel_evidence[1],
+                    "cancel_resolution": "CANCEL_RESOLVED",
+                    "cancel_control_independent_of_economic_state": True,
+                }
+                if chain_state in {"PARTIAL_FILL", "OPEN_PROTECTED"}:
+                    self._transition_order_intent(
+                        output_root,
+                        order_id,
+                        "LINKED_EXISTING",
+                        {
+                            "event": "CANCEL_RESOLVED",
+                            "order_id": order_id,
+                            "broker_order_ticket": broker_ticket,
+                            "cancel_outcome": cancel_evidence[1]["cancelled_order_state"],
+                            "cancelled_remainder_volume": cancel_evidence[1]["cancelled_remainder_volume"],
+                            "entry_filled_volume": cancel_evidence[1]["entry_filled_volume"],
+                            "position_id": chain_details.get("position_id"),
+                            "broker_execution_state": chain_state,
+                        },
+                        broker_ticket=broker_ticket,
+                    )
+                    return {"order_id": order_id, "ticket": broker_ticket, "state": chain_state, **resolved_details}
+            safe_terminal = {"CLOSED_SL", "CLOSED_TP", "REJECTED", "CANCELLED", "EXPIRED"}
+            safe_linked = {"OPEN_PROTECTED"}
+            if chain_state in safe_terminal:
+                self._transition_order_intent(
+                    output_root,
+                    order_id,
+                    chain_state,
+                    {
+                        "event": "CANCEL_RESOLVED",
+                        "order_id": order_id,
+                        "broker_order_ticket": broker_ticket,
+                        "cancel_outcome": "FILLED_OR_TERMINAL",
+                        "broker_execution_state": chain_state,
+                        "details": chain_details,
+                    },
+                    broker_ticket=broker_ticket,
+                )
+                return {
+                    "order_id": order_id,
+                    "ticket": broker_ticket,
+                    "state": chain_state,
+                    "cancel_resolution": "FILLED_OR_TERMINAL",
+                    **chain_details,
+                }
+            if chain_state in safe_linked:
+                self._transition_order_intent(
+                    output_root,
+                    order_id,
+                    "LINKED_EXISTING",
+                    {
+                        "event": "CANCEL_RESOLVED",
+                        "order_id": order_id,
+                        "broker_order_ticket": broker_ticket,
+                        "cancel_outcome": "OPEN_POSITION",
+                        "broker_execution_state": chain_state,
+                        "details": chain_details,
+                    },
+                    broker_ticket=broker_ticket,
+                )
+                return {
+                    "order_id": order_id,
+                    "ticket": broker_ticket,
+                    "state": chain_state,
+                    "cancel_resolution": "OPEN_POSITION",
+                    **chain_details,
+                }
+            details = {
+                "broker_order_ticket": broker_ticket,
+                "comment": comment,
+                "reason": "REMOVE outcome remains economically unresolved.",
+                "current_order_count": len(current),
+                "entry_deal_count": len(deals),
+                "checked_at": now.isoformat(),
+                "broker_execution_state": chain_state,
+                "broker_execution_details": chain_details,
+            }
+            next_status = self._persist_cancel_unresolved(
+                output_root, order_id, comment, broker_ticket, control_status, details["reason"]
+            )
+            return {
+                "order_id": order_id,
+                "ticket": broker_ticket,
+                "state": next_status,
+                **details,
+            }
+        if current or deals:
+            next_status = self._persist_cancel_unresolved(
+                output_root,
+                order_id,
+                comment,
+                broker_ticket,
+                control_status,
+                "Economic request_json is missing; no request was fabricated.",
+            )
+            return {
+                "order_id": order_id,
+                "ticket": broker_ticket,
+                "state": next_status,
+                "broker_order_ticket": broker_ticket,
+                "comment": comment,
+                "reason": "Economic request_json is missing; no request was fabricated.",
+            }
+        cancelled_states = {
+            int(getattr(self.mt5, "ORDER_STATE_CANCELED", 2)),
+            int(getattr(self.mt5, "ORDER_STATE_EXPIRED", 6)),
+            int(getattr(self.mt5, "ORDER_STATE_REJECTED", 5)),
+        }
+        if not history or int(getattr(history[-1], "state", -1)) not in cancelled_states:
+            details = {
+                "broker_order_ticket": broker_ticket,
+                "comment": comment,
+                "reason": "No broker cancellation state is visible yet.",
+                "history_order_count": len(history),
+                "checked_at": now.isoformat(),
+            }
+            next_status = self._persist_cancel_unresolved(
+                output_root, order_id, comment, broker_ticket, control_status, details["reason"]
+            )
+            if request is not None:
+                self._record_cancel_control_if_missing(
+                    output_root, order_id, next_status, details
+                )
+            return {"order_id": order_id, "ticket": broker_ticket, "state": next_status, **details}
+        terminal_state = (
+            "CANCELLED"
+            if int(getattr(history[-1], "state", -1))
+            == int(getattr(self.mt5, "ORDER_STATE_CANCELED", 2))
+            else "EXPIRED"
+            if int(getattr(history[-1], "state", -1))
+            == int(getattr(self.mt5, "ORDER_STATE_EXPIRED", 6))
+            else "REJECTED"
+        )
+        details = {
+            "broker_order_ticket": broker_ticket,
+            "comment": comment,
+            "reason": f"Broker history confirms {terminal_state.lower()} and no entry deal is present.",
+            "history_order_count": len(history),
+            "checked_at": now.isoformat(),
+            "broker_execution_state": terminal_state,
+        }
+        self._record_broker_state(output_root, order_id, terminal_state, details)
+        self._transition_order_intent(
+            output_root,
+            order_id,
+            terminal_state,
+            {
+                "event": "CANCEL_RESOLVED",
+                "order_id": order_id,
+                "broker_order_ticket": broker_ticket,
+                "cancel_outcome": terminal_state,
+                **details,
+            },
+            broker_ticket=broker_ticket,
+        )
+        return {"order_id": order_id, "ticket": broker_ticket, "state": terminal_state, **details}
+
+    def _stored_broker_state(
+        self, output_root: Path, order_id: str
+    ) -> tuple[str, dict[str, object]] | None:
+        connection = self._order_connection(output_root)
+        try:
+            row = connection.execute(
+                "SELECT state, details_json FROM broker_execution_states WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        return str(row[0]), json.loads(str(row[1]))
 
     def _minimum_volume(self, symbol: str) -> float:
         info = self.mt5.symbol_info(symbol)
@@ -882,21 +2135,159 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         temp.replace(marker)
         return {**payload, "path": str(marker)}
 
+    def _candidate_send_context(
+        self,
+        decision: dict[str, Any],
+        prefix_record: dict[str, Any] | None,
+        now: pd.Timestamp | None = None,
+    ) -> dict[str, object]:
+        observed = core.utc_now() if now is None else now
+        local = observed.tz_convert(core.TZ)
+        if prefix_record is None:
+            return {"state": "PREFIX_MISSING", "observed_at": observed.isoformat()}
+        trade_date = str(prefix_record.get("date") or decision.get("date") or local.date())
+        configs, _, _ = core.live_strategy_objects()
+        leg_key = str(decision["leg_key"])
+        if leg_key not in configs:
+            raise core.CriticalLiveError(f"Unknown Super1 leg for send guard: {leg_key}")
+        config = configs[leg_key]
+        start = pd.Timestamp(f"{trade_date} {config.trade_window_start}", tz=core.TZ)
+        end = pd.Timestamp(f"{trade_date} {config.trade_window_end}", tz=core.TZ)
+        delay = int(self.config.get("closed_bar_delay_seconds", 8))
+        fresh_cutoffs: dict[str, pd.Timestamp] = {}
+        prefix_cutoffs: dict[str, pd.Timestamp] = {}
+        try:
+            for key in core.LEG_ORDER:
+                leg_minutes = int(str(self.config["legs"][key]["timeframe"]).removesuffix("m"))
+                leg_end = pd.Timestamp(
+                    f"{trade_date} {configs[key].trade_window_end}", tz=core.TZ
+                )
+                fresh_cutoffs[key] = min(
+                    core.closed_cutoff(observed, leg_minutes, delay), leg_end
+                )
+                prefix_cutoffs[key] = pd.Timestamp(
+                    (prefix_record.get("cutoffs") or {})[key]
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            return {
+                "state": "STALE_PREFIX",
+                "reason_code": "PREFIX_CUTOFF_VECTOR_MISSING",
+                "observed_at": observed.isoformat(),
+                "error": str(exc),
+            }
+        fresh_cutoff = fresh_cutoffs[leg_key]
+        prefix_cutoff = prefix_cutoffs[leg_key]
+        context: dict[str, object] = {
+            "observed_at": observed.isoformat(),
+            "trade_date": trade_date,
+            "local_now": local.isoformat(),
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "prefix_cutoff": prefix_cutoff.isoformat(),
+            "fresh_cutoff": fresh_cutoff.isoformat(),
+            "prefix_cutoffs": {key: value.isoformat() for key, value in prefix_cutoffs.items()},
+            "fresh_cutoffs": {key: value.isoformat() for key, value in fresh_cutoffs.items()},
+            "decision_bar_time": decision.get("fvg_time"),
+            "decision_known_time": decision.get("fvg_known_time"),
+            "prefix_recorded_at": prefix_record.get("recorded_at"),
+        }
+        if local.date() != pd.Timestamp(trade_date).date() or local >= end:
+            return {"state": "WINDOW_EXPIRED", **context}
+        if local < start:
+            return {"state": "WINDOW_NOT_OPEN", **context}
+        if any(prefix_cutoffs[key] != fresh_cutoffs[key] for key in core.LEG_ORDER):
+            return {"state": "STALE_PREFIX", **context}
+        if end <= observed:
+            return {"state": "WINDOW_EXPIRED", **context}
+        context["expiration"] = int(end.tz_convert("UTC").timestamp())
+        return {"state": "ALLOW", **context}
+
+    def _cancel_candidate_pending(
+        self,
+        output_root: Path,
+        comment: str,
+        reason: str,
+        order_id: str,
+    ) -> list[dict[str, object]]:
+        cancelled = []
+        for kind, item in self._broker_objects(comment):
+            if kind == "ORDER":
+                cancelled.append(self._remove_order(output_root, item, reason, order_id))
+        return cancelled
+
+    def _is_owned_pending_order(self, order: Any) -> bool:
+        if int(getattr(order, "magic", -1)) != self.magic:
+            return False
+        comment = str(getattr(order, "comment", ""))
+        prefix = str(self.config.get("order_comment_prefix", ""))
+        return bool(prefix) and (
+            comment == prefix
+            or comment.startswith(f"{prefix}:")
+            or comment.startswith(f"{prefix}-")
+        )
+
+    def _defer_pre_send(
+        self,
+        output_root: Path,
+        order_id: str,
+        comment: str,
+        context: dict[str, object],
+    ) -> None:
+        event = {
+            "event": "PRE_SEND_DEFERRED",
+            "order_id": order_id,
+            "comment": comment,
+            "reason_code": "STALE_PREFIX",
+            "send_started": False,
+            **context,
+        }
+        intent = self._intent_state(output_root, order_id)
+        if intent is None:
+            self._adopt_order_intent(
+                output_root,
+                order_id,
+                comment,
+                "PRE_SEND_DEFERRED",
+                event,
+            )
+        else:
+            self._transition_order_intent(
+                output_root,
+                order_id,
+                "PRE_SEND_DEFERRED",
+                event,
+            )
+
     def _place_candidate(
         self,
         output_root: Path,
         decision: dict[str, Any],
         symbol: str,
         reward_r: float,
+        *,
+        prefix_record: dict[str, Any] | None = None,
+        send_now: pd.Timestamp | None = None,
     ) -> dict[str, object]:
         order_id = str(decision["order_id"])
         leg_key = str(decision["leg_key"])
         comment = self._comment(leg_key, order_id)
+
+        def guard_now() -> pd.Timestamp:
+            # send_now is an explicit controlled-clock injection for tests;
+            # production reconcile calls leave it unset and read immediately.
+            if callable(send_now):
+                return pd.Timestamp(send_now())
+            return core.utc_now() if send_now is None else send_now
+
+        self._drain_order_outbox(output_root)
+
+
         self._drain_order_outbox(output_root)
         intent = self._intent_state(output_root, order_id)
         events = [item for item in self._events(output_root) if item.get("order_id") == order_id]
         broker = self._broker_objects(comment)
         retryable_check = False
+        retryable_pre_send = False
         if intent is not None:
             status = str(intent["status"])
             if status in {"SUBMITTED", "LINKED_EXISTING"}:
@@ -922,12 +2313,19 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 return {"state": "IDEMPOTENT_LINKED_EXISTING", "order_id": order_id}
             if status == "CHECK_RETRYABLE":
                 retryable_check = True
+            elif status == "PRE_SEND_DEFERRED":
+                retryable_pre_send = True
+            elif status == "SEND_ARMED":
+                return {
+                    "state": "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED",
+                    "order_id": order_id,
+                }
             else:
                 return {
                     "state": f"IDEMPOTENT_{status}_NO_SEND",
                     "order_id": order_id,
                 }
-        if not retryable_check:
+        if not retryable_check and not retryable_pre_send:
             submitted = [
                 item
                 for item in events
@@ -972,6 +2370,67 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 raise core.CriticalLiveError(
                     f"{order_id}: broker object exists without idempotency ledger."
                 )
+        initial_context = self._candidate_send_context(
+            decision, prefix_record, guard_now()
+        )
+        if initial_context["state"] == "STALE_PREFIX":
+            self._defer_pre_send(output_root, order_id, comment, initial_context)
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, "STALE_PREFIX", order_id
+            )
+            return {
+                "state": "STALE_PREFIX_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "STALE_PREFIX",
+                "cancelled_pending": cancelled,
+            }
+        if initial_context["state"] in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN"}:
+            reason_code = str(initial_context["state"])
+            self._terminal_no_send(
+                output_root,
+                order_id,
+                comment,
+                reason_code,
+                {
+                    "event": reason_code,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "send_started": False,
+                    **initial_context,
+                },
+            )
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, reason_code, order_id
+            )
+            return {
+                "state": f"{reason_code}_NO_SEND",
+                "order_id": order_id,
+                "reason_code": reason_code,
+                "cancelled_pending": cancelled,
+            }
+        if initial_context["state"] == "PREFIX_MISSING":
+            self._terminal_no_send(
+                output_root,
+                order_id,
+                comment,
+                "PREFIX_REQUIRED",
+                {
+                    "event": "PREFIX_REQUIRED",
+                    "order_id": order_id,
+                    "comment": comment,
+                    "send_started": False,
+                    **initial_context,
+                },
+            )
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, "PREFIX_REQUIRED", order_id
+            )
+            return {
+                "state": "PREFIX_REQUIRED_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "PREFIX_REQUIRED",
+                "cancelled_pending": cancelled,
+            }
         entry = self._derived_entry(decision, reward_r)
         try:
             request = self._pending_request(
@@ -1009,6 +2468,8 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 "order_id": order_id,
                 "reason_code": exc.code,
             }
+        if initial_context.get("expiration") is not None:
+            request["expiration"] = int(initial_context["expiration"])
         intent_event = {
             "event": "INTENT",
             "order_id": order_id,
@@ -1024,8 +2485,25 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "expiration": request["expiration"],
             "bar_time": decision.get("fvg_time"),
             "known_time": decision.get("fvg_known_time"),
+            "decision_produced_at": None if prefix_record is None else prefix_record.get("recorded_at"),
+            "prefix_cutoff": initial_context.get("prefix_cutoff"),
+            "data_cutoff": initial_context.get("fresh_cutoff"),
         }
-        if not retryable_check:
+        if retryable_pre_send:
+            self._resume_pre_send_intent(
+                output_root,
+                order_id,
+                request,
+                {
+                    "event": "INTENT_REEVALUATED",
+                    "order_id": order_id,
+                    "comment": comment,
+                    "request": request,
+                    "prefix_cutoff": initial_context.get("prefix_cutoff"),
+                    "fresh_cutoff": initial_context.get("fresh_cutoff"),
+                },
+            )
+        if not retryable_check and not retryable_pre_send:
             claimed = self._claim_order_intent(
                 output_root,
                 order_id,
@@ -1054,9 +2532,39 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "state": f"IDEMPOTENT_{claimed['status']}_NO_SEND",
                     "order_id": order_id,
                 }
-        check = self.mt5.order_check(request)
-        if check is None or int(check.retcode) != 0:
-            retcode = None if check is None else int(check.retcode)
+        check_error: str | None = None
+        try:
+            check = self.mt5.order_check(request)
+        except Exception as exc:
+            check = None
+            check_error = str(exc)
+        try:
+            check_retcode = None if check is None else int(check.retcode)
+        except (AttributeError, TypeError, ValueError) as exc:
+            check_retcode = None
+            check_error = check_error or str(exc)
+        if check_error is not None:
+            self._transition_order_intent(
+                output_root,
+                order_id,
+                "CHECK_RETRYABLE",
+                {
+                    "event": "CHECK_ERROR",
+                    "order_id": order_id,
+                    "comment": comment,
+                    "retcode": None,
+                    "reason": check_error,
+                    "send_started": False,
+                },
+            )
+            return {
+                "state": "CHECK_RETRYABLE_NO_SEND",
+                "order_id": order_id,
+                "retcode": None,
+                "reason": check_error,
+            }
+        if check is None or check_retcode != 0:
+            retcode = check_retcode
             if retcode is None or retcode in {
                 10004,
                 10012,
@@ -1094,11 +2602,54 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "event": "CHECK_REJECTED",
                     "order_id": order_id,
                     "comment": comment,
-                    "retcode": None if check is None else int(check.retcode),
-                    "reason": str(self.mt5.last_error()) if check is None else str(check.comment),
-                },
+                    "retcode": check_retcode,
+                    "reason": str(self.mt5.last_error()) if check is None else str(getattr(check, "comment", "")),
+                    },
+                )
+            return {
+                "state": "CHECK_REJECTED_NO_SEND",
+                "order_id": order_id,
+                "retcode": check_retcode,
+            }
+        send_context = self._candidate_send_context(decision, prefix_record, guard_now())
+        if send_context["state"] == "STALE_PREFIX":
+            self._defer_pre_send(output_root, order_id, comment, send_context)
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, "STALE_PREFIX", order_id
             )
-            raise core.CriticalLiveError(f"{order_id}: MT5 order_check rejected the demo pending order.")
+            return {
+                "state": "STALE_PREFIX_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "STALE_PREFIX",
+                "cancelled_pending": cancelled,
+            }
+        if send_context["state"] in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN"}:
+            reason_code = str(send_context["state"])
+            self._terminal_no_send(
+                output_root,
+                order_id,
+                comment,
+                reason_code,
+                {
+                    "event": reason_code,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "send_started": False,
+                    **send_context,
+                },
+                request=request,
+            )
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, reason_code, order_id
+            )
+            return {
+                "state": f"{reason_code}_NO_SEND",
+                "order_id": order_id,
+                "reason_code": reason_code,
+                "cancelled_pending": cancelled,
+            }
+        if send_context.get("expiration") is not None:
+            request["expiration"] = int(send_context["expiration"])
         self._transition_order_intent(
             output_root,
             order_id,
@@ -1107,44 +2658,228 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 "event": "CHECK_PASSED",
                 "order_id": order_id,
                 "comment": comment,
-                "retcode": int(check.retcode),
+                "retcode": check_retcode,
+                "send_guard": send_context,
             },
         )
-        result = self._order_send_checked(request)
+        self._transition_order_intent(
+            output_root,
+            order_id,
+            "SEND_ARMED",
+            {
+                "event": "SEND_ARMED",
+                "order_id": order_id,
+                "comment": comment,
+                "send_attempted": False,
+                "send_guard": send_context,
+            },
+        )
+        # Permission is checked before the final guard. Once the final guard
+        # allows transmission, no broker/disk operation may intervene.
+        self._require_order_permission()
+        persistent_cancel_controls = self._persistent_cancel_controls(output_root)
+        if persistent_cancel_controls:
+            return {
+                "state": "BLOCKED_BY_PERSISTENT_CANCEL_NO_SEND",
+                "order_id": order_id,
+                "reason": "A durable cancellation attempt is unresolved.",
+                "persistent_cancel_controls": persistent_cancel_controls,
+            }
+        final_context = self._candidate_send_context(decision, prefix_record, guard_now())
+        if final_context["state"] == "STALE_PREFIX":
+            self._defer_pre_send(output_root, order_id, comment, final_context)
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, "STALE_PREFIX", order_id
+            )
+            return {
+                "state": "STALE_PREFIX_NO_SEND",
+                "order_id": order_id,
+                "reason_code": "STALE_PREFIX",
+                "cancelled_pending": cancelled,
+            }
+        if final_context["state"] in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN"}:
+            reason_code = str(final_context["state"])
+            self._terminal_no_send(
+                output_root,
+                order_id,
+                comment,
+                reason_code,
+                {
+                    "event": reason_code,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "send_started": False,
+                    **final_context,
+                },
+                request=request,
+            )
+            cancelled = self._cancel_candidate_pending(
+                output_root, comment, reason_code, order_id
+            )
+            return {
+                "state": f"{reason_code}_NO_SEND",
+                "order_id": order_id,
+                "reason_code": reason_code,
+                "cancelled_pending": cancelled,
+            }
+        send_context = final_context
+        send_started_at = pd.Timestamp(str(final_context["observed_at"]))
+        try:
+            result = self._order_send_checked(request, permission_checked=True)
+        except Exception as exc:
+            self._transition_order_intent(
+                output_root,
+                order_id,
+                "SEND_UNKNOWN",
+                {
+                    "event": "SEND_UNKNOWN",
+                    "order_id": order_id,
+                    "comment": comment,
+                    "reason": str(exc),
+                    "send_started_at": send_started_at.isoformat(),
+                    "response_at": core.utc_now().isoformat(),
+                    "broker_execution_state": "UNKNOWN_NO_SEND",
+                },
+            )
+            return {
+                "state": "SEND_UNKNOWN_NO_SEND",
+                "order_id": order_id,
+                "reason": str(exc),
+            }
         accepted = {
             int(getattr(self.mt5, "TRADE_RETCODE_PLACED", 10008)),
             int(getattr(self.mt5, "TRADE_RETCODE_DONE", 10009)),
         }
-        if result is None or int(result.retcode) not in accepted:
-            status = "SEND_UNKNOWN" if result is None else "SEND_REJECTED"
+        retcode = None
+        try:
+            retcode = int(result.retcode) if result is not None else None
+        except (AttributeError, TypeError, ValueError):
+            retcode = None
+        partial_code = int(getattr(self.mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010))
+        definitive_rejections = {
+            int(getattr(self.mt5, "TRADE_RETCODE_REJECT", 10006)),
+            int(getattr(self.mt5, "TRADE_RETCODE_CANCEL", 10007)),
+            int(getattr(self.mt5, "TRADE_RETCODE_INVALID", 10013)),
+            int(getattr(self.mt5, "TRADE_RETCODE_INVALID_VOLUME", 10014)),
+            int(getattr(self.mt5, "TRADE_RETCODE_INVALID_PRICE", 10015)),
+            int(getattr(self.mt5, "TRADE_RETCODE_INVALID_STOPS", 10016)),
+            int(getattr(self.mt5, "TRADE_RETCODE_TRADE_DISABLED", 10017)),
+            int(getattr(self.mt5, "TRADE_RETCODE_MARKET_CLOSED", 10018)),
+            int(getattr(self.mt5, "TRADE_RETCODE_INVALID_FILL", 10030)),
+        }
+        if retcode in accepted:
+            broker_ticket = int(getattr(result, "order", 0) or 0) or None
             self._transition_order_intent(
                 output_root,
                 order_id,
-                status,
+                "SUBMITTED",
                 {
-                    "event": "SEND_REJECTED",
+                    "event": "SUBMITTED",
                     "order_id": order_id,
                     "comment": comment,
-                    "retcode": None if result is None else int(result.retcode),
-                    "reason": str(self.mt5.last_error()) if result is None else str(result.comment),
+                    "ticket": broker_ticket,
+                    "deal": int(getattr(result, "deal", 0) or 0) or None,
+                    "retcode": retcode,
+                    "send_started_at": send_started_at.isoformat(),
+                    "response_at": core.utc_now().isoformat(),
+                    "broker_execution_state": "UNCONFIRMED",
+                    "send_guard": send_context,
                 },
+                broker_ticket=broker_ticket,
             )
-            raise core.CriticalLiveError(f"{order_id}: MT5 rejected the demo pending order.")
+            return {"state": "SUBMITTED", "order_id": order_id, "ticket": broker_ticket}
+        if retcode == partial_code:
+            status = "SEND_PARTIAL"
+            event_name = "SEND_PARTIAL"
+            broker_state = "PARTIAL_UNCONFIRMED"
+        elif retcode in definitive_rejections:
+            status = "SEND_REJECTED"
+            event_name = "SEND_REJECTED"
+            broker_state = "REJECTED"
+        else:
+            status = "SEND_UNKNOWN"
+            event_name = "SEND_UNKNOWN"
+            broker_state = "UNKNOWN_NO_SEND"
+        broker_ticket = int(getattr(result, "order", 0) or 0) if result is not None else 0
         self._transition_order_intent(
             output_root,
             order_id,
-            "SUBMITTED",
+            status,
             {
-                "event": "SUBMITTED",
+                "event": event_name,
                 "order_id": order_id,
                 "comment": comment,
-                "ticket": int(result.order),
-                "deal": int(result.deal),
-                "retcode": int(result.retcode),
+                "retcode": retcode,
+                "reason": (
+                    str(self.mt5.last_error()) if result is None else str(getattr(result, "comment", ""))
+                ),
+                "send_started_at": send_started_at.isoformat(),
+                "response_at": core.utc_now().isoformat(),
+                "broker_execution_state": broker_state,
             },
-            broker_ticket=int(result.order),
+            broker_ticket=broker_ticket or None,
         )
-        return {"state": "SUBMITTED", "order_id": order_id, "ticket": int(result.order)}
+        if status == "SEND_REJECTED":
+            return {"state": "SEND_REJECTED_NO_SEND", "order_id": order_id, "retcode": retcode}
+        if status == "SEND_PARTIAL":
+            return {"state": "SEND_PARTIAL_NO_SEND", "order_id": order_id, "retcode": retcode}
+        return {"state": "SEND_UNKNOWN_NO_SEND", "order_id": order_id, "retcode": retcode}
+
+    def _terminal_no_send(
+        self,
+        output_root: Path,
+        order_id: str,
+        comment: str,
+        status: str,
+        event: dict[str, object],
+        request: dict[str, object] | None = None,
+    ) -> None:
+        if status not in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN", "PREFIX_REQUIRED"}:
+            raise core.CriticalLiveError(f"{order_id}: invalid terminal no-send state {status}.")
+        now = core.utc_now().isoformat()
+        connection = self._order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            payload_request = None if request is None else core.canonical_json(request)
+            updated = connection.execute(
+                "UPDATE order_intents SET status = ?, request_json = COALESCE(?, request_json), updated_at = ? "
+                "WHERE order_id = ? AND status IN ('INTENT', 'CHECK_RETRYABLE', 'PRE_SEND_DEFERRED', 'SEND_ARMED')",
+                (status, payload_request, now, order_id),
+            ).rowcount
+            inserted = False
+            if updated == 0:
+                inserted = bool(
+                    connection.execute(
+                        "INSERT OR IGNORE INTO order_intents "
+                        "(order_id, status, comment, request_json, broker_ticket, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, NULL, ?, ?)",
+                        (order_id, status, comment, payload_request, now, now),
+                    ).rowcount
+                )
+                current = connection.execute(
+                    "SELECT status FROM order_intents WHERE order_id = ?", (order_id,)
+                ).fetchone()
+                if current is None or (
+                    not inserted
+                    and str(current[0])
+                    not in {status, "WINDOW_EXPIRED", "WINDOW_NOT_OPEN", "PREFIX_REQUIRED"}
+                ):
+                    raise core.CriticalLiveError(
+                        f"{order_id}: terminal no-send transition raced with a non-terminal intent."
+                    )
+            if updated or inserted:
+                payload = {"recorded_at": now, "magic": self.magic, **event}
+                connection.execute(
+                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                    (order_id, core.canonical_json(payload)),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
 
     def _remove_order(
         self,
@@ -1153,46 +2888,149 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         reason: str,
         order_id: str | None = None,
     ) -> dict[str, object]:
-        request = {
+        remove_request = {
             "action": self.mt5.TRADE_ACTION_REMOVE,
             "order": int(order.ticket),
             "magic": self.magic,
             "comment": str(getattr(order, "comment", "")),
         }
-        result = self._order_send_checked(request, require_open_permission=False)
-        accepted = int(getattr(self.mt5, "TRADE_RETCODE_DONE", 10009))
-        if result is None or int(result.retcode) != accepted:
-            raise UnsafeOpenOrdersError(f"Failed to cancel demo pending order {order.ticket}.")
-        remaining = self._mt5_collection("orders_get", ticket=int(order.ticket))
-        if any(int(getattr(item, "ticket", -1)) == int(order.ticket) for item in remaining):
-            raise UnsafeOpenOrdersError(
-                f"Demo pending order {order.ticket} remained open after cancellation acknowledgement."
-            )
-        self._append_order_event(
+        if order_id is None:
+            connection = self._order_connection(output_root)
+            try:
+                row = connection.execute(
+                    "SELECT order_id FROM order_intents WHERE comment = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(getattr(order, "comment", "")),),
+                ).fetchone()
+            finally:
+                connection.close()
+            order_id = None if row is None else str(row[0])
+        bound_order_id = str(order_id or f"broker-cancel-{int(order.ticket)}")
+        try:
+            original_request = self._request_from_pending_order(order)
+        except UnsafeOpenOrdersError:
+            original_request = None
+        armed = self._arm_cancel_attempt(
             output_root,
-            {
-                "event": "CANCELLED",
-                "order_id": order_id,
+            order,
+            bound_order_id,
+            remove_request,
+            original_request,
+            reason,
+        )
+        bound_order_id = str(armed["order_id"])
+        original_request = armed.get("request")
+        control_status = str(armed.get("status") or "CANCEL_ARMED")
+        if bool(armed.get("prior_attempt")):
+            resolved = self._resolve_cancel_unknown(
+                output_root,
+                bound_order_id,
+                str(getattr(order, "comment", "")),
+                int(order.ticket),
+                core.utc_now(),
+                request=original_request if isinstance(original_request, dict) else None,
+                control_status=control_status,
+            )
+            if resolved.get("state") == "CANCELLED":
+                return {"ticket": int(order.ticket), "state": "CANCELLED", "reason": reason}
+            return resolved
+        # The durable ARM is committed before this is allowed to reach the SDK.
+        self._drain_order_outbox(output_root)
+
+        def persist_unknown(state: str, reason_text: str) -> dict[str, object]:
+            next_status = self._persist_cancel_unresolved(
+                output_root,
+                bound_order_id,
+                str(getattr(order, "comment", "")),
+                int(order.ticket),
+                state,
+                reason_text,
+            )
+            details = {
+                "broker_order_ticket": int(order.ticket),
                 "comment": str(getattr(order, "comment", "")),
+                "reason": reason_text,
+                "cancel_reason": reason,
+                "request": original_request,
+            }
+            self._record_cancel_control_if_missing(
+                output_root, bound_order_id, next_status, details
+            )
+            return {
+                "ticket": int(order.ticket),
+                "state": next_status,
+                "reason": reason,
+                "broker_state": next_status,
+            }
+
+        try:
+            result = self._order_send_checked(remove_request, require_open_permission=False)
+        except core.CriticalLiveError:
+            raise
+        except Exception as exc:
+            return persist_unknown("CANCEL_UNKNOWN", f"REMOVE exception: {exc}")
+        accepted = int(getattr(self.mt5, "TRADE_RETCODE_DONE", 10009))
+        try:
+            retcode = None if result is None else int(result.retcode)
+        except (AttributeError, TypeError, ValueError) as exc:
+            return persist_unknown("CANCEL_UNKNOWN", f"REMOVE retcode unreadable: {exc}")
+        if retcode != accepted:
+            definitive = {
+                int(getattr(self.mt5, "TRADE_RETCODE_REJECT", 10006)),
+                int(getattr(self.mt5, "TRADE_RETCODE_INVALID", 10013)),
+                int(getattr(self.mt5, "TRADE_RETCODE_INVALID_ORDER", 10035)),
+            }
+            state = "CANCEL_REJECTED" if retcode in definitive else "CANCEL_UNKNOWN"
+            return persist_unknown(state, f"REMOVE retcode={retcode}")
+        self._transition_order_intent(
+            output_root,
+            bound_order_id,
+            "CANCEL_ACKNOWLEDGED",
+            {
+                "event": "CANCEL_ACKNOWLEDGED",
+                "order_id": bound_order_id,
+                "comment": str(getattr(order, "comment", "")),
+                "broker_order_ticket": int(order.ticket),
                 "ticket": int(order.ticket),
                 "reason": reason,
-                "retcode": int(result.retcode),
+                "retcode": retcode,
+                "request": original_request,
+                "cancel_request": remove_request,
             },
+            broker_ticket=int(order.ticket),
         )
-        return {"ticket": int(order.ticket), "state": "CANCELLED", "reason": reason}
+        resolved = self._resolve_cancel_unknown(
+            output_root,
+            bound_order_id,
+            str(getattr(order, "comment", "")),
+            int(order.ticket),
+            core.utc_now(),
+            request=original_request if isinstance(original_request, dict) else None,
+            control_status="CANCEL_ACKNOWLEDGED",
+        )
+        if resolved.get("state") == "CANCELLED":
+            return {"ticket": int(order.ticket), "state": "CANCELLED", "reason": reason}
+        return resolved
 
     def cancel_all_pending(self, output_root: Path, reason: str) -> list[dict[str, object]]:
         self._ensure_demo()
         cancelled = []
         for order in self._mt5_collection("orders_get"):
-            if int(getattr(order, "magic", -1)) == self.magic:
+            if self._is_owned_pending_order(order):
                 cancelled.append(self._remove_order(output_root, order, reason))
         remaining = [
             order
             for order in self._mt5_collection("orders_get")
-            if int(getattr(order, "magic", -1)) == self.magic
+            if self._is_owned_pending_order(order)
         ]
         if remaining:
+            unresolved_tickets = {
+                int(item.get("ticket", item.get("broker_order_ticket", 0)) or 0)
+                for item in cancelled
+                if item.get("state") in CANCEL_CONTROL_STATES
+            }
+            if all(int(getattr(order, "ticket", 0) or 0) in unresolved_tickets for order in remaining):
+                return cancelled
             raise UnsafeOpenOrdersError(
                 f"{len(remaining)} demo pending order(s) remained after cancel-all readback."
             )
@@ -1287,18 +3125,93 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         lock: dict[str, Any],
     ) -> dict[str, object]:
         self._ensure_demo()
+        cancel_controls_at_cycle_start = self._persistent_cancel_controls(output_root)
         synced_deals = self._sync_broker_events(output_root, now)
+        broker_states = self._reconcile_persistent_intents(output_root, now)
+        unknown_states = [
+            item
+            for item in broker_states
+            if item["state"] in {"UNKNOWN_NO_SEND", "ENTRY_UNPROTECTED_NO_SEND"}
+            or item.get("broker_execution_state") in {"UNKNOWN_NO_SEND", "ENTRY_UNPROTECTED_NO_SEND"}
+        ]
+        economic_unsafe_states = {
+            "BROKER_REQUEST_MISMATCH_NO_SEND",
+            "PROTECTION_MISMATCH_NO_SEND",
+            "PARTIAL_FILL",
+            "PARTIAL_EXIT_NO_SEND",
+            "POSITION_VOLUME_MISMATCH_NO_SEND",
+            "CLOSED_UNKNOWN",
+        }
+        unsafe_states = [
+            item
+            for item in broker_states
+            if item["state"] in economic_unsafe_states
+            or item.get("broker_execution_state") in economic_unsafe_states
+        ]
+        cleanup_reason = None
+        if prefix.get("state") == "DATA_INVALID":
+            cleanup_reason = "DATA_INVALID"
+        elif prefix.get("state") not in {"VALID", "ALREADY_RECORDED"} or not prefix.get("path"):
+            cleanup_reason = "NO_EXECUTABLE_PREFIX"
+        elif unknown_states or unsafe_states:
+            cleanup_reason = "BROKER_UNSAFE"
+        cancelled_before_decision = (
+            self.cancel_all_pending(output_root, cleanup_reason)
+            if cleanup_reason is not None
+            else []
+        )
+        cancel_unknown = [
+            item
+            for item in cancelled_before_decision
+            if item.get("state") in {"CANCEL_UNKNOWN", "CANCEL_REJECTED"}
+        ]
+        if cancel_unknown:
+            return {
+                "state": "CANCEL_UNKNOWN_NO_SEND",
+                "reason": "Pending REMOVE has no definitive broker outcome.",
+                "broker_states": broker_states,
+                "synced_deals": synced_deals,
+                "cancelled": cancelled_before_decision,
+            }
+        if unsafe_states:
+            return {
+                "state": "BROKER_UNSAFE_NO_SEND",
+                "reason": "Broker execution or protection evidence is not safe for a new order.",
+                "broker_states": broker_states,
+                "synced_deals": synced_deals,
+                "cancelled": cancelled_before_decision,
+            }
+        persistent_cancel_controls = self._persistent_cancel_controls(output_root)
+        if persistent_cancel_controls:
+            return {
+                "state": "CANCEL_UNKNOWN_NO_SEND",
+                "reason": "A durable cancellation attempt has not reached a verified broker outcome.",
+                "persistent_cancel_controls": persistent_cancel_controls,
+                "cancel_controls_at_cycle_start": cancel_controls_at_cycle_start,
+                "broker_states": broker_states,
+                "synced_deals": synced_deals,
+                "cancelled": cancelled_before_decision,
+            }
+        if unknown_states:
+            return {
+                "state": "UNKNOWN_NO_SEND",
+                "reason": "One or more submitted intents lack definitive broker readback.",
+                "broker_states": broker_states,
+                "synced_deals": synced_deals,
+                "cancelled": cancelled_before_decision,
+            }
         if prefix.get("state") == "DATA_INVALID":
             return {
                 "state": "DATA_INVALID_NO_SEND",
-                "cancelled": self.cancel_all_pending(output_root, "DATA_INVALID"),
+                "broker_states": broker_states,
+                "synced_deals": synced_deals,
+                "cancelled": cancelled_before_decision,
             }
         if prefix.get("state") not in {"VALID", "ALREADY_RECORDED"} or not prefix.get("path"):
-            cancelled = self.cancel_all_pending(output_root, "NO_EXECUTABLE_PREFIX")
             return {
                 "state": "NO_EXECUTABLE_PREFIX",
                 "prefix_state": prefix.get("state"),
-                "cancelled": cancelled,
+                "cancelled": cancelled_before_decision,
             }
         record = core.read_json(Path(prefix["path"]))
         if record.get("state") == "DATA_INVALID":
@@ -1345,7 +3258,14 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             ):
                 candidates.append(decision)
         results = []
-        active_comments = set()
+        # Build this before processing candidates.  If a prior candidate
+        # becomes UNKNOWN/PARTIAL, a still-valid later candidate's pending
+        # order must remain owned and must not be cancelled as stale.
+        active_comments = {
+            self._comment(str(item["leg_key"]), str(item["order_id"]))
+            for item in candidates
+        }
+        new_entry_blocked = False
         if pair_cap["state"] == "SUPPRESSED_DAILY_CAP":
             cancelled = self.cancel_all_pending(output_root, "PAIR_CAP")
             return {
@@ -1357,7 +3277,15 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         for decision in candidates:
             leg_key = str(decision["leg_key"])
             order_id = str(decision["order_id"])
-            active_comments.add(self._comment(leg_key, order_id))
+            if new_entry_blocked:
+                results.append(
+                    {
+                        "state": "BLOCKED_BY_PRIOR_BROKER_UNCERTAINTY_NO_SEND",
+                        "order_id": order_id,
+                        "reason": "A prior candidate in this cycle returned UNKNOWN/PARTIAL.",
+                    }
+                )
+                continue
             prior = [
                 item
                 for item in self._events(output_root)
@@ -1373,20 +3301,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     }
                 )
                 continue
-            results.append(
-                self._place_candidate(
-                    output_root,
-                    decision,
-                    str(runtime["legs"][leg_key]["epic"]),
-                    float(configs[leg_key].reward_r),
-                )
+            result = self._place_candidate(
+                output_root,
+                decision,
+                str(runtime["legs"][leg_key]["epic"]),
+                float(configs[leg_key].reward_r),
+                prefix_record=record,
             )
+            results.append(result)
+            if result.get("state") in {
+                "SEND_UNKNOWN_NO_SEND",
+                "SEND_PARTIAL_NO_SEND",
+            }:
+                new_entry_blocked = True
         stale = []
         for order in self._mt5_collection("orders_get"):
-            if (
-                int(getattr(order, "magic", -1)) == self.magic
-                and str(getattr(order, "comment", "")) not in active_comments
-            ):
+            if self._is_owned_pending_order(order) and str(getattr(order, "comment", "")) not in active_comments:
                 stale.append(self._remove_order(output_root, order, "NO_LONGER_ACTIVE_PREFIX"))
         return {
             "state": "RECONCILED",
@@ -1394,6 +3324,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "candidate_count": len(candidates),
             "pair_cap": pair_cap,
             "synced_deals": synced_deals,
+            "broker_states": broker_states,
             "results": results,
             "cancelled_stale": stale,
         }

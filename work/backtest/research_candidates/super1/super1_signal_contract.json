@@ -9,7 +9,7 @@
     "config_path": "forward_shadow/frozen_config.json",
     "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
     "generator_path": "scripts/run_capital_forward.py",
-    "generator_sha256": "bd692e828f6c366e6766ee422b0730c0fdbd5948565d83c08621cec019ae2abd",
+    "generator_sha256": "80d634a39add23ff882416bcbc0433a8e4d4f633bde8d5a2934ada583cf4df5a",
     "payload_adapter_path": "scripts/run_forward_shadow.py",
     "payload_adapter_sha256": "5105421aa378770af357ec57f0ec8782e227ae56091690afd82ce578f8b609f4",
     "engine_source_sha256": "a7456f84c7d07c09a728d0c8c83f8b7e491ed61bbce124c06bcf412beb31530f"
@@ -21,12 +21,17 @@
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY",
     "defines_base_signals": false,
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
-    "runtime_sha256": "b16ec9d923f21d31f2d936a25a5ae797f41f234701b58050f63503d95088e370"
+    "runtime_sha256": "1c485f60ca42e7633dd2f37173e78fcd972da77a579550a0491b859dd8749ea3"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
-      "sha256": "3a98f95b2d018b71d2ca9cdf2b50940224fa8b3fe965f72b7feb0202bcb4109e",
+      "sha256": "57f8063d77e992471e7118ead28e933c7e610bbad5b99c053f368befe6ab8e5b",
     "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
+  },
+  "rth_session_calendar": {
+    "path": "live_forward/calendars/us_equity_rth_2026.json",
+    "sha256": "9aeeece3ec255fc0392cdc74baeef4de9751384bf4f67d906199aa16139cf830",
+    "calendar_id": "US_EQUITY_RTH_2026"
   },
   "safety": {
     "independent_super1_signal_producer_present": false,
