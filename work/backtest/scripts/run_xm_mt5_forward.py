@@ -743,19 +743,18 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         order_id: str,
         request: dict[str, object],
         event: dict[str, object],
-    ) -> None:
+    ) -> dict[str, object]:
         now = core.utc_now().isoformat()
+        canonical_request = core.canonical_json(request)
         connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status, request_json FROM order_intents WHERE order_id = ?",
+                "SELECT status, request_json, broker_ticket FROM order_intents WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
-            if row is None or str(row[0]) != "PRE_SEND_DEFERRED":
-                raise core.CriticalLiveError(
-                    f"{order_id}: PRE_SEND_DEFERRED intent could not be atomically resumed."
-                )
+            if row is None:
+                raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
             stored = None
             if row[1] is not None:
                 stored = json.loads(str(row[1]))
@@ -763,23 +762,55 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 raise core.CriticalLiveError(
                     f"{order_id}: reevaluated request differs from the registered request."
                 )
-            connection.execute(
-                "UPDATE order_intents SET request_json = COALESCE(request_json, ?), updated_at = ? "
+            status = str(row[0])
+            if status != "PRE_SEND_DEFERRED":
+                connection.commit()
+                return {
+                    "resumed": False,
+                    "status": status,
+                    "broker_ticket": row[2],
+                }
+            updated = connection.execute(
+                "UPDATE order_intents SET status = 'INTENT', request_json = ?, updated_at = ? "
                 "WHERE order_id = ? AND status = 'PRE_SEND_DEFERRED'",
-                (core.canonical_json(request), now, order_id),
-            )
-            payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+                (canonical_request, now, order_id),
+            ).rowcount
+            if updated != 1:
+                current = connection.execute(
+                    "SELECT status, broker_ticket FROM order_intents WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                if current is None:
+                    raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
+                if str(current[0]) == "PRE_SEND_DEFERRED":
+                    raise core.CriticalLiveError(
+                        f"{order_id}: PRE_SEND_DEFERRED CAS update did not affect exactly one row."
+                    )
+                connection.commit()
+                return {
+                    "resumed": False,
+                    "status": str(current[0]),
+                    "broker_ticket": current[1],
+                }
+            if not self._outbox_event_exists(connection, order_id, "INTENT_REEVALUATED"):
+                payload = {"recorded_at": now, "magic": self.magic, **event}
+                connection.execute(
+                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
+                    (order_id, core.canonical_json(payload)),
+                )
             connection.commit()
+            result = {
+                "resumed": True,
+                "status": "INTENT",
+                "broker_ticket": None,
+            }
         except Exception:
             connection.rollback()
             raise
         finally:
             connection.close()
         self._drain_order_outbox(output_root)
+        return result
 
     @staticmethod
     def _outbox_event_exists(
@@ -2925,7 +2956,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "data_cutoff": initial_context.get("fresh_cutoff"),
         }
         if retryable_pre_send:
-            self._resume_pre_send_intent(
+            resumed = self._resume_pre_send_intent(
                 output_root,
                 order_id,
                 request,
@@ -2938,6 +2969,21 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "fresh_cutoff": initial_context.get("fresh_cutoff"),
                 },
             )
+            if not resumed["resumed"]:
+                status = str(resumed.get("status") or "UNKNOWN")
+                if status == "SUBMITTED":
+                    state = "IDEMPOTENT_ALREADY_SUBMITTED"
+                elif status == "LINKED_EXISTING":
+                    state = "IDEMPOTENT_LINKED_EXISTING"
+                elif status == "SEND_ARMED":
+                    state = "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED"
+                else:
+                    state = f"IDEMPOTENT_{status}_NO_SEND"
+                return {
+                    "state": state,
+                    "order_id": order_id,
+                    "broker_ticket": resumed.get("broker_ticket"),
+                }
         if not retryable_check and not retryable_pre_send and not retryable_intent:
             claimed = self._claim_order_intent(
                 output_root,

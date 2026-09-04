@@ -25,7 +25,7 @@
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
-    "sha256": "1f1e58582b52eaab2ad0b53e0a26571b8329c9350a4dea89e82a8c6eda6235ba",
+    "sha256": "fc9f3763b82e33c3ee5f2e31b19e15ff92088d01472f0c8c7f808456f49e739a",
     "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
   },
   "rth_session_calendar": {

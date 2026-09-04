@@ -245,6 +245,7 @@ $PreviousPythonHome = $env:PYTHONHOME
 $PreviousPythonPath = $env:PYTHONPATH
 $PreviousBytecode = $env:PYTHONDONTWRITEBYTECODE
 $PasswordPtr = [IntPtr]::Zero
+$SecurePassword = $null
 $PointerLock = $null
 $TerminalLock = $null
 $ProbeLock = $null
@@ -303,12 +304,10 @@ try {
             $PasswordPtr
         )
     }
-    catch [Security.Cryptography.CryptographicException] {
-        # This legacy blob belongs to the pre-service account. The pinned portable
-        # demo terminal may use its saved session; the Python transport still
-        # verifies login/server/company/demo identity before every broker action.
-        $script:LauncherPhase = "BROKER_SAVED_SESSION"
+    catch {
+        $script:LauncherPhase = "BROKER_CREDENTIAL_FATAL"
         $env:XM_MT5_READ_ONLY_PASSWORD = $null
+        throw "Super1 broker credential is unavailable or cannot be decrypted."
     }
 
     if (Test-Path -LiteralPath $ProbeRequest -PathType Leaf) {
@@ -445,6 +444,10 @@ finally {
     $env:PYTHONPATH = $PreviousPythonPath
     if ($PasswordPtr -ne [IntPtr]::Zero) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($PasswordPtr)
+    }
+    if ($SecurePassword) {
+        $SecurePassword.Dispose()
+        $SecurePassword = $null
     }
     if ($TransactionRequestLock) { $TransactionRequestLock.Dispose() }
     if ($ProbeLock) { $ProbeLock.Dispose() }

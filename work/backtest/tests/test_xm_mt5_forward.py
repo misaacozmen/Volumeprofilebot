@@ -1326,6 +1326,45 @@ def claim_intent_in_process(output_root_str: str, start_event: object, results: 
         connection.close()
 
 
+def resume_pre_send_in_process(
+    output_root_str: str,
+    start_event: object,
+    ready_barrier: object,
+    send_counter_path: str,
+    results: object,
+) -> None:
+    try:
+        class IndependentProcessMt5(FakeOrderMt5):
+            def order_send(self, request):
+                if request["action"] == self.TRADE_ACTION_PENDING:
+                    connection = sqlite3.connect(
+                        send_counter_path, timeout=30.0, isolation_level=None
+                    )
+                    try:
+                        connection.execute("PRAGMA busy_timeout = 30000")
+                        connection.execute("BEGIN IMMEDIATE")
+                        connection.execute("UPDATE counters SET sends = sends + 1")
+                        connection.commit()
+                    finally:
+                        connection.close()
+                return super().order_send(request)
+
+        original_state = MODULE.XmMt5DemoOrderClient._intent_state
+
+        def synchronized_state(self, output_root, order_id):
+            state = original_state(self, output_root, order_id)
+            if order_id == "order-1" and state and state["status"] == "PRE_SEND_DEFERRED":
+                ready_barrier.wait(timeout=15)
+            return state
+
+        MODULE.XmMt5DemoOrderClient._intent_state = synchronized_state
+        start_event.wait(timeout=15)
+        result = place_candidate(demo_client(IndependentProcessMt5()), Path(output_root_str))
+        results.put({"result": result})
+    except Exception as exc:
+        results.put({"exception": f"{type(exc).__name__}: {exc}"})
+
+
 def test_duplicate_candidate_is_submitted_only_once(tmp_path) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
@@ -3054,8 +3093,16 @@ def test_none_broker_collection_returns_unknown_no_send(tmp_path) -> None:
 
 
 def test_sqlite_intent_allows_only_one_parallel_send(tmp_path, monkeypatch) -> None:
-    mt5 = FakeOrderMt5()
-    clients = [demo_client(mt5), demo_client(mt5)]
+    metrics = SimpleNamespace(lock=threading.Lock(), sends=0)
+
+    class IndependentThreadMt5(FakeOrderMt5):
+        def order_send(self, request):
+            if request["action"] == self.TRADE_ACTION_PENDING:
+                with metrics.lock:
+                    metrics.sends += 1
+            return super().order_send(request)
+
+    clients = [demo_client(IndependentThreadMt5()), demo_client(IndependentThreadMt5())]
     barrier = threading.Barrier(2)
     original_state = MODULE.XmMt5DemoOrderClient._intent_state
 
@@ -3077,7 +3124,7 @@ def test_sqlite_intent_allows_only_one_parallel_send(tmp_path, monkeypatch) -> N
             )
         )
 
-    assert mt5.pending_send_count == 1
+    assert metrics.sends == 1
     assert sum(result["state"] == "SUBMITTED" for result in results) == 1
     assert all(
         result["state"] == "SUBMITTED" or result["state"].startswith("IDEMPOTENT_")
@@ -3087,19 +3134,19 @@ def test_sqlite_intent_allows_only_one_parallel_send(tmp_path, monkeypatch) -> N
 
 @pytest.mark.parametrize("seed_state", ["CHECK_RETRYABLE", "PRE_SEND_DEFERRED"])
 def test_parallel_retryable_lifecycle_states_arm_and_send_once(seed_state, tmp_path, monkeypatch) -> None:
-    class RetryCheckMt5(FakeOrderMt5):
+    class SeedRetryCheckMt5(FakeOrderMt5):
         def __init__(self):
             super().__init__()
             self.check_count = 0
 
         def order_check(self, request):
             self.check_count += 1
-            if seed_state == "CHECK_RETRYABLE" and self.check_count == 1:
+            if self.check_count == 1:
                 return SimpleNamespace(retcode=10021, comment="No quotes")
             return super().order_check(request)
 
-    mt5 = RetryCheckMt5()
-    seed_client = demo_client(mt5)
+    seed_mt5 = SeedRetryCheckMt5() if seed_state == "CHECK_RETRYABLE" else FakeOrderMt5()
+    seed_client = demo_client(seed_mt5)
     if seed_state == "CHECK_RETRYABLE":
         assert place_candidate(seed_client, tmp_path)["state"] == "CHECK_RETRYABLE_NO_SEND"
     else:
@@ -3122,13 +3169,189 @@ def test_parallel_retryable_lifecycle_states_arm_and_send_once(seed_state, tmp_p
         return state
 
     monkeypatch.setattr(MODULE.XmMt5DemoOrderClient, "_intent_state", synchronized_state)
-    clients = [demo_client(mt5), demo_client(mt5)]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda item: place_candidate(item, tmp_path), clients))
+    metrics = SimpleNamespace(lock=threading.Lock(), sends=0)
 
-    assert mt5.pending_send_count == 1
+    class IndependentThreadRetryMt5(FakeOrderMt5):
+        def order_send(self, request):
+            if request["action"] == self.TRADE_ACTION_PENDING:
+                with metrics.lock:
+                    metrics.sends += 1
+            return super().order_send(request)
+
+    clients = [demo_client(IndependentThreadRetryMt5()), demo_client(IndependentThreadRetryMt5())]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = []
+        for item in pool.map(lambda client: place_candidate(client, tmp_path), clients):
+            results.append(item)
+
+    assert metrics.sends == 1
     assert sum(result["state"] == "SUBMITTED" for result in results) == 1
     assert all(result["state"] == "SUBMITTED" or result["state"].startswith("IDEMPOTENT_") for result in results)
+
+
+def test_pre_send_deferred_race_is_idempotent_and_emits_one_reevaluation(tmp_path, monkeypatch) -> None:
+    seed_client = demo_client(FakeOrderMt5())
+    stale = {
+        "date": "2026-07-29",
+        "recorded_at": "2026-07-29T14:25:00Z",
+        "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+    }
+    assert seed_client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0, prefix_record=stale,
+        send_now=pd.Timestamp("2026-07-29T14:28:00Z"),
+    )["state"] == "STALE_PREFIX_NO_SEND"
+
+    metrics = SimpleNamespace(lock=threading.Lock(), sends=0)
+
+    class IndependentThreadPreSendMt5(FakeOrderMt5):
+        def order_send(self, request):
+            if request["action"] == self.TRADE_ACTION_PENDING:
+                with metrics.lock:
+                    metrics.sends += 1
+            return super().order_send(request)
+
+    barrier = threading.Barrier(2)
+    original_state = MODULE.XmMt5DemoOrderClient._intent_state
+
+    def synchronized_state(self, output_root, order_id):
+        state = original_state(self, output_root, order_id)
+        if order_id == "order-1" and state and state["status"] == "PRE_SEND_DEFERRED":
+            barrier.wait(timeout=15)
+        return state
+
+    monkeypatch.setattr(MODULE.XmMt5DemoOrderClient, "_intent_state", synchronized_state)
+    clients = [demo_client(IndependentThreadPreSendMt5()), demo_client(IndependentThreadPreSendMt5())]
+    outcomes = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(place_candidate, client, tmp_path) for client in clients]
+        for future in futures:
+            try:
+                outcomes.append({"result": future.result(timeout=15)})
+            except Exception as exc:
+                outcomes.append({"exception": f"{type(exc).__name__}: {exc}"})
+
+    assert sum("exception" in outcome for outcome in outcomes) == 0
+    assert metrics.sends == 1
+    results = [outcome["result"] for outcome in outcomes]
+    assert sum(result["state"] == "SUBMITTED" for result in results) == 1
+    assert sum(result["state"].startswith("IDEMPOTENT_") for result in results) == 1
+    events = seed_client._events(tmp_path)
+    assert sum(item["event"] == "SEND_ARMED" for item in events) == 1
+    assert sum(item["event"] == "INTENT_REEVALUATED" for item in events) == 1
+
+
+def test_pre_send_deferred_race_is_process_safe_with_independent_mt5_clients(tmp_path) -> None:
+    seed_client = demo_client(FakeOrderMt5())
+    stale = {
+        "date": "2026-07-29",
+        "recorded_at": "2026-07-29T14:25:00Z",
+        "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+    }
+    assert seed_client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0, prefix_record=stale,
+        send_now=pd.Timestamp("2026-07-29T14:28:00Z"),
+    )["state"] == "STALE_PREFIX_NO_SEND"
+    counter_path = tmp_path / "send-counter.sqlite"
+    connection = sqlite3.connect(counter_path)
+    try:
+        connection.execute("CREATE TABLE counters (sends INTEGER NOT NULL)")
+        connection.execute("INSERT INTO counters(sends) VALUES (0)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    ready = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=resume_pre_send_in_process,
+            args=(str(tmp_path), start, ready, str(counter_path), results),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=30)
+        assert process.exitcode == 0
+
+    outcomes = [results.get(timeout=5) for _ in processes]
+    assert sum("exception" in outcome for outcome in outcomes) == 0
+    connection = sqlite3.connect(counter_path)
+    try:
+        assert connection.execute("SELECT sends FROM counters").fetchone()[0] == 1
+    finally:
+        connection.close()
+    result_states = [outcome["result"]["state"] for outcome in outcomes]
+    assert result_states.count("SUBMITTED") == 1
+    assert sum(state.startswith("IDEMPOTENT_") for state in result_states) == 1
+    events = seed_client._events(tmp_path)
+    assert sum(item["event"] == "SEND_ARMED" for item in events) == 1
+    assert sum(item["event"] == "INTENT_REEVALUATED" for item in events) == 1
+
+
+def test_pre_send_deferred_request_mismatch_remains_fail_closed(tmp_path) -> None:
+    client = demo_client(FakeOrderMt5())
+    stale = {
+        "date": "2026-07-29",
+        "recorded_at": "2026-07-29T14:25:00Z",
+        "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+    }
+    assert client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0, prefix_record=stale,
+        send_now=pd.Timestamp("2026-07-29T14:28:00Z"),
+    )["state"] == "STALE_PREFIX_NO_SEND"
+    request = client._pending_request(
+        "US100Cash", "long", 97.5, 90.0, 120.0, client._comment("nq", "order-1")
+    )
+    connection = sqlite3.connect(client._order_db(tmp_path))
+    try:
+        connection.execute(
+            "UPDATE order_intents SET request_json = ? WHERE order_id = ?",
+            (MODULE.core.canonical_json(request), "order-1"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    mismatch = dict(request)
+    mismatch["price"] = float(mismatch["price"]) + 1.0
+
+    with pytest.raises(MODULE.core.CriticalLiveError, match="reevaluated request differs"):
+        client._resume_pre_send_intent(tmp_path, "order-1", mismatch, {"event": "INTENT_REEVALUATED"})
+
+    assert client._intent_state(tmp_path, "order-1")["status"] == "PRE_SEND_DEFERRED"
+    assert client.mt5.pending_send_count == 0
+    assert [item["event"] for item in client._events(tmp_path)] == ["PRE_SEND_DEFERRED"]
+
+
+def test_pre_send_deferred_crash_after_cas_resumes_after_restart(tmp_path) -> None:
+    mt5 = FakeOrderMt5()
+    client = demo_client(mt5)
+    stale = {
+        "date": "2026-07-29",
+        "recorded_at": "2026-07-29T14:25:00Z",
+        "cutoffs": {"nq": "2026-07-29T10:24:00-04:00", "spx": "2026-07-29T10:25:00-04:00"},
+    }
+    assert client._place_candidate(
+        tmp_path, order_candidate(), "US100Cash", 2.0, prefix_record=stale,
+        send_now=pd.Timestamp("2026-07-29T14:28:00Z"),
+    )["state"] == "STALE_PREFIX_NO_SEND"
+    original_check = mt5.order_check
+    mt5.order_check = lambda request: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        place_candidate(client, tmp_path)
+    mt5.order_check = original_check
+
+    assert client._intent_state(tmp_path, "order-1")["status"] == "INTENT"
+    assert mt5.pending_send_count == 0
+    restarted = demo_client(FakeOrderMt5())
+    result = place_candidate(restarted, tmp_path)
+    assert result["state"] == "SUBMITTED"
+    assert restarted.mt5.pending_send_count == 1
+    assert client._intent_state(tmp_path, "order-1")["status"] == "SUBMITTED"
 
 
 def test_sqlite_initializer_is_idempotent_and_verifies_wal_schema(tmp_path) -> None:

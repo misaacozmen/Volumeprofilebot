@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import pytest
 
 from powershell_contract import facts
 
@@ -448,8 +451,98 @@ def test_super1_fixed_launcher_uses_protected_probe_and_terminal_pins() -> None:
     assert '& $Python -I -E -B $FlatDiagnostic' in launcher
     assert '& $Python -I -E -B $Runner' in launcher
     assert 'kind -notin @("flat", "rollover_init")' in launcher
+    assert 'BROKER_SAVED_SESSION' not in launcher
+    assert 'BROKER_CREDENTIAL_FATAL' in launcher
+    assert 'LauncherExitCode' not in launcher
+    assert 'throw "Super1 broker credential is unavailable or cannot be decrypted."' in launcher
+    trap_start = launcher.index('trap {')
+    trap_end = launcher.index('\n}\n\n$App', trap_start) + 2
+    assert launcher[trap_start:trap_end].rstrip().endswith('exit 0\n}')
     assert "Set-ScheduledTask" not in helper
     assert "New-ScheduledTaskAction" not in helper
+
+
+def test_super1_launcher_credential_gate_decrypt_failure_is_fatal_and_does_not_start_runtime(tmp_path) -> None:
+    launcher = text("run_super1_windows.ps1")
+    gate_start = launcher.index("$SecurePassword = (Get-Content")
+    gate_start = launcher.rfind("    try {", 0, gate_start)
+    gate_end = launcher.index("\n\n    if (Test-Path", gate_start)
+    credential_gate = launcher[gate_start:gate_end]
+    trap_start = launcher.index("trap {")
+    trap_end = launcher.index("\n}\n\n$App", trap_start) + 2
+    trap_block = launcher[trap_start:trap_end]
+    cleanup_start = launcher.rfind("finally {")
+    cleanup_block = launcher[cleanup_start:].strip()
+    assert cleanup_block.endswith("}")
+    cleanup_body = cleanup_block[len("finally {") : -1]
+    invalid_credential = "fixture" + "-ciphertext"
+    (tmp_path / "xm-password.dpapi").write_text(invalid_credential, encoding="utf-8")
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is unavailable")
+    root_literal = str(tmp_path).replace("'", "''")
+    runtime_marker = str(tmp_path / "runtime-started.txt").replace("'", "''")
+    cleanup_marker = str(tmp_path / "cleanup-completed.txt").replace("'", "''")
+    script = f"""
+$ErrorActionPreference = "Stop"
+$null = Set-StrictMode -Version Latest
+$Root = '{root_literal}'
+$script:LauncherPhase = "BROKER_CREDENTIAL_GATE"
+$env:XM_MT5_READ_ONLY_PASSWORD = "fixture-marker"
+$PasswordPtr = [IntPtr]::Zero
+$SecurePassword = $null
+$PreviousBytecode = $null
+$PreviousPythonHome = $null
+$PreviousPythonPath = $null
+$PreviousPSModulePath = $null
+$PointerLock = $null
+$TerminalLock = $null
+$ProbeLock = $null
+$TransactionRequestLock = $null
+$PowerShellHostLock = $null
+$PowerShellPinLock = $null
+{trap_block}
+try {{
+{credential_gate}
+}}
+finally {{
+{cleanup_body}
+    [IO.File]::WriteAllText('{cleanup_marker}', 'cleaned')
+}}
+if (-not (Test-Path -LiteralPath '{runtime_marker}' -PathType Leaf)) {{
+    [IO.File]::WriteAllText('{runtime_marker}', 'started')
+}}
+"""
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    output = completed.stdout + completed.stderr
+    failure_path = tmp_path / "state" / "launcher_failure.json"
+    health_path = tmp_path / "state" / "health.json"
+    assert completed.returncode == 0
+    assert not (tmp_path / "runtime-started.txt").exists()
+    assert (tmp_path / "cleanup-completed.txt").exists()
+    failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    health = json.loads(health_path.read_text(encoding="utf-8"))
+    assert failure["state"] == "LAUNCHER_FATAL_NO_SEND"
+    assert failure["phase"] == "BROKER_CREDENTIAL_FATAL"
+    assert health["state"] == "CRITICAL_STOP"
+    assert health["last_cycle"]["execution"]["state"] == "LAUNCHER_FATAL_NO_SEND"
+    helper = text("super1_secure_task.ps1")
+    assert "[int]$main.Settings.RestartCount -ne 999" in helper
+    assert "$mainRestartInterval -ne [TimeSpan]::FromMinutes(1)" in helper
+    assert "LauncherExitCode" not in launcher
+    assert invalid_credential not in output
+    assert "fixture-marker" not in output
+    evidence = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in (failure_path, health_path)
+    )
+    assert invalid_credential not in evidence
+    assert "fixture-marker" not in evidence
 
 
 def test_super1_task_contract_freezes_password_task_and_canonicalizes_watchdog() -> None:
@@ -569,8 +662,13 @@ def test_super1_upgrade_pins_and_hardens_python_terminal_and_config() -> None:
     assert "Get-AuthenticodeSignature" not in launcher
     assert 'state\\launcher_failure.json' in launcher
     assert launcher.index('$failureJson = [ordered]@{') < launcher.index('$fatalJson = (')
-    assert 'catch [Security.Cryptography.CryptographicException]' in launcher
-    assert '$script:LauncherPhase = "BROKER_SAVED_SESSION"' in launcher
+    assert 'catch {' in launcher
+    assert '$script:LauncherPhase = "BROKER_CREDENTIAL_FATAL"' in launcher
+    assert 'LauncherExitCode' not in launcher
+    trap_start = launcher.index('trap {')
+    trap_end = launcher.index('\n}\n\n$App', trap_start) + 2
+    assert launcher[trap_start:trap_end].rstrip().endswith('exit 0\n}')
+    assert 'BROKER_SAVED_SESSION' not in launcher
     assert 'launcher_phase=$launcherPhase' in text("check_super1_flat_windows.ps1")
 
 
