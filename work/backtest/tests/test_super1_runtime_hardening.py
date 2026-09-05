@@ -440,7 +440,7 @@ def test_stop_request_archival_is_present_in_launcher_and_stop_script() -> None:
 def test_readiness_report_cannot_claim_demo_smoke() -> None:
     text = (ROOT / "deploy" / "test_super1_local_readiness.ps1").read_text(encoding="utf-8")
     assert "READY_FOR_DEMO_SMOKE" not in text
-    assert "READY_FOR_ADMIN_INSTALL" in text
+    assert "READY_FOR_ADMIN_INSTALL_SIMULATION" in text
 
 
 def test_launcher_binding_readiness_uses_no_order_transport_flags() -> None:

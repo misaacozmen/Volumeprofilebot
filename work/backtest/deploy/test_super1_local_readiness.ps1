@@ -297,7 +297,7 @@ $pass = @($checks.Values | Where-Object { $_.state -ne "PASS" }).Count -eq 0 -an
     $triggerCount -eq 0 -and -not $leaseActive
 $report = [ordered]@{
     schema_version = 1
-    state = if ($pass) { "READY_FOR_ADMIN_INSTALL" } else { "NOT_READY_NO_SEND" }
+    state = if ($pass) { "READY_FOR_ADMIN_INSTALL_SIMULATION" } else { "NOT_READY_NO_SEND" }
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
     checks = $checks
     foreign_exposure = if ($null -eq $script:FlatEvidence) { 1 } else { [int]$script:FlatEvidence.open_orders + [int]$script:FlatEvidence.open_positions }
