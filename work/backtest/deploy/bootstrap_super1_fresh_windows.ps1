@@ -11,7 +11,7 @@ $Archive = Join-Path $Root "super1-forward.zip"
 $App = Join-Path $Root "app"
 $PythonInstaller = Join-Path $Root "python-3.11.9-amd64.exe"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
-$ExpectedMt5Sha256 = "CDDD18777AFEB19361AE8F0BC1BCB3C3996F5DDBD78A0A4194D65E640154E2E9"
+$ExpectedMt5Sha256 = "FD8CA7875A13DED372492BC8C06B2DDDDEBE6B522BEA62E81BA203436B012320"
 $Terminal = Join-Path $Root "mt5\terminal64.exe"
 $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
 

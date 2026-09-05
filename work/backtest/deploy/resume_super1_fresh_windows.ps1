@@ -6,6 +6,7 @@ $App = Join-Path $Root "app"
 $Python = Join-Path $Root "venv311\Scripts\python.exe"
 $Wheelhouse = Join-Path $Root "wheelhouse"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
+$ExpectedMt5Sha256 = "FD8CA7875A13DED372492BC8C06B2DDDDEBE6B522BEA62E81BA203436B012320"
 $Terminal = Join-Path $Root "mt5\terminal64.exe"
 
 foreach ($RequiredPath in @($App, $Python, $Wheelhouse, $Mt5Installer)) {
@@ -24,6 +25,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $Mt5Signature = Get-AuthenticodeSignature -LiteralPath $Mt5Installer
+if ((Get-FileHash -LiteralPath $Mt5Installer -Algorithm SHA256).Hash -ne $ExpectedMt5Sha256) {
+    throw "XM MT5 installer SHA-256 validation failed."
+}
 if ($Mt5Signature.Status -ne "Valid") {
     throw "XM MT5 installer signature is not valid: $($Mt5Signature.Status)"
 }
@@ -48,4 +52,3 @@ Set-Content -LiteralPath (Join-Path $Root "mt5-terminal.txt") -Value $Terminal -
 & $Python --version
 & $Python -m pip show MetaTrader5 pandas
 Get-Item -LiteralPath $Terminal | Select-Object FullName, Length, LastWriteTime
-

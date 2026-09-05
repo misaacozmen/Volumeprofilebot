@@ -789,3 +789,14 @@ def test_fresh_super1_bootstrap_accepts_only_complete_cpython311() -> None:
     assert 'Python 3.11 standard library is incomplete' in bootstrap
     assert '3.11|CPython' in bootstrap
     assert 'Requested existing Python 3.11 executable is missing' in bootstrap
+
+
+def test_fresh_super1_installers_pin_the_verified_xm_installer() -> None:
+    expected_hash = "FD8CA7875A13DED372492BC8C06B2DDDDEBE6B522BEA62E81BA203436B012320"
+    bootstrap = text("bootstrap_super1_fresh_windows.ps1")
+    resume = text("resume_super1_fresh_windows.ps1")
+
+    for script in (bootstrap, resume):
+        assert expected_hash in script
+        assert "Get-FileHash" in script
+        assert "SHA-256 validation failed" in script
