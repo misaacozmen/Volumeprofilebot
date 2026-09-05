@@ -709,6 +709,9 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert 'git -C $RepoRoot rev-parse HEAD' in source
     assert '$pyParts[0] -ne "3.11" -or $pyParts[1] -ne "CPython"' in source
     assert "Release build requires CPython 3.11" in source
+    assert source.index("[void][IO.Directory]::CreateDirectory($TempRoot)") < source.index(
+        '$fullCollectPath = Join-Path $TempRoot "full.collect.txt"'
+    )
     assert '$pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"' in source
     assert "Release build aborted: pytest test suite failed" in source
     assert "Assert-JunitMatchesInventory" in source

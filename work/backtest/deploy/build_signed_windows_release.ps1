@@ -128,6 +128,7 @@ $pythonExe = (& $Python -c "import sys; print(sys.executable)").Trim()
 $pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # 3. Pre-build test suite execution
+[void][IO.Directory]::CreateDirectory($TempRoot)
 $fullCollectPath = Join-Path $TempRoot "full.collect.txt"
 $fullJunitPath = Join-Path $TempRoot "full.junit.xml"
 $pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"
