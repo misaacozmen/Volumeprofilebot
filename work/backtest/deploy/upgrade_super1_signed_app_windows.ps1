@@ -2259,7 +2259,7 @@ try {
     $launcher = [IO.Path]::GetFullPath((Join-Path $App "deploy\run_super1_windows.ps1"))
     $watchdog = [IO.Path]::GetFullPath((Join-Path $App "deploy\watchdog_windows.ps1"))
     $healthPath = [IO.Path]::GetFullPath((Join-Path $State "health.json"))
-    $watchdogStatus = [IO.Path]::GetFullPath((Join-Path $Root "watchdog_status.json"))
+    $watchdogStatus = [IO.Path]::GetFullPath([string]$RuntimeContract.watchdog_status)
     $mainArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
     if ($mainArguments -cne $expectedMainArguments) {
         throw "Promoted Super1 launcher path differs from the frozen Password task binding."

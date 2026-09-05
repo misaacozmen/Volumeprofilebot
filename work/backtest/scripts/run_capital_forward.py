@@ -1462,6 +1462,20 @@ def write_health(output_root: Path, state: str, **details: object) -> None:
                 details["campaign_id"] = str(lease.get("campaign_id") or "")
         except (OSError, ValueError, KeyError, TypeError):
             pass
+    # The launcher supplies these process-bound values for every protected
+    # Super1 invocation.  A timestamp alone is not evidence of a fresh task.
+    for key, env_name in (
+        ("invocation_nonce", "SUPER1_INVOCATION_NONCE"),
+        ("runner_sid", "SUPER1_RUNNER_SID"),
+        ("launcher_sha256", "SUPER1_LAUNCHER_SHA256"),
+        ("invocation_started_at_utc", "SUPER1_INVOCATION_STARTED_AT"),
+    ):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            details.setdefault(key, value)
+    details.setdefault("process_id", os.getpid())
+    details.setdefault("process_executable", sys.executable)
+    details.setdefault("process_command_line", " ".join(sys.argv))
     temp = path.with_suffix(".tmp")
     temp.write_text(
         json.dumps(
@@ -1488,6 +1502,22 @@ def read_stop_request(output_root: Path) -> dict[str, Any] | None:
     if not isinstance(request, dict) or not request.get("request_id") or not request.get("reason"):
         raise UnsafeStopError("Stop request is malformed; refusing to continue or send.")
     return request
+
+
+def archive_stop_request(output_root: Path, request: dict[str, Any]) -> Path:
+    """Move a completed stop request out of the active control path."""
+    active = stop_request_path(output_root)
+    archive = active.parent / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    request_id = str(request.get("request_id") or "")
+    if not request_id:
+        raise UnsafeStopError("Completed stop request has no immutable request_id.")
+    target = archive / f"stop-{request_id}.json"
+    if active.exists():
+        active.replace(target)
+    elif not target.exists():
+        raise UnsafeStopError("Completed stop request disappeared before archival.")
+    return target
 
 
 def touch_health(output_root: Path, phase: str) -> None:
@@ -1804,6 +1834,37 @@ def _cancel_for_recovery(
     }
 
 
+def _ensure_expired_manual_lease_stop(output_root: Path) -> None:
+    """Turn an expired Super1 lease into the normal broker-reconciled stop path."""
+    lease_path = Path(output_root).resolve().parent / "control" / "session-lease.json"
+    if not lease_path.is_file():
+        return
+    try:
+        lease = read_json(lease_path)
+        expires = pd.Timestamp(str(lease.get("expires_at_utc"))).tz_convert("UTC")
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+    if str(lease.get("state")) != "ACTIVE" or pd.Timestamp(utc_now()) < expires:
+        return
+    stop_path = lease_path.parent / "stop-request.json"
+    if stop_path.exists():
+        return
+    payload = {
+        "schema_version": 1,
+        "request_id": str(uuid4()),
+        "lease_id": str(lease.get("lease_id") or ""),
+        "requested_at_utc": utc_now().isoformat(),
+        "reason": "LEASE_EXPIRED",
+        "requested_by": "Super1Daemon",
+    }
+    temporary = stop_path.with_name(f".{stop_path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(stop_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
     output_root = Path(args.output_root).resolve()
     campaign_lock(output_root)
@@ -1814,6 +1875,7 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
     active_client: CapitalDemoClient | None = None
     try:
         while not _STOP_EVENT.is_set():
+            _ensure_expired_manual_lease_stop(output_root)
             stop_request = read_stop_request(output_root)
             secrets = credentials()
             if secrets is None:
@@ -1859,6 +1921,7 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
                         **stop_details,
                         order_transport_present=transport,
                     )
+                    archive_stop_request(output_root, stop_request)
                     return
                 if transport and broker_recovery_path(output_root).exists():
                     recovery = _cancel_for_recovery(

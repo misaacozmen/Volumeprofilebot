@@ -66,13 +66,14 @@ try {
         $lease.revocation_reason = "operator stop"
         Write-Super1AtomicJson -Path $leasePath -Value $lease
     }
-    Write-Super1AtomicJson -Path $stopPath -Value ([ordered]@{
+    $stopRequest = [ordered]@{
         schema_version = 1
         request_id = [Guid]::NewGuid().ToString()
         lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
         requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
         reason = "OPERATOR_STOP"
-    })
+    }
+    Write-Super1AtomicJson -Path $stopPath -Value $stopRequest
 }
 finally {
     if ($held) { [void]$mutex.ReleaseMutex() }
@@ -89,12 +90,14 @@ try {
 }
 catch { throw "Stop request evidence is unreadable; refusing to claim a safe stop." }
 do {
-    $healthPath = Join-Path $state "health.json"
+    $healthPath = [string]$Contract.health
     if (Test-Path -LiteralPath $healthPath -PathType Leaf) {
         try {
             $lastHealth = Get-Content -Raw -LiteralPath $healthPath | ConvertFrom-Json
             $safe = [string]$lastHealth.state -ceq "STOPPED" -and
                 ([DateTimeOffset]::Parse([string]$lastHealth.updated_at).ToUniversalTime() -gt $requestedAt) -and
+                [string]$lastHealth.request_id -ceq [string]$stopRequest.request_id -and
+                [string]$lastHealth.lease_id -ceq [string]$stopRequest.lease_id -and
                 [string]$lastHealth.safe_stop -ceq "PASS" -and
                 [int]$lastHealth.owned_pending -eq 0 -and
                 (([int]$lastHealth.open_positions -eq 0) -or
@@ -135,6 +138,15 @@ foreach ($process in $remaining) {
         if ($sid -cne $runnerSid) { throw "Refusing to terminate a terminal owned by an unexpected SID." }
     }
     Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+}
+$archiveRoot = Join-Path $control "archive"
+New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+$archivePath = Join-Path $archiveRoot ("stop-" + [string]$stopRequest.request_id + ".json")
+if (Test-Path -LiteralPath $stopPath -PathType Leaf) {
+    Move-Item -LiteralPath $stopPath -Destination $archivePath -Force
+}
+elseif (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+    throw "Completed stop request was neither active nor archived."
 }
 Write-Host "Super1 stopped after broker reconciliation: owned_pending=0, unknown=0." -ForegroundColor Green
 exit 0

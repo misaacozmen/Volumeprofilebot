@@ -1,5 +1,8 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
+    [Parameter(Mandatory = $true)][ValidatePattern('^super1-local-demo-20260905-r6$')][string]$ExpectedReleaseId,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArchiveSha256,
     [string]$PythonExe = "C:\Program Files\Python311\python.exe"
 )
 
@@ -9,7 +12,7 @@ Set-StrictMode -Version Latest
 $Contract = Assert-Super1RuntimeContract
 
 $Root = [string]$Contract.root
-$Archive = Join-Path $Root "super1-forward.zip"
+$Archive = Join-Path ([IO.Path]::GetFullPath($ReleaseDirectory)) "super1-forward.zip"
 $App = [string]$Contract.app
 $PythonInstaller = Join-Path $Root "python-3.11.9-amd64.exe"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
@@ -30,6 +33,11 @@ if (-not (Test-Path -LiteralPath $IntegrityScript)) {
 }
 . $IntegrityScript
 $ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1" -RequireProvenance
+if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ExpectedArchiveSha256.ToLowerInvariant() -or
+    [string]$ReleaseManifest.release_id -cne $ExpectedReleaseId -or
+    [string]$ReleaseManifest.archive_file -cne "super1-forward.zip") {
+    throw "R6 bootstrap release identity/hash/archive binding failed."
+}
 if (Test-Path -LiteralPath $App) {
     throw "Super1 app already exists; refusing to overwrite it."
 }

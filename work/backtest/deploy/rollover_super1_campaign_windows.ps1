@@ -603,7 +603,7 @@ try {
     Wait-RunningTaskFreshState -TaskName $MainTask -Path $healthPath -NotBefore $rolloutStarted `
         -TimeoutSeconds 90 -ExpectedState "RUNNING"
     Start-ScheduledTask -TaskName $WatchdogTask
-    $watchdogPath = Join-Path $Root "watchdog_status.json"
+    $watchdogPath = [string]$RuntimeContract.watchdog_status
     Wait-RunningTaskFreshState -TaskName $WatchdogTask -Path $watchdogPath -NotBefore $rolloutStarted `
         -TimeoutSeconds 90 -ExpectedState "HEALTHY" -ExpectedMainTask $MainTask
     $healthRaw = Get-Content -LiteralPath $healthPath -Raw
@@ -700,7 +700,7 @@ catch {
         } `
         -VerifyOldHealth {
             $oldHealthPath = Join-Path $State "health.json"
-            $oldWatchdogPath = Join-Path $Root "watchdog_status.json"
+            $oldWatchdogPath = [string]$RuntimeContract.watchdog_status
             $oldHealth = Get-Content -LiteralPath $oldHealthPath -Raw | ConvertFrom-Json
             $oldWatchdog = Get-Content -LiteralPath $oldWatchdogPath -Raw | ConvertFrom-Json
             if ([string]$oldHealth.state -ne "RUNNING" -or

@@ -67,7 +67,7 @@ ORDER_SCHEMA: dict[str, tuple[str, ...]] = {
         "created_at",
         "updated_at",
     ),
-    "order_event_outbox": ("sequence", "order_id", "event_json", "delivered_at"),
+    "order_event_outbox": ("sequence", "event_id", "order_id", "event_json", "delivered_at"),
     "broker_execution_states": (
         "order_id",
         "account_login",
@@ -526,6 +526,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     """
                     CREATE TABLE IF NOT EXISTS order_event_outbox (
                         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_id TEXT,
                         order_id TEXT NOT NULL,
                         event_json TEXT NOT NULL,
                         delivered_at TEXT
@@ -585,6 +586,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     },
                     "order_event_outbox": {
                         "sequence": "INTEGER",
+                        "event_id": "TEXT",
                         "order_id": "TEXT",
                         "event_json": "TEXT",
                         "delivered_at": "TEXT",
@@ -628,6 +630,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                             connection.execute(
                                 f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'
                             )
+                # Legacy R5 rows did not carry a stable id.  Backfill from the
+                # immutable JSON before enforcing uniqueness for all new rows.
+                legacy_rows = connection.execute(
+                    "SELECT sequence, event_json FROM order_event_outbox "
+                    "WHERE event_id IS NULL OR event_id = ''"
+                ).fetchall()
+                for sequence, event_json in legacy_rows:
+                    legacy_id = sha256(str(event_json).encode("utf-8")).hexdigest()
+                    connection.execute(
+                        "UPDATE order_event_outbox SET event_id = ? WHERE sequence = ?",
+                        (legacy_id, int(sequence)),
+                    )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_order_event_outbox_event_id "
+                    "ON order_event_outbox(event_id)"
+                )
                 connection.commit()
 
                 verified_journal = connection.execute("PRAGMA journal_mode").fetchone()
@@ -694,11 +712,20 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         try:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT sequence, event_json FROM order_event_outbox "
+                "SELECT sequence, event_id, event_json FROM order_event_outbox "
                 "WHERE delivered_at IS NULL ORDER BY sequence"
             ).fetchall()
-            for sequence, event_json in rows:
-                core.append_jsonl(self._order_log(output_root), json.loads(str(event_json)))
+            delivered_ids = {
+                str(item.get("event_id"))
+                for item in self._events(output_root)
+                if item.get("event_id")
+            }
+            for sequence, event_id, event_json in rows:
+                if str(event_id) not in delivered_ids:
+                    payload = json.loads(str(event_json))
+                    payload["event_id"] = str(event_id)
+                    core.append_jsonl(self._order_log(output_root), payload)
+                    delivered_ids.add(str(event_id))
                 connection.execute(
                     "UPDATE order_event_outbox SET delivered_at = ? WHERE sequence = ?",
                     (core.utc_now().isoformat(), int(sequence)),
@@ -709,6 +736,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _insert_outbox(
+        connection: sqlite3.Connection,
+        order_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        """Insert one immutable event with a deterministic replay-safe id."""
+        canonical = core.canonical_json(payload)
+        event_id = sha256(canonical.encode("utf-8")).hexdigest()
+        connection.execute(
+            "INSERT OR IGNORE INTO order_event_outbox "
+            "(event_id, order_id, event_json) VALUES (?, ?, ?)",
+            (event_id, order_id, canonical),
+        )
+        return event_id
 
     def _intent_state(self, output_root: Path, order_id: str) -> dict[str, Any] | None:
         connection = self._ready_order_connection(output_root)
@@ -794,10 +837,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 }
             if not self._outbox_event_exists(connection, order_id, "INTENT_REEVALUATED"):
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
             result = {
                 "resumed": True,
@@ -860,10 +900,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             event_name = str(event.get("event") or "")
             if not self._outbox_event_exists(connection, order_id, event_name):
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
                 recorded = True
             else:
                 recorded = False
@@ -953,10 +990,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 }
             if not self._outbox_event_exists(connection, order_id, "SEND_ARMED"):
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
             return {"armed": True, "status": "SEND_ARMED", "order_id": order_id}
         except Exception:
@@ -1069,10 +1103,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             ).rowcount
             if inserted:
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             row = connection.execute(
                 "SELECT status, broker_ticket FROM order_intents WHERE order_id = ?",
                 (order_id,),
@@ -1111,10 +1142,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             if updated != 1:
                 raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1163,10 +1191,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 ),
             )
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1945,10 +1970,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     ),
                 )
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (bound_order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, bound_order_id, payload)
             connection.commit()
             return {
                 "order_id": bound_order_id,
@@ -2702,6 +2724,18 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 event,
             )
 
+    def _final_send_gate(
+        self,
+        output_root: Path,
+        order_id: str,
+        request: dict[str, object],
+        decision: dict[str, Any],
+        symbol: str,
+        final_context: dict[str, Any],
+    ) -> None:
+        """Strategy extension point immediately before SEND_ARMED."""
+        del output_root, order_id, request, decision, symbol, final_context
+
     def _place_candidate(
         self,
         output_root: Path,
@@ -3184,6 +3218,14 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             request=request,
             allowed_statuses={"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"},
         )
+        self._final_send_gate(
+            output_root,
+            order_id,
+            request,
+            decision,
+            symbol,
+            final_context,
+        )
         armed = self._arm_send(
             output_root,
             order_id,
@@ -3357,10 +3399,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     )
             if updated or inserted:
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()

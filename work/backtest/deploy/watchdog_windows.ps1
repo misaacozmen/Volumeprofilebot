@@ -59,7 +59,7 @@ $TelegramAlertStates = @(
 $AllowedMainHealthStates = @(
     "RUNNING", "RETRYING", "WAITING_CREDENTIALS", "STOPPED", "INITIALIZED",
     "CAMPAIGN_WARMUP", "CRITICAL_STOP", "UNSAFE_OPEN_ORDERS", "UNSAFE_STOP_NO_SEND",
-    "UNKNOWN_NO_SEND"
+    "UNKNOWN_NO_SEND", "READY_WAITING_WINDOW", "WAITING_MANUAL_LEASE"
 )
 
 function Write-JsonAtomically {
@@ -678,6 +678,28 @@ function Restart-MainTask {
     }
 }
 
+function Ensure-Super1SafeStopRequest {
+    param([object]$Lease, [string]$Reason)
+    $path = Join-Path ([string]$RuntimeContract.control) "stop-request.json"
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        try {
+            $existing = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+            if ([string]$existing.request_id -and [string]$existing.reason) { return $existing }
+        }
+        catch { }
+    }
+    $request = [ordered]@{
+        schema_version = 1
+        request_id = [Guid]::NewGuid().ToString()
+        lease_id = if ($null -eq $Lease) { "" } else { [string]$Lease.lease_id }
+        reason = $Reason
+        requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+        requested_by = "Super1Watchdog"
+    }
+    Write-JsonAtomically -Path $path -Value $request
+    return [pscustomobject]$request
+}
+
 if ($LibraryOnly) {
     return
 }
@@ -704,10 +726,49 @@ while ($true) {
         $state = "HEALTHY"
         $action = "NONE"
         $detail = "main task and heartbeat are healthy"
-        if ($null -eq $lease) {
-            $state = "WAITING_MANUAL_LEASE"
+        $leaseExpired = $false
+        if ($null -ne $lease) {
+            try { $leaseExpired = [DateTimeOffset]::UtcNow -ge ([DateTimeOffset]::Parse([string]$lease.expires_at_utc).ToUniversalTime()) }
+            catch { $leaseExpired = $true }
+        }
+        if ($healthState -eq "MISSING") {
+            if ($null -eq $lease) {
+                $state = "WAITING_MANUAL_LEASE"
+                if ($processes.Count -gt 0) {
+                    $null = Ensure-Super1SafeStopRequest -Lease $null -Reason "watchdog observed missing main health without a manual lease"
+                    $action = "REQUEST_SAFE_STOP"
+                }
+                else { $action = "NONE" }
+                $detail = "No active manual lease; missing health is fail-closed."
+            }
+            else {
+                $state = "UNKNOWN_NO_SEND"
+                $action = "NONE"
+                $detail = "Main health is missing; restart is disabled until fresh evidence exists."
+            }
+        }
+        elseif ($healthState -eq "UNREADABLE") {
+            $state = "ALARM_CRITICAL"
             $action = "NONE"
-            $detail = "No active manual lease; automatic restart is disabled."
+            $detail = "Main health is unreadable; broker state is not proven."
+        }
+        elseif ($null -eq $lease) {
+            $state = "WAITING_MANUAL_LEASE"
+            if ($processes.Count -gt 0) {
+                $null = Ensure-Super1SafeStopRequest -Lease $null -Reason "watchdog observed a running Super1 process without a manual lease"
+                $action = "REQUEST_SAFE_STOP"
+                $detail = "No active manual lease; automatic restart is disabled and safe stop is requested."
+            }
+            else {
+                $action = "NONE"
+                $detail = "No active manual lease and no exact Super1 process; automatic restart is disabled."
+            }
+        }
+        elseif ($leaseExpired) {
+            $null = Ensure-Super1SafeStopRequest -Lease $lease -Reason "manual Super1 lease expired"
+            $state = "LEASE_EXPIRED_SAFE_STOP_PENDING"
+            $action = "REQUEST_SAFE_STOP"
+            $detail = "Lease expired; no restart is permitted until broker reconciliation proves safe stop."
         }
         elseif ($healthState -and $healthState -notin $AllowedMainHealthStates) {
             $state = "UNKNOWN_NO_SEND"
@@ -795,6 +856,8 @@ while ($true) {
              observed_at_utc = $observed.ToString("o")
              updated_at_utc = $observed.ToString("o")
              lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+            invocation_nonce = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+            runner_sid = if ($null -eq $lease) { "" } else { [string]$lease.runner_sid }
             state = $state
             action = $action
             detail = $detail
@@ -818,6 +881,7 @@ while ($true) {
             state = "WATCHDOG_ERROR"
             action = "NONE"
             detail = $_.Exception.Message
+            invocation_nonce = ""
             main_task = $MainTaskName
             restart_count_in_window = $restartHistory.Count
             restart_window_minutes = $RestartWindowMinutes

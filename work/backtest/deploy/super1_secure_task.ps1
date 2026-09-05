@@ -774,8 +774,8 @@ function Assert-Super1SecureTaskBindings {
         "-ExecutionPolicy Bypass"
         "-File `"$resolvedRoot\app\deploy\watchdog_windows.ps1`""
         "-MainTaskName `"$MainTask`""
-        "-HealthPath `"$resolvedRoot\state\health.json`""
-        "-StatusPath `"$resolvedRoot\watchdog_status.json`""
+        "-HealthPath `"$([string](Get-Super1RuntimeContract).health)`""
+        "-StatusPath `"$([string](Get-Super1RuntimeContract).watchdog_status)`""
     ) -join " "
     $mainRestartInterval = ConvertFrom-Super1SecureTaskDuration `
         -Value $main.Settings.RestartInterval

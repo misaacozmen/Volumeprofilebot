@@ -12,6 +12,13 @@ $script:Super1RuntimeContract = [ordered]@{
     state = "C:\Super1\state"
     control = "C:\Super1\control"
     runtime_trust = "C:\Super1\runtime-trust"
+    health = "C:\Super1\state\health.json"
+    launcher_failure = "C:\Super1\state\launcher_failure.json"
+    watchdog_status = "C:\Super1\state\watchdog\watchdog_status.json"
+    watchdog_state = "C:\Super1\state\watchdog\watchdog_state.json"
+    release_archive = "C:\Super1\super1-forward.zip"
+    release_manifest = "C:\Super1\super1-forward.manifest.json"
+    release_signature = "C:\Super1\super1-forward.manifest.sig"
     main_task = "Super1XM"
     watchdog_task = "Super1Watchdog"
     runner_account = "Super1Runner"
@@ -36,7 +43,7 @@ function Get-Super1RuntimeContract {
 
 function Get-Super1RuntimePath {
     param(
-        [Parameter(Mandatory = $true)][ValidateSet("root", "app", "terminal", "python", "state", "control", "runtime_trust")]
+        [Parameter(Mandatory = $true)][ValidateSet("root", "app", "terminal", "python", "state", "control", "runtime_trust", "health", "launcher_failure", "watchdog_status", "watchdog_state", "release_archive", "release_manifest", "release_signature")]
         [string]$Name
     )
     return [string]$script:Super1RuntimeContract[$Name]
@@ -65,6 +72,13 @@ function Assert-Super1RuntimeContract {
     $contract = Get-Super1RuntimeContract
     if ([int]$contract.schema_version -ne 1 -or
         [string]$contract.root -cne "C:\Super1" -or
+        [string]$contract.health -cne "C:\Super1\state\health.json" -or
+        [string]$contract.launcher_failure -cne "C:\Super1\state\launcher_failure.json" -or
+        [string]$contract.watchdog_status -cne "C:\Super1\state\watchdog\watchdog_status.json" -or
+        [string]$contract.watchdog_state -cne "C:\Super1\state\watchdog\watchdog_state.json" -or
+        [string]$contract.release_archive -cne "C:\Super1\super1-forward.zip" -or
+        [string]$contract.release_manifest -cne "C:\Super1\super1-forward.manifest.json" -or
+        [string]$contract.release_signature -cne "C:\Super1\super1-forward.manifest.sig" -or
         [string]$contract.terminal -cne "C:\Super1\mt5\terminal64.exe" -or
         [string]$contract.python -cne "C:\Super1\venv311\Scripts\python.exe" -or
         [string]$contract.order_mutex -cne "Global\Super1OrderTransport" -or

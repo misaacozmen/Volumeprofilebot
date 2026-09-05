@@ -454,6 +454,138 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             assert_account_binding(self.mt5, self.config)
             return super()._place_candidate(*args, **kwargs)
 
+    def _final_send_gate(
+        self,
+        output_root: Path,
+        order_id: str,
+        request: dict[str, object],
+        decision: dict[str, Any],
+        symbol: str,
+        final_context: dict[str, Any],
+    ) -> None:
+        """Revalidate every mutable broker/runtime fact at the send boundary."""
+        del order_id, final_context
+        # Unit/integration adapters that deliberately exercise the parent
+        # transport do not own a live Super1 lease.  The production client
+        # sets this flag in __init__; without it, fail closed by delegating to
+        # the parent hook rather than inventing broker state in a fake.
+        if not getattr(self, "_manual_lease_required", False):
+            return
+        lease = self._assert_super1_lease(output_root, for_order=True)
+        expires = pd.Timestamp(str(lease["expires_at_utc"])).tz_convert("UTC")
+        if (expires - pd.Timestamp(core.utc_now())).total_seconds() < 10:
+            raise core.CriticalLiveError("Super1 lease has less than ten seconds remaining.")
+        assert_account_binding(self.mt5, self.config)
+
+        tick = self.mt5.symbol_info_tick(symbol)
+        info = self.mt5.symbol_info(symbol)
+        if tick is None or info is None:
+            raise xm.BrokerStateUnknownError(f"{symbol}: final tick or symbol state is unavailable.")
+        bid = float(getattr(tick, "bid", float("nan")))
+        ask = float(getattr(tick, "ask", float("nan")))
+        if not math.isfinite(bid) or not math.isfinite(ask) or bid >= ask:
+            raise core.CriticalLiveError(f"{symbol}: final tick is stale, non-finite, or crossed.")
+        tick_msc = getattr(tick, "time_msc", None)
+        if tick_msc is None:
+            tick_seconds = getattr(tick, "time", None)
+            if tick_seconds is None:
+                raise core.CriticalLiveError(f"{symbol}: final tick has no UTC timestamp.")
+            tick_at = pd.Timestamp(int(tick_seconds), unit="s", tz="UTC")
+        else:
+            tick_at = pd.Timestamp(int(tick_msc), unit="ms", tz="UTC")
+        age = (pd.Timestamp(core.utc_now()) - tick_at).total_seconds()
+        if age < -1 or age > 5:
+            raise core.CriticalLiveError(f"{symbol}: final tick is {age:.3f}s from UTC now.")
+
+        try:
+            volume = float(request["volume"])
+            entry = float(request["price"])
+            stop = float(request["sl"])
+            target = float(request["tp"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise core.CriticalLiveError(f"{symbol}: final request is incomplete.") from exc
+        if not all(math.isfinite(value) and value > 0 for value in (volume, entry, stop, target)):
+            raise core.CriticalLiveError(f"{symbol}: final request contains non-finite prices or volume.")
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        tick_size = float(getattr(info, "trade_tick_size", 0.0) or point)
+        if point <= 0 or tick_size <= 0:
+            raise core.CriticalLiveError(f"{symbol}: final broker tick size is invalid.")
+        if abs(entry / tick_size - round(entry / tick_size)) > 1e-7 or any(
+            abs(value / tick_size - round(value / tick_size)) > 1e-7
+            for value in (stop, target)
+        ):
+            raise core.CriticalLiveError(f"{symbol}: final prices are not tick aligned.")
+        direction = str(decision.get("direction") or "")
+        if direction == "long":
+            if not stop < entry < target or not entry < ask:
+                raise core.CriticalLiveError(f"{symbol}: final long limit geometry is invalid.")
+            stop_distance = entry - stop
+            reward_distance = target - entry
+        elif direction == "short":
+            if not target < entry < stop or not entry > bid:
+                raise core.CriticalLiveError(f"{symbol}: final short limit geometry is invalid.")
+            stop_distance = stop - entry
+            reward_distance = entry - target
+        else:
+            raise core.CriticalLiveError(f"{symbol}: final direction is invalid.")
+        broker_distance = max(
+            float(getattr(info, "trade_stops_level", 0) or 0),
+            float(getattr(info, "trade_freeze_level", 0) or 0),
+        ) * point
+        if min(stop_distance, reward_distance) < broker_distance:
+            raise core.CriticalLiveError(f"{symbol}: final stops/freeze distance is too small.")
+        if ask - bid > stop_distance * 0.10:
+            raise core.CriticalLiveError(f"{symbol}: final spread exceeds ten percent of stop distance.")
+
+        full_trade_mode = getattr(self.mt5, "SYMBOL_TRADE_MODE_FULL", None)
+        if full_trade_mode is not None and int(getattr(info, "trade_mode", full_trade_mode)) != int(full_trade_mode):
+            raise core.CriticalLiveError(f"{symbol}: final symbol trade mode is not FULL.")
+        limit_flag = getattr(self.mt5, "SYMBOL_ORDER_LIMIT", None)
+        if limit_flag is not None and not (int(getattr(info, "order_mode", 0)) & int(limit_flag)):
+            raise core.CriticalLiveError(f"{symbol}: final symbol does not allow limit orders.")
+        if int(request.get("type_filling", -1)) != int(getattr(self.mt5, "ORDER_FILLING_RETURN", request.get("type_filling", -1))):
+            raise core.CriticalLiveError(f"{symbol}: final filling mode is not RETURN.")
+        if int(request.get("type_time", -1)) != int(getattr(self.mt5, "ORDER_TIME_SPECIFIED", request.get("type_time", -1))):
+            raise core.CriticalLiveError(f"{symbol}: final time mode is not SPECIFIED.")
+
+        account = self.mt5.account_info()
+        if account is None:
+            raise xm.BrokerStateUnknownError("Final account state is unavailable.")
+        equity = float(getattr(account, "equity", 0.0) or 0.0)
+        free_margin = float(getattr(account, "margin_free", float("nan")))
+        if not math.isfinite(equity) or equity <= 0 or not math.isfinite(free_margin) or free_margin < 0:
+            raise core.CriticalLiveError("Final equity/free-margin state is invalid.")
+        order_type = int(request["type"])
+        stop_loss = self.mt5.order_calc_profit(order_type, symbol, volume, entry, stop)
+        margin = self.mt5.order_calc_margin(order_type, symbol, volume, entry)
+        if stop_loss is None or margin is None:
+            raise xm.BrokerStateUnknownError("Final profit or margin calculation is unavailable.")
+        stop_risk = abs(float(stop_loss))
+        margin_need = float(margin)
+        if not math.isfinite(stop_risk) or not math.isfinite(margin_need) or margin_need < 0:
+            raise core.CriticalLiveError("Final profit or margin calculation is invalid.")
+        if margin_need > free_margin * 0.25:
+            raise core.CriticalLiveError("Final margin need exceeds 25 percent of free margin.")
+
+        orders = self._mt5_collection("orders_get")
+        positions = self._mt5_collection("positions_get")
+        duplicate_comments = {
+            str(getattr(item, "comment", ""))
+            for item in (*orders, *positions)
+            if int(getattr(item, "magic", -1)) == self.magic
+        }
+        if duplicate_comments:
+            raise core.CriticalLiveError("Duplicate Super1 thesis/leg exposure is present.")
+        configs, _, runtime = core.live_strategy_objects()
+        realized = self._pair_cap_state(pd.Timestamp(core.utc_now()), configs, runtime)
+        if str(realized.get("state")) != "ALLOWED":
+            raise core.CriticalLiveError("Daily Super1 pair-cap or unresolved broker state blocks new orders.")
+        if stop_risk > equity * 0.022:
+            raise core.CriticalLiveError("Aggregate Super1 worst-case stop risk exceeds 2.2 percent of equity.")
+        checked = self.mt5.order_check(request)
+        if checked is None or int(getattr(checked, "retcode", -1)) != 0:
+            raise core.CriticalLiveError("Final order_check failed immediately before SEND_ARMED.")
+
     def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
         with order_mutex():
             self._assert_super1_lease(output_root, for_order=True)
@@ -462,7 +594,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 
     def stop_reconciliation(self, output_root: Path, reason: str) -> dict[str, object]:
         """Prove that the dedicated demo account is safe after cancellation."""
-        del output_root, reason
+        del reason
         self._ensure_demo()
         expected_symbols = {
             str(self.config["legs"][key]["epic"])
@@ -490,6 +622,21 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 
         protected_open = 0
         owned_positions = 0
+        request_by_comment: dict[str, dict[str, Any]] = {}
+        connection = self._ready_order_connection(output_root)
+        try:
+            for comment, request_json in connection.execute(
+                "SELECT comment, request_json FROM order_intents "
+                "WHERE request_json IS NOT NULL ORDER BY updated_at DESC"
+            ).fetchall():
+                try:
+                    parsed = json.loads(str(request_json))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict) and str(comment) not in request_by_comment:
+                    request_by_comment[str(comment)] = parsed
+        finally:
+            connection.close()
         for position in positions:
             try:
                 symbol = str(getattr(position, "symbol", ""))
@@ -505,8 +652,25 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 foreign_exposure += 1
                 continue
             owned_positions += 1
-            if math.isfinite(stop_loss) and stop_loss > 0 and math.isfinite(take_profit) and take_profit > 0:
+            original = request_by_comment.get(comment)
+            info = self.mt5.symbol_info(symbol)
+            tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
+            expected_sl = None if original is None else original.get("sl")
+            expected_tp = None if original is None else original.get("tp")
+            protection_matches = (
+                original is not None
+                and tick_size > 0
+                and math.isfinite(stop_loss)
+                and math.isfinite(take_profit)
+                and expected_sl is not None
+                and expected_tp is not None
+                and abs(stop_loss - float(expected_sl)) <= tick_size + 1e-9
+                and abs(take_profit - float(expected_tp)) <= tick_size + 1e-9
+            )
+            if protection_matches:
                 protected_open += 1
+            else:
+                unknown += 1
 
         open_positions = len(positions)
         safe = (
@@ -965,10 +1129,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 "filter_evidence_sha256": fields["filter_evidence_sha256"],
             }
             if not self._outbox_event_exists(connection, order_id, "SUPER1_FILTER_PROMOTED"):
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json({"recorded_at": now, "magic": self.magic, **event})),
-                )
+                self._insert_outbox(connection, order_id, {"recorded_at": now, "magic": self.magic, **event})
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1046,26 +1207,22 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                                 order_id,
                             ),
                         )
-                        connection.execute(
-                            "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                            (
-                                order_id,
-                                core.canonical_json(
-                                    {
-                                        "recorded_at": now,
-                                        "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
-                                        "event": event_name,
-                                        "order_id": order_id,
-                                        "comment": comment,
-                                        "reason": reason,
-                                        "raw_sha256": fields["raw_sha256"],
-                                        "prefix_sha256": fields["raw_sha256"],
-                                        "raw_byte_count": fields["raw_byte_count"],
-                                        "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
-                                        "filter_evidence_sha256": fields["filter_evidence_sha256"],
-                                    }
-                                ),
-                            ),
+                        self._insert_outbox(
+                            connection,
+                            order_id,
+                            {
+                                "recorded_at": now,
+                                "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
+                                "event": event_name,
+                                "order_id": order_id,
+                                "comment": comment,
+                                "reason": reason,
+                                "raw_sha256": fields["raw_sha256"],
+                                "prefix_sha256": fields["raw_sha256"],
+                                "raw_byte_count": fields["raw_byte_count"],
+                                "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
+                                "filter_evidence_sha256": fields["filter_evidence_sha256"],
+                            },
                         )
                         connection.commit()
                         transitioned = True
@@ -1131,29 +1288,25 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                     fields["filter_evidence_sha256"], now, now,
                 ),
             )
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (
-                    order_id,
-                    core.canonical_json(
-                        {
-                            "recorded_at": now,
-                            "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
-                            "event": event_name,
-                            "order_id": order_id,
-                            "comment": comment,
-                            "reason": reason,
-                            "raw_sha256": fields["raw_sha256"],
-                            "prefix_sha256": fields["raw_sha256"],
-                            "raw_byte_count": fields["raw_byte_count"],
-                            "prefix_bytes": fields["raw_byte_count"],
-                            "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
-                            "filter_evidence_sha256": fields["filter_evidence_sha256"],
-                            "request_json": None,
-                            "broker_ticket": None,
-                        }
-                    ),
-                ),
+            self._insert_outbox(
+                connection,
+                order_id,
+                {
+                    "recorded_at": now,
+                    "magic": int(getattr(self, "magic", self.config.get("magic_number", 0))),
+                    "event": event_name,
+                    "order_id": order_id,
+                    "comment": comment,
+                    "reason": reason,
+                    "raw_sha256": fields["raw_sha256"],
+                    "prefix_sha256": fields["raw_sha256"],
+                    "raw_byte_count": fields["raw_byte_count"],
+                    "prefix_bytes": fields["raw_byte_count"],
+                    "cutoffs": json.loads(str(fields["full_cutoffs_json"])),
+                    "filter_evidence_sha256": fields["filter_evidence_sha256"],
+                    "request_json": None,
+                    "broker_ticket": None,
+                },
             )
             connection.commit()
         except Exception:

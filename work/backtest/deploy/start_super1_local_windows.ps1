@@ -41,6 +41,17 @@ function Write-Super1AtomicJson([string]$Path, [object]$Value) {
     finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
+function Write-Super1StopRequest([string]$Path, [string]$LeaseId, [string]$Reason) {
+    Write-Super1AtomicJson -Path $Path -Value ([ordered]@{
+        schema_version = 1
+        request_id = [Guid]::NewGuid().ToString()
+        lease_id = $LeaseId
+        requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+        reason = $Reason
+        requested_by = "Super1StartFailClosed"
+    })
+}
+
 function Revoke-Super1Lease([string]$LeasePath, [string]$Reason) {
     if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) { return }
     $lease = Get-Content -Raw -LiteralPath $LeasePath | ConvertFrom-Json
@@ -58,7 +69,9 @@ $leasePath = Join-Path $control "session-lease.json"
 $configPath = Get-Super1RuntimeAppPath -RelativePath ([string]$Contract.runtime_config)
 $manifestPath = Get-Super1RuntimeAppPath -RelativePath ([string]$Contract.manifest)
 $calendarPath = Get-Super1RuntimeAppPath -RelativePath ([string]$Contract.calendar)
-$releaseManifestPath = Join-Path $root "super1-forward.manifest.json"
+$releaseManifestPath = [string]$Contract.release_manifest
+$releaseArchivePath = [string]$Contract.release_archive
+$releaseSignaturePath = [string]$Contract.release_signature
 $required = @(
     [string]$Contract.terminal,
     [string]$Contract.python,
@@ -67,7 +80,9 @@ $required = @(
     $configPath,
     $manifestPath,
     $calendarPath,
-    $releaseManifestPath
+    $releaseManifestPath,
+    $releaseArchivePath,
+    $releaseSignaturePath
 )
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Super1 start dependency is missing: $path" }
@@ -75,14 +90,28 @@ foreach ($path in $required) {
         throw "Super1 start dependency is a reparse point: $path"
     }
 }
+$taskHelper = Get-Super1RuntimeAppPath -RelativePath ([string]$Contract.secure_task_helper)
+. $taskHelper
+$boundRunnerSid = Assert-Super1SecureTaskBindings `
+    -Root $root `
+    -MainTask ([string]$Contract.main_task) `
+    -WatchdogTask ([string]$Contract.watchdog_task)
 $freeDrive = [IO.Path]::GetPathRoot($root).TrimEnd('\').TrimEnd(':')
 $free = (Get-PSDrive -Name $freeDrive -ErrorAction Stop).Free
 if ($free -lt 1GB) { throw "Super1 state volume has less than 1 GiB free." }
-if (Test-Path -LiteralPath (Join-Path $state "fatal_latch.json") -PathType Leaf) {
-    throw "Super1 fatal latch is set; repair/recovery is required before start."
+foreach ($latch in @(
+    (Join-Path $state "fatal_latch.json"),
+    (Join-Path $state "runtime\broker_recovery_required.json"),
+    (Join-Path $state "UNSAFE_STOP_NO_SEND.json"),
+    (Join-Path $state "RESTART_BUDGET_EXHAUSTED_NO_SEND.json")
+)) {
+    if (Test-Path -LiteralPath $latch -PathType Leaf) {
+        throw "Super1 fail-closed latch is set; repair/recovery is required before start: $latch"
+    }
 }
-if (Test-Path -LiteralPath (Join-Path $state "runtime\broker_recovery_required.json") -PathType Leaf) {
-    throw "Super1 broker recovery latch is set; start is fail-closed."
+$activeStop = Join-Path $control "stop-request.json"
+if (Test-Path -LiteralPath $activeStop -PathType Leaf) {
+    throw "Super1 has an active stop request; complete/archive it before starting."
 }
 
 $runtime = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
@@ -92,9 +121,25 @@ $release = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
 $integrityPath = Join-Path $app "deploy\release_integrity.ps1"
 . $integrityPath
 $signedRelease = Assert-SignedReleaseArchive `
-    -Archive (Join-Path $root "super1-forward.zip") `
+    -Archive $releaseArchivePath `
     -ExpectedProfile "super1" `
     -RequireProvenance
+
+$dbPath = Join-Path $state "orders\idempotency.sqlite3"
+if (-not (Test-Path -LiteralPath $dbPath -PathType Leaf)) { throw "Super1 order ledger is missing." }
+$dbProbe = & ([string]$Contract.python) -I -E -B -c @"
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+assert c.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+cols = {row[1] for row in c.execute('PRAGMA table_info(order_event_outbox)')}
+assert 'event_id' in cols
+assert c.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_order_event_outbox_event_id'").fetchone()
+c.close()
+print('READY')
+"@ $dbPath
+if ($LASTEXITCODE -ne 0 -or (($dbProbe -join "`n") -notmatch "READY")) {
+    throw "Super1 SQLite schema/quick_check gate failed."
+}
 if ([string]$release.release_id -cne [string]$signedRelease.release_id) {
     throw "Installed release manifest does not match the signed release archive."
 }
@@ -168,6 +213,9 @@ if ($now.DayOfWeek -in @([DayOfWeek]::Saturday, [DayOfWeek]::Sunday) -or
 $runnerSid = ([Security.Principal.NTAccount]::new("$env:COMPUTERNAME\$($Contract.runner_account)")).Translate(
     [Security.Principal.SecurityIdentifier]
 ).Value
+if ([string]$boundRunnerSid -cne [string]$runnerSid) {
+    throw "Super1 task runner SID does not match the contract Runner account."
+}
 if (-not (Test-Path -LiteralPath $control -PathType Container)) {
     New-Item -ItemType Directory -Path $control | Out-Null
     & icacls.exe $control /inheritance:r /grant:r "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" "${runnerSid}:(OI)(CI)(RX)" /Q | Out-Null
@@ -235,19 +283,35 @@ finally {
 
 $deadline = [DateTimeOffset]::UtcNow.AddSeconds(90)
 do {
-    $mainHealthPath = Join-Path $state "health.json"
-    $watchdogHealthPath = Join-Path $root "watchdog_status.json"
+    $mainHealthPath = [string]$Contract.health
+    $watchdogHealthPath = [string]$Contract.watchdog_status
     $mainFresh = $false; $watchdogFresh = $false
     if (Test-Path -LiteralPath $mainHealthPath -PathType Leaf) {
         try {
             $health = Get-Content -Raw -LiteralPath $mainHealthPath | ConvertFrom-Json
-            $mainFresh = ([DateTimeOffset]::Parse([string]$health.updated_at).ToUniversalTime() -gt [DateTimeOffset]::Parse($lease.issued_at_utc).ToUniversalTime()) -and [string]$health.lease_id -ceq [string]$lease.lease_id
+            $healthStateOk = [string]$health.state -eq "RUNNING" -or [string]$health.state -eq "READY_WAITING_WINDOW"
+            $mainFresh = $healthStateOk -and
+                ([DateTimeOffset]::Parse([string]$health.updated_at).ToUniversalTime() -gt [DateTimeOffset]::Parse($lease.issued_at_utc).ToUniversalTime()) -and
+                [string]$health.lease_id -ceq [string]$lease.lease_id -and
+                [string]$health.invocation_nonce -ceq [string]$lease.lease_id -and
+                [string]$health.runner_sid -ceq [string]$runnerSid
+            if ($mainFresh) {
+                $mainPid = [int]$health.process_id
+                $process = Get-CimInstance Win32_Process -Filter "ProcessId = $mainPid" -ErrorAction Stop
+                $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction Stop
+                $ownerSid = (New-Object Security.Principal.NTAccount("$($owner.Domain)\$($owner.User)")).Translate([Security.Principal.SecurityIdentifier]).Value
+                $mainFresh = [string]$process.ExecutablePath -ceq [string]$Contract.python -and
+                    $ownerSid -ceq [string]$runnerSid -and
+                    [string]$process.CommandLine -match [regex]::Escape((Get-Super1RuntimeAppPath -RelativePath "scripts\run_super1_xm_mt5_forward.py"))
+            }
         } catch { $mainFresh = $false }
     }
     if (Test-Path -LiteralPath $watchdogHealthPath -PathType Leaf) {
         try {
             $wd = Get-Content -Raw -LiteralPath $watchdogHealthPath | ConvertFrom-Json
-            $watchdogFresh = ([DateTimeOffset]::Parse([string]$wd.updated_at_utc).ToUniversalTime() -gt [DateTimeOffset]::Parse($lease.issued_at_utc).ToUniversalTime()) -and [string]$wd.lease_id -ceq [string]$lease.lease_id
+            $watchdogFresh = [string]$wd.state -ceq "HEALTHY" -and
+                ([DateTimeOffset]::Parse([string]$wd.updated_at_utc).ToUniversalTime() -gt [DateTimeOffset]::Parse($lease.issued_at_utc).ToUniversalTime()) -and
+                [string]$wd.lease_id -ceq [string]$lease.lease_id
         } catch { $watchdogFresh = $false }
     }
     $smokeFresh = $false
@@ -269,6 +333,12 @@ do {
 } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
 $mutex = [Threading.Mutex]::new($false, [string]$Contract.order_mutex)
-try { if ($mutex.WaitOne(30000)) { Revoke-Super1Lease -LeasePath $leasePath -Reason "fresh health timeout"; [void]$mutex.ReleaseMutex() } }
+try {
+    if ($mutex.WaitOne(30000)) {
+        Revoke-Super1Lease -LeasePath $leasePath -Reason "fresh health timeout"
+        Write-Super1StopRequest -Path (Join-Path $control "stop-request.json") -LeaseId ([string]$lease.lease_id) -Reason "START_HEALTH_TIMEOUT"
+        [void]$mutex.ReleaseMutex()
+    }
+}
 finally { $mutex.Dispose() }
 throw "Super1 start did not produce fresh main and watchdog health within 90 seconds."
