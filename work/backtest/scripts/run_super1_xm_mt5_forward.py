@@ -18,13 +18,22 @@ import run_capital_forward as core
 import run_xm_mt5_forward as xm
 from candidate_artifact import ArtifactValidationError, load_artifact
 from super1_terminal_r import calculate_terminal_r
+from super1_runtime_guard import (
+    AccountBindingMismatchError,
+    Super1RuntimeError,
+    assert_account_binding,
+    load_lease,
+    load_runtime_config,
+    load_runtime_manifest,
+    order_mutex,
+)
 
 
 RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config.json"
 SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest.json"
 FORWARD_SHADOW_ADAPTER = ROOT / "scripts" / "run_forward_shadow.py"
 DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
-REQUIRED_ENV = ("XM_MT5_SERVER",)
+REQUIRED_ENV: tuple[str, ...] = ()
 RTH_CALENDAR_RELATIVE = "live_forward/calendars/us_equity_rth_2026.json"
 RTH_CALENDAR_STATES = {"OPEN", "EARLY_CLOSE", "CLOSED"}
 
@@ -390,10 +399,131 @@ def liquidity_type(record: dict[str, Any], decision: dict[str, Any], config: Any
 
 class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     def __init__(self, config: dict[str, Any], secrets: dict[str, str]):
-        super().__init__(config, secrets)
+        expected_server = str(config.get("expected_server") or "")
+        supplied_server = str(secrets.get("XM_MT5_SERVER") or "")
+        if supplied_server and supplied_server != expected_server:
+            raise AccountBindingMismatchError(
+                "XM server input differs from the signed Super1 runtime config."
+            )
+        # The signed config, never the environment, owns the broker server.
+        super().__init__(config, {**secrets, "XM_MT5_SERVER": expected_server})
+        self._manual_lease_required = True
         self._super1_record: dict[str, Any] | None = None
         self._active_risk_scale: float | None = None
         self._last_sizing: dict[str, Any] | None = None
+
+    def _assert_super1_lease(self, output_root: Path, *, for_order: bool = True) -> dict[str, Any]:
+        if not getattr(self, "_manual_lease_required", False):
+            return {}
+        app_root = Path(__file__).resolve().parents[1]
+        _, _, manifest_sha256 = load_runtime_manifest(app_root)
+        lease = load_lease(
+            Path(output_root).resolve().parent,
+            self.config,
+            manifest_sha256,
+            for_order=for_order,
+        )
+        if lease.get("config_sha256") != core.file_hash(xm.RUNTIME_CONFIG):
+            raise Super1RuntimeError("Session lease config hash does not match the signed config.")
+        candidate_path = (Path(__file__).resolve().parents[1] / str(self.config["candidate_path"])).resolve()
+        if lease.get("candidate_sha256") != core.file_hash(candidate_path):
+            raise Super1RuntimeError("Session lease candidate hash does not match the sealed candidate.")
+        release_manifest = Path(output_root).resolve().parent / "super1-forward.manifest.json"
+        if not release_manifest.is_file():
+            raise Super1RuntimeError("Signed Super1 release manifest is missing during order gating.")
+        try:
+            release = json.loads(release_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise Super1RuntimeError("Signed Super1 release manifest is unreadable during order gating.") from exc
+        if str(lease.get("release_id")) != str(release.get("release_id")):
+            raise Super1RuntimeError("Session lease release id does not match the installed signed release.")
+        return lease
+
+    def _ensure_demo(self) -> None:
+        super()._ensure_demo()
+
+    def preflight_order_transport(self, output_root: Path, now: pd.Timestamp) -> dict[str, object]:
+        self._assert_super1_lease(output_root, for_order=False)
+        assert_account_binding(self.mt5, self.config)
+        return super().preflight_order_transport(output_root, now)
+
+    def _place_candidate(self, *args: Any, **kwargs: Any) -> dict[str, object]:
+        output_root = Path(args[0])
+        with order_mutex():
+            self._assert_super1_lease(output_root, for_order=True)
+            assert_account_binding(self.mt5, self.config)
+            return super()._place_candidate(*args, **kwargs)
+
+    def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
+        with order_mutex():
+            self._assert_super1_lease(output_root, for_order=True)
+            assert_account_binding(self.mt5, self.config)
+            return super().smoke_order(output_root, lock)
+
+    def stop_reconciliation(self, output_root: Path, reason: str) -> dict[str, object]:
+        """Prove that the dedicated demo account is safe after cancellation."""
+        del output_root, reason
+        self._ensure_demo()
+        expected_symbols = {
+            str(self.config["legs"][key]["epic"])
+            for key in core.LEG_ORDER
+        }
+        comment_prefix = str(self.config["order_comment_prefix"])
+        orders = self._mt5_collection("orders_get")
+        positions = self._mt5_collection("positions_get")
+        owned_pending = 0
+        foreign_exposure = 0
+        unknown = 0
+        for order in orders:
+            try:
+                owned = self._is_owned_pending_order(order)
+                symbol = str(getattr(order, "symbol", ""))
+                comment = str(getattr(order, "comment", ""))
+                magic = int(getattr(order, "magic", -1))
+            except (TypeError, ValueError):
+                unknown += 1
+                continue
+            if owned and symbol in expected_symbols and magic == self.magic and comment.startswith(comment_prefix):
+                owned_pending += 1
+            else:
+                foreign_exposure += 1
+
+        protected_open = 0
+        owned_positions = 0
+        for position in positions:
+            try:
+                symbol = str(getattr(position, "symbol", ""))
+                comment = str(getattr(position, "comment", ""))
+                magic = int(getattr(position, "magic", -1))
+                stop_loss = float(getattr(position, "sl", 0.0) or 0.0)
+                take_profit = float(getattr(position, "tp", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                unknown += 1
+                continue
+            owned = symbol in expected_symbols and magic == self.magic and comment.startswith(comment_prefix)
+            if not owned:
+                foreign_exposure += 1
+                continue
+            owned_positions += 1
+            if math.isfinite(stop_loss) and stop_loss > 0 and math.isfinite(take_profit) and take_profit > 0:
+                protected_open += 1
+
+        open_positions = len(positions)
+        safe = (
+            owned_pending == 0
+            and foreign_exposure == 0
+            and unknown == 0
+            and (open_positions == 0 or protected_open == owned_positions)
+        )
+        return {
+            "owned_pending": owned_pending,
+            "open_positions": open_positions,
+            "owned_positions": owned_positions,
+            "protected_open": protected_open,
+            "foreign_exposure": foreign_exposure,
+            "unknown": unknown,
+            "safe_stop": "PASS" if safe else "FAIL",
+        }
 
     def _overnight_direction(self, symbol: str, trade_date: str) -> str:
         calendar = load_verified_rth_calendar(self.config)
@@ -1212,6 +1342,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 def configure_core() -> None:
     runtime = core.read_json(RUNTIME_CONFIG)
     validate_super1_candidate(runtime)
+    if runtime.get("expected_server") != load_runtime_config(ROOT)[0].get("expected_server"):
+        raise Super1FeatureError("Super1 runtime config has an unstable broker identity.")
     xm.RUNTIME_CONFIG = RUNTIME_CONFIG
     core.RUNTIME_CONFIG = RUNTIME_CONFIG
     core.SCRIPT_PATH = Path(__file__).resolve()
@@ -1223,8 +1355,26 @@ def configure_core() -> None:
         (ROOT / str(runtime["candidate_path"])).resolve(),
         (ROOT / str(runtime["signal_contract_path"])).resolve(),
         SUPER1_MANIFEST.resolve(),
+        (ROOT / "scripts" / "super1_runtime_guard.py").resolve(),
     )
     core.REQUIRED_ENV = REQUIRED_ENV
+    if "--credential-stdin" in sys.argv:
+        password_holder: dict[str, str | None] = {"value": None}
+
+        def provide_credentials() -> dict[str, str]:
+            if password_holder["value"] is None:
+                password_holder["value"] = sys.stdin.readline().rstrip("\r\n")
+            if not password_holder["value"]:
+                raise Super1FeatureError("Transient broker credential was not provided on stdin.")
+            return {
+                "XM_MT5_SERVER": str(runtime["expected_server"]),
+                "XM_MT5_TERMINAL_PATH": str(runtime["terminal_path"]),
+                "XM_MT5_READ_ONLY_PASSWORD": password_holder["value"],
+            }
+
+        core.CREDENTIAL_PROVIDER = provide_credentials
+    else:
+        core.CREDENTIAL_PROVIDER = lambda: None
     core.CapitalDemoClient = Super1XmMt5DemoOrderClient
     core.install_xm_scheduled_gap_integrity()
 

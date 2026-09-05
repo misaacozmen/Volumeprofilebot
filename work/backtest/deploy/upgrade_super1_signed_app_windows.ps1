@@ -16,6 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
 $OriginalPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
@@ -224,10 +226,10 @@ $loadedScheduledTasksModule = @(Import-Module -Name $ScheduledTasksModule -Force
 if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([string]$loadedScheduledTasksModule[0].Path).Equals($ScheduledTasksModule, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unexpected ScheduledTasks module path."
 }
-$Root = [IO.Path]::GetFullPath("C:\Super1")
-$MainTask = "Super1XM"
-$WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "4051f4e68b4aa575df2952a7205ac4fdbdecf6e3da4ca9e170d760e8d9d3dcfe"
+$Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
+$MainTask = [string]$RuntimeContract.main_task
+$WatchdogTask = [string]$RuntimeContract.watchdog_task
+$ExpectedIntegrityScriptSha256 = "4d5ef23880c864f58d5b5e43d9b01ac6a33b73c173b1665bc1912e2c22b1d21a"
 
 function Test-PathWithin {
     param(
@@ -575,7 +577,7 @@ function Get-Super1PythonProcesses {
 }
 
 function Get-Super1TerminalProcesses {
-    $terminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
+    $terminal = [IO.Path]::GetFullPath([string]$RuntimeContract.terminal)
     $matching = @(
         Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" -ErrorAction Stop |
             Where-Object {
@@ -669,7 +671,7 @@ function Get-Super1RunnerProcesses {
 
 function Get-UnexpectedSuper1RunnerProcesses {
     param([switch]$PreserveTerminal)
-    $terminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
+    $terminal = [IO.Path]::GetFullPath([string]$RuntimeContract.terminal)
     return @(Get-Super1RunnerProcesses | Where-Object {
         if (-not $PreserveTerminal) { return $true }
         if ([string]::IsNullOrWhiteSpace([string]$_.ExecutablePath)) { return $true }
@@ -978,7 +980,10 @@ function Get-Super1TerminalPinEvidence {
     $terminalLock = $null
     try {
         $reader = New-Object IO.StreamReader($pointerLock, [Text.Encoding]::UTF8, $true, 1024, $true)
-        try { $pointerValue = [IO.Path]::GetFullPath($reader.ReadToEnd().Trim()) }
+        try {
+            $pointerPayload = $reader.ReadToEnd() | ConvertFrom-Json
+            $pointerValue = [IO.Path]::GetFullPath([string]$pointerPayload.terminal_path)
+        }
         finally { $reader.Dispose() }
         if (-not $pointerValue.Equals($terminal, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Super1 terminal pointer does not name the canonical pinned terminal."
@@ -1063,7 +1068,10 @@ function Protect-Super1TerminalRuntime {
     $terminalLock = $null
     try {
         $reader = New-Object IO.StreamReader($pointerLock, [Text.Encoding]::UTF8, $true, 1024, $true)
-        try { $terminal = [IO.Path]::GetFullPath($reader.ReadToEnd().Trim()) }
+        try {
+            $pointerPayload = $reader.ReadToEnd() | ConvertFrom-Json
+            $terminal = [IO.Path]::GetFullPath([string]$pointerPayload.terminal_path)
+        }
         finally { $reader.Dispose() }
         if (-not $terminal.Equals($expectedTerminal, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Super1 terminal pointer does not name the canonical pinned terminal."
@@ -1224,14 +1232,14 @@ function Initialize-Super1ProbeControl {
     }
     if (-not (Test-Path -LiteralPath $Path -PathType Container) -or
         (Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "Super1 probe-control path is not a real directory."
+        throw "Super1 control path is not a real directory."
     }
     Set-ExactSuper1DirectoryAcl -Path $Path -RightsBySid $rights
     & $script:Super1IcaclsExe $Path /setowner "*S-1-5-18" /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Could not protect the Super1 probe-control directory." }
+    if ($LASTEXITCODE -ne 0) { throw "Could not protect the Super1 control directory." }
     Assert-ExactSuper1DirectoryAcl -Path $Path -RightsBySid $rights
     if (@(Get-ChildItem -LiteralPath $Path -Force).Count -ne 0) {
-        throw "Super1 probe-control contains a stale or unexpected request."
+        throw "Super1 control contains a stale or unexpected request."
     }
 }
 
@@ -1474,26 +1482,19 @@ function Assert-CanonicalSuper1Task {
         [string]$task.Principal.LogonType -cne "ServiceAccount" -or
         [string]$task.Principal.RunLevel -cne "Highest" -or
         -not [bool]$settings.Enabled -or
-        [int]$settings.RestartCount -ne 3 -or
-        $restartInterval -ne [TimeSpan]::FromMinutes(1) -or
+        [int]$settings.RestartCount -ne 0 -or
+        $restartInterval -ne [TimeSpan]::FromMinutes(15) -or
         $executionLimit -ne [TimeSpan]::Zero -or
         -not [bool]$settings.StartWhenAvailable -or
-        [string]$settings.MultipleInstances -ne "IgnoreNew"
+        [string]$settings.MultipleInstances -ne "IgnoreNew" -or
+        [bool]$settings.DisallowStartIfOnBatteries -or
+        [bool]$settings.StopIfGoingOnBatteries -or
+        [bool]$settings.WakeToRun
     ) {
         throw "$TaskName action/settings are not the canonical stopped Super1 definition."
     }
-    if ($triggers.Count -ne 1 -or
-        [string]$triggers[0].CimClass.CimClassName -cne "MSFT_TaskBootTrigger" -or
-        -not [bool]$triggers[0].Enabled -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].StartBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].EndBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].ExecutionTimeLimit) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Id) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Delay) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Repetition.Interval) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Repetition.Duration) -or
-        [bool]$triggers[0].Repetition.StopAtDurationEnd) {
-        throw "$TaskName boot trigger is not the canonical Super1 definition."
+    if ($triggers.Count -ne 0) {
+        throw "$TaskName must have no trigger; manual lease controls every start."
     }
 }
 
@@ -1521,35 +1522,31 @@ function Assert-FrozenSuper1PasswordTask {
             $ExpectedXml -or
         [string]$task.TaskPath -cne "\" -or
         $actions.Count -ne 1 -or
-        [string]$actions[0].Execute -cne "powershell.exe" -or
+        -not [IO.Path]::GetFullPath([string]$actions[0].Execute).Equals(
+            $script:Super1PowerShellExe,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
         [string]$actions[0].Arguments -cne $ExpectedArguments -or
         -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory) -or
         $principalSid -cne $ExpectedRunnerSid -or
         [string]$task.Principal.LogonType -cne "Password" -or
         [string]$task.Principal.RunLevel -cne "Limited" -or
         -not [bool]$task.Settings.Enabled -or
-        [int]$task.Settings.RestartCount -ne 999 -or
+        [int]$task.Settings.RestartCount -ne 0 -or
         (ConvertFrom-ScheduledTaskDuration -Value $task.Settings.RestartInterval) -ne
-            [TimeSpan]::FromMinutes(1) -or
+            [TimeSpan]::FromMinutes(15) -or
         (ConvertFrom-ScheduledTaskDuration -Value $task.Settings.ExecutionTimeLimit) -ne
             [TimeSpan]::Zero -or
         -not [bool]$task.Settings.StartWhenAvailable -or
-        [string]$task.Settings.MultipleInstances -cne "IgnoreNew"
+        [string]$task.Settings.MultipleInstances -cne "IgnoreNew" -or
+        [bool]$task.Settings.DisallowStartIfOnBatteries -or
+        [bool]$task.Settings.StopIfGoingOnBatteries -or
+        [bool]$task.Settings.WakeToRun
     ) {
         throw "Super1 Password task changed from the exact live password-preserving definition."
     }
-    if ($triggers.Count -ne 1 -or
-        [string]$triggers[0].CimClass.CimClassName -cne "MSFT_TaskBootTrigger" -or
-        -not [bool]$triggers[0].Enabled -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].StartBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].EndBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].ExecutionTimeLimit) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Id) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Delay) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Repetition.Interval) -or
-        -not [string]::IsNullOrEmpty([string]$triggers[0].Repetition.Duration) -or
-        [bool]$triggers[0].Repetition.StopAtDurationEnd) {
-        throw "Super1 Password task boot trigger differs from the exact live definition."
+    if ($triggers.Count -ne 0) {
+        throw "Super1 Password task must have no trigger; manual lease controls every start."
     }
 }
 
@@ -1806,11 +1803,11 @@ try {
     $ArchiveRoot = [IO.Path]::GetFullPath((Join-Path $Root "archive"))
     $Venv = [IO.Path]::GetFullPath((Join-Path $Root "venv311"))
     $Python = [IO.Path]::GetFullPath((Join-Path $Venv "Scripts\python.exe"))
-    $TerminalPointer = [IO.Path]::GetFullPath((Join-Path $Root "mt5-terminal.txt"))
-    $TerminalRoot = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833"))
-    $ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
-    $ServerConfigPath = [IO.Path]::GetFullPath((Join-Path $Root "xm-server.txt"))
-    $PasswordConfigPath = [IO.Path]::GetFullPath((Join-Path $Root "xm-password.dpapi"))
+    $TerminalPointer = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.runtime_trust) "terminal_runtime_pin.json"))
+    $TerminalRoot = [IO.Path]::GetFullPath((Split-Path -Parent ([string]$RuntimeContract.terminal)))
+    $ProbeControl = [IO.Path]::GetFullPath([string]$RuntimeContract.control)
+    $ServerConfigPath = [IO.Path]::GetFullPath((Join-Path $App ([string]$RuntimeContract.runtime_config)))
+    $PasswordConfigPath = $null
     $ArchivePath = [IO.Path]::GetFullPath($Archive)
     $UpgradeArchive = [IO.Path]::GetFullPath((Join-Path $ArchiveRoot "app-upgrade-$Stamp-$Transaction"))
     $ArchivedApp = [IO.Path]::GetFullPath((Join-Path $UpgradeArchive "app.previous"))
@@ -1829,7 +1826,7 @@ try {
 
     foreach ($path in @(
         $App, $State, $ArchiveRoot, $Venv, $Python, $TerminalPointer, $TerminalRoot,
-        $ServerConfigPath, $PasswordConfigPath,
+        $ServerConfigPath,
         $ProbeControl, $UpgradeArchive, $ArchivedApp,
         $ArchivedVenv, $FailedApp, $FailedVenv, $FailedStaging, $FailedStagedVenv,
         $Staging, $StagedVenv, $StagedPython, $SignedReleaseRoot, $VerifiedArchive
@@ -1852,7 +1849,7 @@ try {
     }
     foreach ($required in @(
         $Root, $App, $State, $ArchiveRoot, $Venv, $ArchivePath, $TerminalPointer,
-        $TerminalRoot, $ServerConfigPath, $PasswordConfigPath
+        $TerminalRoot, $ServerConfigPath
     )) {
         if (-not (Test-Path -LiteralPath $required)) {
             throw "Missing required Super1 path: $required"
@@ -1922,6 +1919,19 @@ try {
     ).Value
     if ($runnerSid -eq $callerSid) {
         throw "The elevated upgrade caller cannot be the untrusted Super1 runtime identity."
+    }
+    $runnerProfile = Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object {
+        [string]$_.SID -ceq $runnerSid
+    } | Select-Object -First 1
+    if ($null -eq $runnerProfile -or [string]::IsNullOrWhiteSpace([string]$runnerProfile.LocalPath)) {
+        throw "Super1Runner profile is unavailable; cannot locate its CurrentUser DPAPI credential."
+    }
+    $PasswordConfigPath = [IO.Path]::GetFullPath(
+        (Join-Path ([string]$runnerProfile.LocalPath) "AppData\Local\Super1\xm-password.dpapi")
+    )
+    Assert-Super1ChildPath -Path $PasswordConfigPath
+    if (-not (Test-Path -LiteralPath $PasswordConfigPath -PathType Leaf)) {
+        throw "Runner-bound Super1 broker credential metadata is missing."
     }
     $expectedMainArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$App\deploy\run_super1_windows.ps1`""
     $originalMainTaskXml = [string](
@@ -2067,8 +2077,10 @@ try {
             throw "Signed Super1 staging tree is incomplete: $required"
         }
     }
-    $stagedTerminalPin = Join-Path $Staging "deploy\terminal_runtime_pin.json"
-    $stagedPowerShellPin = Join-Path $Staging "deploy\powershell_runtime_pin.json"
+    # Generated runtime trust is outside the immutable app tree.  Stage it in
+    # the protected transaction archive, then promote it into runtime-trust.
+    $stagedTerminalPin = Join-Path $UpgradeArchive "terminal_runtime_pin.json"
+    $stagedPowerShellPin = Join-Path $UpgradeArchive "powershell_runtime_pin.json"
     foreach ($generatedPin in @($stagedTerminalPin, $stagedPowerShellPin)) {
         if (Test-Path -LiteralPath $generatedPin) {
             throw "Signed Super1 release illegally occupies a generated runtime-pin path: $generatedPin"
@@ -2116,10 +2128,11 @@ try {
     }
     finally { $powerShellPinStream.Dispose() }
     $stagedRuntimePayload = [IO.File]::ReadAllText($stagedRuntime) | ConvertFrom-Json
-    $protectedServer = [IO.File]::ReadAllText($ServerConfigPath).Trim()
-    if ([string]::IsNullOrWhiteSpace($protectedServer) -or
-        $protectedServer -cne [string]$stagedRuntimePayload.expected_server) {
-        throw "Protected Super1 server config does not match the signed broker identity contract."
+    $protectedRuntime = [IO.File]::ReadAllText($ServerConfigPath) | ConvertFrom-Json
+    if ([string]$protectedRuntime.expected_server -cne [string]$stagedRuntimePayload.expected_server -or
+        [int]$protectedRuntime.account_login -ne [int]$stagedRuntimePayload.account_login -or
+        [string]$protectedRuntime.expected_company -cne [string]$stagedRuntimePayload.expected_company) {
+        throw "Protected Super1 runtime config does not match the signed broker identity contract."
     }
 
     $BootstrapPythonEvidence = Get-TrustedBootstrapPythonEvidence `
@@ -2190,6 +2203,11 @@ try {
         }
     }
 
+    Move-Item -LiteralPath $stagedTerminalPin -Destination $TerminalPointer -Force
+    Move-Item -LiteralPath $stagedPowerShellPin -Destination (
+        Join-Path ([string]$RuntimeContract.runtime_trust) "powershell_runtime_pin.json"
+    ) -Force
+
     Move-Item -LiteralPath $App -Destination $ArchivedApp
     $originalAppArchived = $true
     Move-Item -LiteralPath $Venv -Destination $ArchivedVenv
@@ -2211,8 +2229,8 @@ try {
         (Join-Path $App "deploy\check_super1_flat_windows.ps1"),
         (Join-Path $App "deploy\rollover_super1_campaign_windows.ps1"),
         (Join-Path $App "deploy\super1_secure_task.ps1"),
-        (Join-Path $App "deploy\terminal_runtime_pin.json"),
-        (Join-Path $App "deploy\powershell_runtime_pin.json"),
+        $TerminalPointer,
+        (Join-Path ([string]$RuntimeContract.runtime_trust) "powershell_runtime_pin.json"),
         (Join-Path $App "scripts\check_mt5_flat.py"),
         $Python
     )) {
@@ -2252,13 +2270,12 @@ try {
         "-File `"$watchdog`""
         "-MainTaskName `"$MainTask`""
         "-HealthPath `"$healthPath`""
-        '-ProcessPattern "run_super1_xm_mt5_forward.py"'
         "-StatusPath `"$watchdogStatus`""
     ) -join " "
     $watchdogAction = New-ScheduledTaskAction -Execute $script:Super1PowerShellExe -Argument $watchdogArguments
     $watchdogSettings = New-ScheduledTaskSettingsSet `
-        -RestartCount 3 `
-        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -RestartCount 0 `
+        -RestartInterval (New-TimeSpan -Minutes 15) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -StartWhenAvailable `
         -MultipleInstances IgnoreNew
@@ -2357,7 +2374,7 @@ try {
             sha256 = [string]$TerminalEvidence.sha256
             signature_status = [string]$TerminalEvidence.signature_status
             pointer = [string]$TerminalEvidence.pointer
-            pin = (Join-Path $App "deploy\terminal_runtime_pin.json")
+            pin = $TerminalPointer
         }
         powershell_runtime = [ordered]@{
             path = [string]$PowerShellHostEvidence.path
@@ -2365,7 +2382,7 @@ try {
             signer_subject = [string]$PowerShellHostEvidence.signer_subject
             signer_thumbprint = [string]$PowerShellHostEvidence.signer_thumbprint
             product_version = [string]$PowerShellHostEvidence.product_version
-            pin = (Join-Path $App "deploy\powershell_runtime_pin.json")
+            pin = (Join-Path ([string]$RuntimeContract.runtime_trust) "powershell_runtime_pin.json")
         }
         protected_runtime_config = @($RuntimeConfigEvidence | ForEach-Object {
             [ordered]@{ path = [string]$_.path; sha256 = [string]$_.sha256 }

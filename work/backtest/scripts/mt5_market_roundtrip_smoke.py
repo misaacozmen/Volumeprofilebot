@@ -4,19 +4,18 @@ import argparse
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
+import sys
 import time
 from typing import Any
 
 import MetaTrader5 as mt5
 
 
-EXPECTED_LOGIN = 318413815
-EXPECTED_SERVER = "XMGlobal-MT5 7"
-EXPECTED_COMPANY = "XM Global Limited"
-SYMBOL = "US100Cash"
-MAGIC = 260730902
-COMMENT = "FSP-MKT-SMOKE"
+SYMBOL = ""
+MAGIC = 0
+COMMENT = ""
 
 
 def utc_now() -> str:
@@ -115,16 +114,45 @@ def write_evidence(path: Path, payload: dict[str, object]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Exact-demo-gated MT5 market round-trip smoke test.")
-    parser.add_argument("--terminal-path", required=True)
+    parser = argparse.ArgumentParser(description="Exact-config-gated XM MT5 pending-order round-trip smoke test.")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--terminal-path")
     parser.add_argument("--evidence", required=True)
     parser.add_argument("--confirm-demo", action="store_true")
+    parser.add_argument("--credential-stdin", action="store_true")
     args = parser.parse_args()
     evidence_path = Path(args.evidence)
     if not args.confirm_demo:
-        raise RuntimeError("Market smoke requires --confirm-demo.")
+        raise RuntimeError("XM demo smoke requires the separate explicit confirmation.")
     if evidence_path.exists():
         raise RuntimeError(f"Evidence path already exists: {evidence_path}")
+    config_path = Path(args.config).resolve()
+    if not config_path.is_file() or config_path.is_symlink():
+        raise RuntimeError("The signed Super1 config is missing or is a reparse point.")
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The signed Super1 config is unreadable.") from exc
+    if not isinstance(config, dict) or config.get("environment") != "XM_MT5_DEMO_ORDER":
+        raise RuntimeError("The smoke config is not an XM demo-order config.")
+    global SYMBOL, MAGIC, COMMENT
+    try:
+        SYMBOL = str(config["legs"]["nq"]["symbol"])
+        MAGIC = int(config["magic_number"])
+        COMMENT = (str(config["order_comment_prefix"]) + ":SMOKE")[:31]
+        login = int(config["account_login"])
+        expected_server = str(config["expected_server"])
+        expected_company = str(config["expected_company"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("The signed Super1 config has incomplete broker identity fields.") from exc
+    terminal_path = str(args.terminal_path or config.get("terminal_path") or "").strip()
+    if not terminal_path:
+        raise RuntimeError("The signed Super1 config has no terminal path.")
+    if not args.credential_stdin:
+        raise RuntimeError("XM demo smoke requires a transient password on stdin.")
+    password = sys.stdin.readline().rstrip("\r\n")
+    if not password:
+        raise RuntimeError("XM demo smoke received no transient password.")
 
     evidence: dict[str, object] = {
         "schema_version": 1,
@@ -132,11 +160,26 @@ def main() -> None:
         "state": "RUNNING",
         "symbol": SYMBOL,
         "magic": MAGIC,
+        "config": str(config_path),
+        "config_sha256": __import__("hashlib").sha256(config_path.read_bytes()).hexdigest(),
+        "creation_send_count": 0,
+        "cancel_send_count": 0,
+        "duplicate_send": 0,
+        "unknown": 0,
     }
     initialized = False
     filling = None
     try:
-        initialized = bool(mt5.initialize(args.terminal_path))
+        initialized = bool(
+            mt5.initialize(
+                terminal_path,
+                login=login,
+                password=password,
+                server=expected_server,
+                timeout=60_000,
+                portable=True,
+            )
+        )
         if not initialized:
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
         account = mt5.account_info()
@@ -151,9 +194,9 @@ def main() -> None:
         }
         evidence["identity"] = identity
         if identity != {
-            "login": EXPECTED_LOGIN,
-            "server": EXPECTED_SERVER,
-            "company": EXPECTED_COMPANY,
+            "login": login,
+            "server": expected_server,
+            "company": expected_company,
             "trade_mode": int(mt5.ACCOUNT_TRADE_MODE_DEMO),
         }:
             raise RuntimeError("Exact XM demo identity gate failed.")
@@ -190,14 +233,15 @@ def main() -> None:
             float(info.trade_stops_level) * float(info.point) + 100 * float(info.point),
             float(tick.ask) * 0.01,
         )
+        pending_price = round(float(tick.bid) - distance, digits)
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
+            "action": mt5.TRADE_ACTION_PENDING,
             "symbol": SYMBOL,
             "volume": volume,
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": float(tick.ask),
-            "sl": round(float(tick.ask) - distance, digits),
-            "tp": round(float(tick.ask) + distance, digits),
+            "type": mt5.ORDER_TYPE_BUY_LIMIT,
+            "price": pending_price,
+            "sl": round(pending_price - distance, digits),
+            "tp": round(pending_price + distance, digits),
             "deviation": 50,
             "magic": MAGIC,
             "comment": COMMENT,
@@ -210,39 +254,66 @@ def main() -> None:
             "sl": request["sl"],
             "tp": request["tp"],
         }
+        if not pending_price < float(tick.ask):
+            raise RuntimeError("Pending smoke price is marketable.")
         check = mt5.order_check(request)
         if check is None or int(check.retcode) != 0:
             raise RuntimeError(
-                "Demo market order_check failed."
+                "Demo pending order_check failed."
                 if check is None
                 else f"Demo market order_check retcode {int(check.retcode)}."
             )
         opened = mt5.order_send(request)
+        evidence["creation_send_count"] = 1
         if opened is None or int(opened.retcode) not in {
             int(mt5.TRADE_RETCODE_DONE),
-            int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)),
         }:
             raise RuntimeError(
-                "Demo market open returned no result."
+                "Demo pending order returned no definitive acceptance."
                 if opened is None
-                else f"Demo market open retcode {int(opened.retcode)}."
+                else f"Demo pending order retcode {int(opened.retcode)}."
             )
         evidence["opened"] = result_fields(opened)
-        position = None
+        ticket = int(getattr(opened, "order", 0) or 0)
+        if ticket <= 0:
+            raise RuntimeError("Accepted pending order has no broker ticket.")
+        pending = None
         for _ in range(10):
-            positions = own_positions()
-            if positions:
-                position = positions[0]
+            orders = [item for item in own_orders() if int(getattr(item, "ticket", 0)) == ticket]
+            if orders:
+                pending = orders[0]
                 break
             time.sleep(0.2)
-        if position is None:
-            raise RuntimeError("Filled demo market order did not produce an observable position.")
-        evidence["position_ticket"] = int(position.ticket)
-        closed = close_position(position, filling)
-        evidence["closed"] = result_fields(closed)
+        if pending is None:
+            positions = own_positions()
+            if positions:
+                evidence["unknown"] = 1
+                raise RuntimeError("Pending smoke order filled before the first readback.")
+            evidence["unknown"] = 1
+            raise RuntimeError("Accepted pending order was not observable by broker readback.")
+        evidence["pending_readback"] = {"ticket": ticket, "symbol": str(pending.symbol)}
+        cancelled = mt5.order_send(
+            {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": ticket,
+                "symbol": SYMBOL,
+                "magic": MAGIC,
+                "comment": COMMENT,
+            }
+        )
+        evidence["cancel_send_count"] = 1
+        if cancelled is None or int(cancelled.retcode) != int(mt5.TRADE_RETCODE_DONE):
+            evidence["unknown"] = 1
+            raise RuntimeError("Pending smoke cancellation has no definitive broker result.")
+        evidence["cancelled"] = result_fields(cancelled)
+        for _ in range(10):
+            if not own_orders() and not own_positions():
+                break
+            time.sleep(0.2)
         remaining_positions = own_positions()
         remaining_orders = own_orders()
         if remaining_positions or remaining_orders:
+            evidence["unknown"] = 1
             raise RuntimeError("Smoke broker objects remain after close.")
         evidence.update(
             {
@@ -250,6 +321,9 @@ def main() -> None:
                 "state": "PASS",
                 "remaining_positions": 0,
                 "remaining_orders": 0,
+                "open_orders": 0,
+                "open_positions": 0,
+                "logical_replay_send_count": 0,
             }
         )
         write_evidence(evidence_path, evidence)
@@ -279,6 +353,8 @@ def main() -> None:
                 "emergency_errors": emergency_errors,
                 "remaining_positions": len(own_positions()) if initialized else None,
                 "remaining_orders": len(own_orders()) if initialized else None,
+                "open_orders": len(own_orders()) if initialized else None,
+                "open_positions": len(own_positions()) if initialized else None,
             }
         )
         if not evidence_path.exists():

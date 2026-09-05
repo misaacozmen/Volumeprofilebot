@@ -5,13 +5,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$Contract = Assert-Super1RuntimeContract
 
-$Root = "C:\Super1"
-$App = Join-Path $Root "app"
-$Terminal = Join-Path $Root "mt5\terminal64.exe"
-$Python = Join-Path $Root "venv311\Scripts\python.exe"
-$RunnerUser = "Super1Runner"
-$TaskName = "Super1XM"
+$Root = [string]$Contract.root
+$App = [string]$Contract.app
+$Terminal = [string]$Contract.terminal
+$Python = [string]$Contract.python
+$RunnerUser = [string]$Contract.runner_account
+$TaskName = [string]$Contract.main_task
 $ExistingTaskName = "ForwardShadowXM"
 $Worker = Join-Path $Root "bootstrap_super1_user.ps1"
 
@@ -44,7 +46,7 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
 $ExistingTaskXml = Export-ScheduledTask -TaskName $ExistingTaskName
 $ExistingTaskHash = Get-StringSha256 $ExistingTaskXml
 $ExistingTerminalProcess = Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
-    Where-Object { $_.ExecutablePath -eq "C:\Program Files\XM MT5\terminal64.exe" }
+    Where-Object { $_.ExecutablePath -eq $Terminal }
 if (-not $ExistingTerminalProcess) {
     throw "Existing XM terminal was not running before isolation; refusing to continue."
 }
@@ -66,6 +68,16 @@ else {
 }
 
 $RunnerIdentity = "$env:COMPUTERNAME\$RunnerUser"
+$RunnerSid = ([Security.Principal.NTAccount]::new($RunnerIdentity)).Translate(
+    [Security.Principal.SecurityIdentifier]
+).Value
+$RunnerProfile = Get-CimInstance Win32_UserProfile | Where-Object {
+    [string]$_.SID -ceq $RunnerSid
+} | Select-Object -First 1
+if ($null -eq $RunnerProfile -or [string]::IsNullOrWhiteSpace([string]$RunnerProfile.LocalPath)) {
+    throw "Super1Runner profile is unavailable; cannot provision CurrentUser DPAPI."
+}
+$RunnerCredential = Join-Path ([string]$RunnerProfile.LocalPath) "AppData\Local\Super1\xm-password.dpapi"
 $StateRoot = Join-Path $Root "state"
 New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
 & icacls.exe $Root /grant:r "${RunnerIdentity}:(RX)" /Q | Out-Null
@@ -82,47 +94,40 @@ Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
 
 $WorkerSource = @'
 $ErrorActionPreference = "Stop"
-$Root = "C:\Super1"
+$Root = "%SUPER1_ROOT%"
+$Config = Join-Path $Root "app\live_forward\super1_xm_mt5_demo_config.json"
 $Password = [Console]::In.ReadLine()
 if ([string]::IsNullOrWhiteSpace($Password)) { throw "Missing XM password on stdin." }
 $Secure = ConvertTo-SecureString $Password -AsPlainText -Force
-$env:XM_MT5_READ_ONLY_PASSWORD = $Password
-$env:XM_MT5_TERMINAL_PATH = "C:\Super1\mt5\terminal64.exe"
-$env:XM_MT5_SERVER = "XMGlobal-MT5 2"
 try {
-    $Json = & "C:\Super1\venv311\Scripts\python.exe" `
-        "C:\Super1\app\scripts\discover_super1_xm_account.py"
+    $Json = $Password | & "%SUPER1_PYTHON%" `
+        "%SUPER1_APP%\scripts\discover_super1_xm_account.py" --config $Config --credential-stdin
     if ($LASTEXITCODE -ne 0 -or -not $Json) { throw "Isolated discovery failed." }
     $Discovery = $Json | ConvertFrom-Json
-    if ($Discovery.state -ne "FOUND" -or -not $Discovery.demo_verified) {
+    $Runtime = Get-Content -Raw $Config | ConvertFrom-Json
+    if ($Discovery.state -ne "FOUND" -or -not $Discovery.demo_verified -or
+        [int]$Discovery.login -ne [int]$Runtime.account_login -or
+        [string]$Discovery.server -cne [string]$Runtime.expected_server -or
+        [string]$Discovery.company -cne [string]$Runtime.expected_company) {
         throw "Isolated discovery did not verify a demo account."
     }
-    if ($Discovery.login -ne [REDACTED -or $Discovery.server -ne "XMGlobal-MT5 2") {
-        throw "Unexpected isolated XM identity."
-    }
-    if ($Discovery.symbols.nq -ne "US100Cash" -or $Discovery.symbols.spx -ne "US500Cash") {
-        throw "Unexpected XM symbol mapping."
-    }
-    $Secure | ConvertFrom-SecureString |
-        Set-Content -LiteralPath "C:\Super1\xm-password.runner.dpapi" -Encoding ascii
-    Set-Content -LiteralPath "C:\Super1\xm-server.txt" -Value $Discovery.server -Encoding ascii
-    Set-Content -LiteralPath "C:\Super1\mt5-terminal.txt" -Value $env:XM_MT5_TERMINAL_PATH -Encoding ascii
+    $target = Join-Path $env:LOCALAPPDATA "Super1\xm-password.dpapi"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+    $Secure | ConvertFrom-SecureString | Set-Content -LiteralPath $target -Encoding ascii
     $Json
 }
 finally {
-    $env:XM_MT5_READ_ONLY_PASSWORD = $null
-    $env:XM_MT5_TERMINAL_PATH = $null
-    $env:XM_MT5_SERVER = $null
     $Password = $null
 }
 '@
+$WorkerSource = $WorkerSource.Replace("%SUPER1_ROOT%", $Root).Replace("%SUPER1_PYTHON%", $Python).Replace("%SUPER1_APP%", $App)
 Set-Content -LiteralPath $Worker -Value $WorkerSource -Encoding UTF8
 
 $PasswordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
 try {
     $XmPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPtr)
     $StartInfo = [Diagnostics.ProcessStartInfo]::new()
-    $StartInfo.FileName = "powershell.exe"
+    $StartInfo.FileName = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
     $StartInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Worker`""
     $StartInfo.WorkingDirectory = $Root
     $StartInfo.UserName = $RunnerUser
@@ -146,16 +151,12 @@ try {
         throw "Isolated XM discovery failed: $DiscoveryError"
     }
     $Discovery = $DiscoveryJson | ConvertFrom-Json
-    $RunnerCredential = Join-Path $Root "xm-password.runner.dpapi"
     if (-not (Test-Path -LiteralPath $RunnerCredential)) {
         throw "Runner-bound XM credential was not created."
     }
-    Copy-Item -LiteralPath $RunnerCredential -Destination (Join-Path $Root "xm-password.dpapi") -Force
-    foreach ($CredentialFile in @($RunnerCredential, (Join-Path $Root "xm-password.dpapi"))) {
-        & icacls.exe $CredentialFile /inheritance:r /grant:r `
-            "SYSTEM:(F)" "BUILTIN\Administrators:(F)" "${RunnerIdentity}:(R)" /Q | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not protect runner-bound credential ACLs." }
-    }
+    & icacls.exe $RunnerCredential /inheritance:r /grant:r `
+        "SYSTEM:(F)" "BUILTIN\Administrators:(F)" "${RunnerIdentity}:(R)" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not protect runner-bound credential ACLs." }
 }
 finally {
     if ($PasswordPtr -ne [IntPtr]::Zero) {
@@ -165,19 +166,19 @@ finally {
 }
 
 $Launcher = Join-Path $App "deploy\run_super1_windows.ps1"
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" `
+$Action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`""
-$Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 0 `
+    -RestartInterval (New-TimeSpan -Minutes 15) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings `
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Settings $Settings `
     -User ".\$RunnerUser" -Password $RunnerPlain -RunLevel Limited | Out-Null
-Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 12
+
+# Recovery provisions the stopped manual task only; the daily lease start is
+# deliberately left to start_super1_local_windows.ps1.
 
 $ExistingTaskXmlAfter = Export-ScheduledTask -TaskName $ExistingTaskName
 $ExistingTaskHashAfter = Get-StringSha256 $ExistingTaskXmlAfter
@@ -185,7 +186,7 @@ if ($ExistingTaskHashAfter -ne $ExistingTaskHash) {
     throw "Existing ForwardShadowXM task changed unexpectedly."
 }
 $ExistingTerminalAfter = Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
-    Where-Object { $_.ExecutablePath -eq "C:\Program Files\XM MT5\terminal64.exe" }
+    Where-Object { $_.ExecutablePath -eq $Terminal }
 if (-not $ExistingTerminalAfter) {
     throw "Existing XM terminal changed unexpectedly."
 }

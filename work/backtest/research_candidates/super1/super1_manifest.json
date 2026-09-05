@@ -4,22 +4,24 @@
   "candidate_path": "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
   "candidate_file_sha256": "ea86920354d9c3a92b2961b30834d32a006b245a7c093f41929efa7556e6a6ee",
   "candidate_artifact_sha256": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
-  "config_sha256": "b30831e7192bff479d281d17cf64ca95e86dfff83ae4dc2167d9b5bfd8d653b9",
+  "config_sha256": "ff8e18955a13f3405dde6e203aef726053d479f45f9980385b5bbff0567e2c51",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
-  "signal_contract_sha256": "8ba11805edad37696732a2b1fd8423a73d0627f0cc9ab4a4ddb35f3f51118975",
+  "signal_contract_sha256": "32db5b2fb7dd1941798e198fbfcc18cf9de6883102a8bfa87e5ceb39bb14e31b",
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "overlay_candidate_research_dataset_sha256": "5162bde26ad62a1481691cf96d58980de0a1f8c8874a07f7d7e45695bd745483",
   "overlay_candidate_research_result_sha256": "29e1e327240adbda26fd3cbb845bd7f118102cbb46efae2b0c594bf1a35a145a",
   "deployed_pipeline_historical_parity_proven": false,
   "deployed_pipeline_result_sha256": null,
   "deployment": {
-    "target": "SEPARATE_AWS_BROKER_ACCOUNT",
+    "target": "LOCAL_WINDOWS_PC",
     "campaign_days": 30,
     "isolation_required": true,
     "demo_order_execution_enabled": true,
     "real_money_live_enabled": false,
     "real_money_execution_allowed": false,
-    "existing_campaign_must_remain_untouched": true
+    "existing_campaign_must_remain_untouched": true,
+    "daily_manual_start_required": true,
+    "unattended_execution_allowed": false
   },
   "fresh_forward_required": true,
   "proven": false

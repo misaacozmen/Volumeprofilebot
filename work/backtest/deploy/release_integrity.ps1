@@ -19,6 +19,7 @@ function Assert-ReleaseArtifactTestFiles {
         "test_deployment_security.py",
         "test_xm_mt5_forward.py",
         "test_super1_xm_forward.py",
+        "test_super1_runtime_hardening.py",
         "test_check_mt5_flat.py",
         "test_v16_deployment_contract.py"
     )

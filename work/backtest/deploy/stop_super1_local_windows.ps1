@@ -1,36 +1,140 @@
+[CmdletBinding()]
+param()
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$Contract = Assert-Super1RuntimeContract
 
-$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$CurrentPrincipal = [Security.Principal.WindowsPrincipal]::new($CurrentIdentity)
-if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process `
+function Test-Super1Administrator {
+    return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+}
+
+if (-not (Test-Super1Administrator)) {
+    $child = Start-Process `
         -FilePath (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe") `
         -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"") `
-        -Verb RunAs
-    exit 0
+        -Verb RunAs `
+        -Wait `
+        -PassThru
+    exit ([int]$child.ExitCode)
 }
 
-Stop-ScheduledTask -TaskName "Super1Watchdog" -ErrorAction SilentlyContinue
-Stop-ScheduledTask -TaskName "Super1XM" -ErrorAction SilentlyContinue
-
-$Deadline = (Get-Date).AddSeconds(15)
-do {
-    $Processes = @(
-        Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -eq "C:\Super1\mt5\terminal64.exe" }
-    )
-    foreach ($Process in $Processes) {
-        Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
+function Write-Super1AtomicJson([string]$Path, [object]$Value) {
+    $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+            (ConvertTo-Json -InputObject $Value -Depth 16 -Compress) + [Environment]::NewLine
+        )
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
     }
-    Start-Sleep -Milliseconds 250
-} while ($Processes.Count -gt 0 -and (Get-Date) -lt $Deadline)
-
-$Remaining = @(
-    Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -eq "C:\Super1\mt5\terminal64.exe" }
-)
-if ($Remaining.Count -ne 0) {
-    throw "Super1 MT5 terminal did not stop."
+    finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
-Write-Host "Super1 and its dedicated MT5 terminal stopped." -ForegroundColor Green
+
+function Write-Super1UnsafeStopLatch([string]$State, [string]$Reason) {
+    $path = Join-Path $State "UNSAFE_STOP_NO_SEND.json"
+    Write-Super1AtomicJson -Path $path -Value ([ordered]@{
+        schema_version = 1
+        state = "UNSAFE_STOP_NO_SEND"
+        reason = $Reason
+        updated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+    })
+}
+
+$root = [string]$Contract.root
+$state = [string]$Contract.state
+$control = [string]$Contract.control
+$leasePath = Join-Path $control "session-lease.json"
+$stopPath = Join-Path $control "stop-request.json"
+$lease = $null
+if (Test-Path -LiteralPath $leasePath -PathType Leaf) {
+    $lease = Get-Content -Raw -LiteralPath $leasePath | ConvertFrom-Json
+}
+$mutex = [Threading.Mutex]::new($false, [string]$Contract.order_mutex)
+$held = $false
+try {
+    $held = $mutex.WaitOne(30000)
+    if (-not $held) { throw "Could not acquire Super1 order transport mutex." }
+    if ($null -ne $lease) {
+        $lease.state = "REVOKED"
+        $lease.revoked_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+        $lease.revocation_reason = "operator stop"
+        Write-Super1AtomicJson -Path $leasePath -Value $lease
+    }
+    Write-Super1AtomicJson -Path $stopPath -Value ([ordered]@{
+        schema_version = 1
+        request_id = [Guid]::NewGuid().ToString()
+        lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+        requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+        reason = "OPERATOR_STOP"
+    })
+}
+finally {
+    if ($held) { [void]$mutex.ReleaseMutex() }
+    $mutex.Dispose()
+}
+
+$deadline = [DateTimeOffset]::UtcNow.AddSeconds(90)
+$safe = $false
+$lastHealth = $null
+$requestedAt = [DateTimeOffset]::UtcNow
+try {
+    $request = Get-Content -Raw -LiteralPath $stopPath | ConvertFrom-Json
+    $requestedAt = [DateTimeOffset]::Parse([string]$request.requested_at_utc).ToUniversalTime()
+}
+catch { throw "Stop request evidence is unreadable; refusing to claim a safe stop." }
+do {
+    $healthPath = Join-Path $state "health.json"
+    if (Test-Path -LiteralPath $healthPath -PathType Leaf) {
+        try {
+            $lastHealth = Get-Content -Raw -LiteralPath $healthPath | ConvertFrom-Json
+            $safe = [string]$lastHealth.state -ceq "STOPPED" -and
+                ([DateTimeOffset]::Parse([string]$lastHealth.updated_at).ToUniversalTime() -gt $requestedAt) -and
+                [string]$lastHealth.safe_stop -ceq "PASS" -and
+                [int]$lastHealth.owned_pending -eq 0 -and
+                (([int]$lastHealth.open_positions -eq 0) -or
+                    ([int]$lastHealth.protected_open -eq [int]$lastHealth.owned_positions)) -and
+                [int]$lastHealth.foreign_exposure -eq 0 -and
+                [int]$lastHealth.unknown -eq 0
+            if ([string]$lastHealth.state -in @("UNSAFE_STOP_NO_SEND", "UNSAFE_OPEN_ORDERS", "CRITICAL_STOP")) { break }
+        }
+        catch { $safe = $false }
+    }
+    if ($safe) { break }
+    Start-Sleep -Seconds 2
+} while ([DateTimeOffset]::UtcNow -lt $deadline)
+
+if (-not $safe) {
+    $reason = if ($null -eq $lastHealth) { "No safe-stop health was published." } else { "Broker reconciliation did not prove owned_pending=0 and protected/zero positions." }
+    Write-Super1UnsafeStopLatch -State $state -Reason $reason
+    throw "UNSAFE_STOP_NO_SEND: $reason Processes were not forcibly terminated."
+}
+
+foreach ($taskName in @([string]$Contract.main_task, [string]$Contract.watchdog_task)) {
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+}
+$runnerSid = if ($null -ne $lease) { [string]$lease.runner_sid } else { "" }
+$terminal = [string]$Contract.terminal
+$remaining = @(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.ExecutablePath -ceq $terminal
+})
+if ($remaining.Count -gt 0 -and [string]::IsNullOrWhiteSpace($runnerSid)) {
+    Write-Super1UnsafeStopLatch -State $state -Reason "Canonical terminal owner cannot be bound to a Super1 lease."
+    throw "UNSAFE_STOP_NO_SEND: canonical terminal owner is unproven; process was not terminated."
+}
+foreach ($process in $remaining) {
+    if ($runnerSid) {
+        $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction Stop
+        $name = if ([string]$owner.Domain) { "$($owner.Domain)\$($owner.User)" } else { [string]$owner.User }
+        $sid = (New-Object Security.Principal.NTAccount($name)).Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($sid -cne $runnerSid) { throw "Refusing to terminate a terminal owned by an unexpected SID." }
+    }
+    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+}
+Write-Host "Super1 stopped after broker reconciliation: owned_pending=0, unknown=0." -ForegroundColor Green
+exit 0

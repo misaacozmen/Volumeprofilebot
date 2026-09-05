@@ -82,27 +82,47 @@ def test_runtime_launchers_use_writable_state_not_read_only_app() -> None:
     forward = text("run_forward_shadow_windows.ps1")
     super1 = text("run_super1_windows.ps1")
     assert '--output-root (Join-Path $Root "state")' in forward
-    assert '--output-root (Join-Path $Root "state")' in super1
-    assert 'XM_MT5_READ_ONLY_PASSWORD = $null' in super1
+    assert '"--output-root", (Join-Path $Root "state")' in super1
+    assert '"--credential-stdin"' in super1
+    assert 'XM_MT5_READ_ONLY_PASSWORD = $null' not in super1
 
 
 def test_installers_limit_restart_and_task_privilege() -> None:
-    for name in ("install_forward_shadow_windows.ps1", "install_super1_windows.ps1"):
-        source = text(name)
-        assert "-RestartCount 3" in source
-        assert "-RestartCount 999" not in source
-        assert "-RunLevel Highest" not in source
+    source = text("install_forward_shadow_windows.ps1")
+    assert "-RestartCount 3" in source
+    assert "-RestartCount 999" not in source
+    assert "-RunLevel Highest" not in source
+    source = text("install_super1_windows.ps1")
+    assert "-RestartCount 3" not in source
+    assert "-RestartCount 999" not in source
+    assert "-RunLevel Highest" not in source
+    assert "install_super1_watchdog_windows.ps1" in text("finalize_super1_fresh_windows.ps1")
     for name in ("repair_super1_task_s4u_windows.ps1", "recover_super1_isolated_user.ps1"):
         source = text(name)
-        assert "-RestartCount 3" in source
+        assert "-RestartCount 0" in source
         assert "-RestartCount 999" not in source
+
+
+def test_super1_fresh_install_archives_existing_state_and_rolls_back() -> None:
+    source = text("install_super1_windows.ps1")
+    for archived in ("app.previous", "venv311.previous", "state.previous", "control.previous", "runtime-trust.previous"):
+        assert archived in source
+    assert "fresh-install-" in source
+    assert "Export-ScheduledTask" in source
+    assert "icacls.exe" in source
+    assert "Super1 task is active; refusing to replace" in source
+    assert "Register-ScheduledTask -TaskName ([string]$backup.task)" in source
+    assert "Super1 fresh-install transaction rolled back" in source
+    assert "Super1 app already exists; refusing to overwrite" not in source
 
 
 def test_super1_repair_does_not_reset_password_behind_dpapi_blob() -> None:
     source = text("repair_super1_task_s4u_windows.ps1")
     assert "Set-LocalUser" not in source
     assert "New-LocalUser" not in source
-    assert "-LogonType S4U" in source
+    assert "-LogonType Password" in source
+    assert "-LogonType S4U" not in source
+    assert "Read-Host" in source
 
 
 def test_release_builder_keeps_private_key_outside_workspace() -> None:
@@ -124,6 +144,7 @@ def test_release_builder_keeps_private_key_outside_workspace() -> None:
         "deploy/rollover_super1_campaign_windows.ps1",
         "deploy/run_forward_shadow_windows.ps1",
         "deploy/run_super1_windows.ps1",
+        "deploy/super1_binding_proof.ps1",
         "deploy/super1_secure_task.ps1",
         "deploy/upgrade_forward_shadow_windows.ps1",
         "deploy/upgrade_super1_signed_app_windows.ps1",
@@ -173,8 +194,10 @@ def test_super1_signed_app_upgrade_is_offline_transactional_and_leaves_tasks_sto
     assert "Get-Super1PythonProcesses" in source
     assert "Set-ScheduledTask -TaskName $MainTask" not in source
     assert "Assert-FrozenSuper1PasswordTask" in source
-    assert '[string]$actions[0].Execute -cne "powershell.exe"' in source
-    assert "[int]$task.Settings.RestartCount -ne 999" in source
+    assert '$script:Super1PowerShellExe' in source
+    assert 'GetFullPath([string]$actions[0].Execute)' in source
+    assert "RestartCount -ne 999" not in source
+    assert "RestartCount -ne 0" in source
     assert "Set-ScheduledTask -TaskName $WatchdogTask -Action $watchdogAction -Settings $watchdogSettings" in source
     assert 'state = "UPGRADED_STOPPED"' in source
     assert "protected pre-hardening broker flat probe" in source
@@ -363,8 +386,9 @@ def test_super1_upgrade_rolls_back_app_venv_and_complete_task_definitions() -> N
     assert "-Settings $originalWatchdogSettings" in source
     assert "Export-ScheduledTask -TaskName $MainTask" in source
     assert "Export-ScheduledTask -TaskName $WatchdogTask" in source
-    assert source.count("-RestartCount 3") >= 1
-    assert "RestartCount -ne 999" in source
+    assert source.count("-RestartCount 0") >= 1
+    assert "RestartCount -ne 999" not in source
+    assert "RestartCount -ne 0" in source
     assert '"Running", "Queued"' in source
     assert source.rstrip().endswith('$Result | ConvertTo-Json -Depth 8')
 
@@ -437,7 +461,7 @@ def test_super1_fixed_launcher_uses_protected_probe_and_terminal_pins() -> None:
     launcher = text("run_super1_windows.ps1")
     helper = text("super1_secure_task.ps1")
 
-    assert 'Join-Path $ProbeControl "active.json"' in launcher
+    assert '$ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))' in launcher
     assert 'Open-Super1SecureLockedFile -Path $ProbeRequest' in launcher
     assert '[IO.FileShare]::Read' in launcher
     assert 'terminal_runtime_pin.json' in launcher
@@ -446,18 +470,18 @@ def test_super1_fixed_launcher_uses_protected_probe_and_terminal_pins() -> None:
     assert "GetCurrentProcess().MainModule.FileName" in launcher
     assert "Microsoft.PowerShell.Security\\Get-AuthenticodeSignature" not in launcher
     assert "PowerShellHostLock" in launcher
-    assert '"state":"CRITICAL_STOP"' in launcher
+    assert 'state = "CRITICAL_STOP"' in launcher
     assert "exited unexpectedly with persistent code" in launcher
-    assert '& $Python -I -E -B $FlatDiagnostic' in launcher
-    assert '& $Python -I -E -B $Runner' in launcher
+    assert 'RedirectStandardInput = $true' in launcher
+    assert 'ProvideCredential' in launcher
     assert 'kind -notin @("flat", "rollover_init")' in launcher
     assert 'BROKER_SAVED_SESSION' not in launcher
     assert 'BROKER_CREDENTIAL_FATAL' in launcher
     assert 'LauncherExitCode' not in launcher
     assert 'throw "Super1 broker credential is unavailable or cannot be decrypted."' in launcher
     trap_start = launcher.index('trap {')
-    trap_end = launcher.index('\n}\n\n$App', trap_start) + 2
-    assert launcher[trap_start:trap_end].rstrip().endswith('exit 0\n}')
+    trap_end = launcher.index('\n}\n\n$script:LauncherPhase', trap_start) + 2
+    assert launcher[trap_start:trap_end].rstrip().endswith('exit 78\n}')
     assert "Set-ScheduledTask" not in helper
     assert "New-ScheduledTaskAction" not in helper
 
@@ -469,7 +493,7 @@ def test_super1_launcher_credential_gate_decrypt_failure_is_fatal_and_does_not_s
     gate_end = launcher.index("\n\n    if (Test-Path", gate_start)
     credential_gate = launcher[gate_start:gate_end]
     trap_start = launcher.index("trap {")
-    trap_end = launcher.index("\n}\n\n$App", trap_start) + 2
+    trap_end = launcher.index("\n}\n\n$script:LauncherPhase", trap_start) + 2
     trap_block = launcher[trap_start:trap_end]
     cleanup_start = launcher.rfind("finally {")
     cleanup_block = launcher[cleanup_start:].strip()
@@ -522,7 +546,7 @@ if (-not (Test-Path -LiteralPath '{runtime_marker}' -PathType Leaf)) {{
     output = completed.stdout + completed.stderr
     failure_path = tmp_path / "state" / "launcher_failure.json"
     health_path = tmp_path / "state" / "health.json"
-    assert completed.returncode == 0
+    assert completed.returncode == 78
     assert not (tmp_path / "runtime-started.txt").exists()
     assert (tmp_path / "cleanup-completed.txt").exists()
     failure = json.loads(failure_path.read_text(encoding="utf-8"))
@@ -532,8 +556,8 @@ if (-not (Test-Path -LiteralPath '{runtime_marker}' -PathType Leaf)) {{
     assert health["state"] == "CRITICAL_STOP"
     assert health["last_cycle"]["execution"]["state"] == "LAUNCHER_FATAL_NO_SEND"
     helper = text("super1_secure_task.ps1")
-    assert "[int]$main.Settings.RestartCount -ne 999" in helper
-    assert "$mainRestartInterval -ne [TimeSpan]::FromMinutes(1)" in helper
+    assert "[int]$main.Settings.RestartCount -ne 0" in helper
+    assert "$mainRestartInterval -ne [TimeSpan]::FromMinutes(15)" in helper
     assert "LauncherExitCode" not in launcher
     assert invalid_credential not in output
     assert "fixture-marker" not in output
@@ -549,14 +573,15 @@ def test_super1_task_contract_freezes_password_task_and_canonicalizes_watchdog()
     helper = text("super1_secure_task.ps1")
 
     assert "function Assert-Super1SecureTaskBindings" in helper
-    assert '[string]$mainActions[0].Execute -cne "powershell.exe"' in helper
+    assert '$script:Super1SecurePowerShellExe' in helper
     assert '[string]$main.Principal.LogonType -cne "Password"' in helper
     assert '[string]$main.Principal.RunLevel -cne "Limited"' in helper
-    assert "[int]$main.Settings.RestartCount -ne 999" in helper
+    assert "[int]$main.Settings.RestartCount -ne 0" in helper
     assert '[string]$watchdog.Principal.LogonType -cne "ServiceAccount"' in helper
     assert '[string]$watchdog.Principal.RunLevel -cne "Highest"' in helper
-    assert "[int]$watchdog.Settings.RestartCount -ne 3" in helper
-    assert 'CimClassName -cne "MSFT_TaskBootTrigger"' in helper
+    assert "[int]$watchdog.Settings.RestartCount -ne 0" in helper
+    assert "function Assert-Super1SecureNoTriggers" in helper
+    assert "$triggers.Count -ne 0" in helper
     assert "function Get-Super1SecureMarketScheduleState" in helper
 
 
@@ -644,8 +669,9 @@ def test_super1_upgrade_pins_and_hardens_python_terminal_and_config() -> None:
     assert "if ($originalMainTaskXml -and $runnerSid -and $expectedMainArguments)" in source
     assert "[Convert]::ToBase64String(" in source
     assert 'json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))' in source
-    assert '"xm-server.txt"' in source
-    assert '"xm-password.dpapi"' in source
+    assert 'super1_xm_mt5_demo_config.json' in source
+    assert '"xm-server.txt"' not in source
+    assert "xm-password.dpapi" in source
     assert 'terminal_runtime_pin.json' in source
     assert 'powershell_runtime_pin.json' in source
     assert "PowerShellHostSha256" in source
@@ -661,13 +687,13 @@ def test_super1_upgrade_pins_and_hardens_python_terminal_and_config() -> None:
     assert '$script:LauncherPhase = "SECURE_HELPER_GATE"' in launcher
     assert "Get-AuthenticodeSignature" not in launcher
     assert 'state\\launcher_failure.json' in launcher
-    assert launcher.index('$failureJson = [ordered]@{') < launcher.index('$fatalJson = (')
+    assert launcher.index('$failureJson = [ordered]@{') < launcher.index('$fatalJson = [ordered]@{')
     assert 'catch {' in launcher
     assert '$script:LauncherPhase = "BROKER_CREDENTIAL_FATAL"' in launcher
     assert 'LauncherExitCode' not in launcher
     trap_start = launcher.index('trap {')
-    trap_end = launcher.index('\n}\n\n$App', trap_start) + 2
-    assert launcher[trap_start:trap_end].rstrip().endswith('exit 0\n}')
+    trap_end = launcher.index('\n}\n\n$script:LauncherPhase', trap_start) + 2
+    assert launcher[trap_start:trap_end].rstrip().endswith('exit 78\n}')
     assert 'BROKER_SAVED_SESSION' not in launcher
     assert 'launcher_phase=$launcherPhase' in text("check_super1_flat_windows.ps1")
 
@@ -761,24 +787,26 @@ def test_release_integrity_validates_entries_and_rejects_credentials_and_source_
 
 def test_fresh_super1_install_is_manual_and_new_york_window_guarded() -> None:
     finalize = text("finalize_super1_fresh_windows.ps1")
-    watchdog_installer = text("install_watchdog_windows.ps1")
+    watchdog_installer = text("install_super1_watchdog_windows.ps1")
     start = text("start_super1_local_windows.ps1")
     stop = text("stop_super1_local_windows.ps1")
 
     assert "New-ScheduledTaskTrigger -AtLogOn" not in finalize
     assert "Start-ScheduledTask -TaskName $TaskName" not in finalize
-    assert "-ManualStart" in finalize
-    assert "Super1 Baslat.lnk" in finalize
-    assert "Super1 Durdur.lnk" in finalize
-    assert "[switch]$ManualStart" in watchdog_installer
-    assert "if ($ManualStart)" in watchdog_installer
+    assert "-ManualStart" not in finalize
+    assert "install_super1_watchdog_windows.ps1" in finalize
+    assert "Register-ScheduledTask" in finalize
+    assert "-RestartCount 0" in watchdog_installer
+    assert "-RestartCount 999" not in watchdog_installer
+    assert "Start-ScheduledTask" not in watchdog_installer
     assert 'FindSystemTimeZoneById("Eastern Standard Time")' in start
     assert 'ParseExact("09:20"' in start
     assert 'ParseExact("13:00"' in start
-    assert 'Start-ScheduledTask -TaskName $TaskName' in start
-    assert 'Stop-ScheduledTask -TaskName "Super1Watchdog"' in stop
-    assert 'Stop-ScheduledTask -TaskName "Super1XM"' in stop
-    assert 'ExecutablePath -eq "C:\\Super1\\mt5\\terminal64.exe"' in stop
+    assert 'Start-ScheduledTask -TaskName $taskName' in start
+    assert 'Stop-ScheduledTask -TaskName $taskName' in stop
+    assert 'Contract.watchdog_task' in stop
+    assert 'ExecutablePath -ceq $terminal' in stop
+    assert 'Contract.terminal' in stop
 
 
 def test_fresh_super1_bootstrap_accepts_only_complete_cpython311() -> None:

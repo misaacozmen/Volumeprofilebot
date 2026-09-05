@@ -51,9 +51,16 @@ SCRIPT_PATH = Path(__file__).resolve()
 HARNESS_PATHS = (SCRIPT_PATH,)
 LEG_ORDER = ("nq", "spx")
 REQUIRED_ENV = ("CAPITAL_IDENTIFIER", "CAPITAL_API_KEY", "CAPITAL_API_PASSWORD")
+CREDENTIAL_PROVIDER: Any | None = None
 
 
 class CriticalLiveError(RuntimeError):
+    pass
+
+
+class UnsafeStopError(CriticalLiveError):
+    """Graceful shutdown could not prove broker-side safety."""
+
     pass
 
 
@@ -243,6 +250,7 @@ def campaign_lock(output_root: Path) -> dict[str, Any]:
     path = output_root / "campaign_lock.json"
     expected = {
         "schema_version": 1,
+        "campaign_id": None,
         "created_at": None,
         "parent_baseline_sha256": parent["baseline_manifest_sha256"],
         "engine_code_hash": parent["engine_manifest"]["code_hash"],
@@ -256,22 +264,32 @@ def campaign_lock(output_root: Path) -> dict[str, Any]:
         "execution": runtime["execution"],
     }
     if runtime["feed"] == "XM_MT5":
-        server = os.environ.get("XM_MT5_SERVER", "").strip()
-        if not server:
-            raise CriticalLiveError("XM_MT5_SERVER is required before the campaign can be locked.")
+        server = str(runtime.get("expected_server") or "").strip()
+        supplied_server = os.environ.get("XM_MT5_SERVER", "").strip()
+        if not server or (supplied_server and supplied_server != server):
+            raise CriticalLiveError("XM broker identity must come from the signed runtime config.")
         expected["account_login"] = int(runtime["account_login"])
         expected["server"] = server
     if not path.exists():
+        expected["campaign_id"] = str(uuid4())
         expected["created_at"] = utc_now().isoformat()
         write_new_json(path, expected)
         return expected
     current = read_json(path)
+    if not isinstance(current.get("campaign_id"), str) or not current["campaign_id"].strip():
+        raise CriticalLiveError("Existing campaign lock has no campaign_id; start a new clean state.")
+    expected["campaign_id"] = current["campaign_id"]
     if {**current, "created_at": None} != expected:
         raise CriticalLiveError("Campaign code/config/selector lock changed; start a clean forward period.")
     return current
 
 
 def credentials() -> dict[str, str] | None:
+    if callable(CREDENTIAL_PROVIDER):
+        provided = CREDENTIAL_PROVIDER()
+        if provided is None:
+            return None
+        return {str(key): str(value) for key, value in provided.items()}
     values = {name: os.environ.get(name, "").strip() for name in REQUIRED_ENV}
     if not all(values.values()):
         return None
@@ -1435,6 +1453,15 @@ def assert_no_fatal_latch(output_root: Path) -> None:
 def write_health(output_root: Path, state: str, **details: object) -> None:
     path = health_path(output_root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if "lease_id" not in details:
+        lease_path = Path(output_root).resolve().parent / "control" / "session-lease.json"
+        try:
+            lease = read_json(lease_path)
+            if lease.get("state") == "ACTIVE":
+                details["lease_id"] = str(lease.get("lease_id") or "")
+                details["campaign_id"] = str(lease.get("campaign_id") or "")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     temp = path.with_suffix(".tmp")
     temp.write_text(
         json.dumps(
@@ -1447,6 +1474,20 @@ def write_health(output_root: Path, state: str, **details: object) -> None:
         encoding="utf-8",
     )
     temp.replace(path)
+
+
+def stop_request_path(output_root: Path) -> Path:
+    return Path(output_root).resolve().parent / "control" / "stop-request.json"
+
+
+def read_stop_request(output_root: Path) -> dict[str, Any] | None:
+    path = stop_request_path(output_root)
+    if not path.exists():
+        return None
+    request = read_json(path)
+    if not isinstance(request, dict) or not request.get("request_id") or not request.get("reason"):
+        raise UnsafeStopError("Stop request is malformed; refusing to continue or send.")
+    return request
 
 
 def touch_health(output_root: Path, phase: str) -> None:
@@ -1602,16 +1643,13 @@ def _cancel_for_stop(
     *,
     require_readback: bool = False,
 ) -> list[dict[str, object]]:
-    emergency = getattr(client, "cancel_all_pending", None)
-    if not callable(emergency):
-        if not require_readback:
-            return []
-        exc = CriticalLiveError("Order transport client cannot perform pending-order readback.")
-        _raise_unsafe_cancel_failure(output_root, reason, exc)
-    try:
-        return list(emergency(output_root, reason))
-    except Exception as exc:
-        _raise_unsafe_cancel_failure(output_root, reason, exc)
+    details = _graceful_stop(
+        output_root,
+        client,
+        reason,
+        require_readback=require_readback,
+    )
+    return list(details.get("cancelled", []))
 
 
 def _raise_unsafe_cancel_failure(output_root: Path, reason: str, exc: Exception) -> None:
@@ -1632,6 +1670,57 @@ def _raise_unsafe_cancel_failure(output_root: Path, reason: str, exc: Exception)
     raise CriticalLiveError(
         f"Pending-order cancellation/readback could not be verified; fatal latch: {latch}"
     ) from exc
+
+
+def _raise_unsafe_stop_failure(output_root: Path, reason: str, exc: Exception) -> None:
+    latch = write_fatal_latch(
+        output_root,
+        "UNSAFE_STOP_NO_SEND",
+        str(exc),
+        shutdown_reason=reason,
+        error_type=type(exc).__name__,
+    )
+    write_health(
+        output_root,
+        "UNSAFE_STOP_NO_SEND",
+        error=str(exc),
+        fatal_latch=str(latch),
+        order_transport_present=True,
+    )
+    raise UnsafeStopError(
+        f"Safe stop could not be proven; fatal latch: {latch}"
+    ) from exc
+
+
+def _graceful_stop(
+    output_root: Path,
+    client: CapitalDemoClient | None,
+    reason: str,
+    *,
+    require_readback: bool,
+) -> dict[str, object]:
+    emergency = getattr(client, "cancel_all_pending", None)
+    if not callable(emergency):
+        if require_readback:
+            _raise_unsafe_stop_failure(
+                output_root,
+                reason,
+                CriticalLiveError("Order transport client cannot reconcile pending orders."),
+            )
+        return {"cancelled": [], "safe_stop": "PASS", "owned_pending": 0, "open_positions": 0}
+    try:
+        cancelled = list(emergency(output_root, reason))
+        reconcile = getattr(client, "stop_reconciliation", None)
+        if not callable(reconcile):
+            raise CriticalLiveError("Order transport client cannot reconcile final positions.")
+        details = dict(reconcile(output_root, reason))
+        details["cancelled"] = cancelled
+        if str(details.get("safe_stop")) != "PASS":
+            raise CriticalLiveError(f"Broker exposure remained unsafe: {details}")
+        return details
+    except Exception as exc:
+        _raise_unsafe_stop_failure(output_root, reason, exc)
+        raise AssertionError("unreachable")
 
 
 def _cancel_for_recovery(
@@ -1725,8 +1814,19 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
     active_client: CapitalDemoClient | None = None
     try:
         while not _STOP_EVENT.is_set():
+            stop_request = read_stop_request(output_root)
             secrets = credentials()
             if secrets is None:
+                if stop_request is not None:
+                    write_health(
+                        output_root,
+                        "UNSAFE_STOP_NO_SEND",
+                        reason=stop_request.get("reason"),
+                        error="Credentials unavailable for broker-side stop reconciliation.",
+                        order_transport_present=transport,
+                    )
+                    _STOP_EVENT.wait(5)
+                    continue
                 recovery_required = transport and broker_recovery_path(output_root).exists()
                 write_health(
                     output_root,
@@ -1742,6 +1842,24 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
             active_client = None
             try:
                 active_client = CapitalDemoClient(runtime, secrets)
+                stop_request = read_stop_request(output_root)
+                if stop_request is not None:
+                    stop_details = _graceful_stop(
+                        output_root,
+                        active_client,
+                        str(stop_request["reason"]),
+                        require_readback=transport,
+                    )
+                    write_health(
+                        output_root,
+                        "STOPPED",
+                        reason=stop_request["reason"],
+                        request_id=stop_request["request_id"],
+                        lease_id=stop_request.get("lease_id"),
+                        **stop_details,
+                        order_transport_present=transport,
+                    )
+                    return
                 if transport and broker_recovery_path(output_root).exists():
                     recovery = _cancel_for_recovery(
                         output_root,
@@ -1990,6 +2108,11 @@ def daily_health(args: argparse.Namespace) -> None:
 def initialize(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).resolve()
     lock = campaign_lock(output_root)
+    initialize_ledger = getattr(CapitalDemoClient, "_initialize_order_db", None)
+    if callable(initialize_ledger):
+        # The ledger schema is created without constructing a broker session or
+        # sending any order.  This makes a fresh campaign readiness-checkable.
+        initialize_ledger(CapitalDemoClient.__new__(CapitalDemoClient), output_root)
     write_health(
         output_root,
         "INITIALIZED",
@@ -2018,6 +2141,11 @@ def parser() -> argparse.ArgumentParser:
     output_name = "xm_mt5_forward" if runtime["feed"] == "XM_MT5" else "capital_forward"
     root = argparse.ArgumentParser(description=f"{provider} closed-bar causal forward shadow daemon.")
     root.add_argument("--output-root", default=str(ROOT / "outputs" / output_name / "nq3m_spx5m"))
+    root.add_argument(
+        "--credential-stdin",
+        action="store_true",
+        help="Read a transient broker password from stdin; never use an environment variable for it.",
+    )
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("init")
     sub.add_parser("daemon")

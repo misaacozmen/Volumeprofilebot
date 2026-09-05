@@ -170,14 +170,30 @@ def test_smoke_binds_launcher_scalar_and_result_hash_to_producer() -> None:
 def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
     commands_for_smoke = commands("run_super1_demo_smoke_windows.ps1")
     seal = next(item for item in commands_for_smoke if item["name"] == "Seal-Super1SecureEvidenceTree")
-    restart = next(item for item in commands_for_smoke if item["name"] == "Start-ScheduledTask" and item["start"] > seal["start"])
+    restart = next(
+        item for item in commands_for_smoke
+        if item["name"] == "Join-Path"
+        and "start_super1_local_windows.ps1" in item["text"]
+        and item["start"] > seal["start"]
+    )
     assert seal["start"] < restart["start"]
-    assignments = {item["left"] for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "assignment")}
-    members = {item["member"] for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "member")}
-    assert "$restartStarted" in assignments and "LastWriteTimeUtc" in members
+    stop_commands = [
+        item for item in commands_for_smoke
+        if item["name"] == "Join-Path" and "stop_super1_local_windows.ps1" in item["text"]
+    ]
+    assert stop_commands
+    assert "Start-ScheduledTask" not in (
+        DEPLOY / "run_super1_demo_smoke_windows.ps1"
+    ).read_text(encoding="utf-8")
+    smoke_source = (DEPLOY / "run_super1_demo_smoke_windows.ps1").read_text(encoding="utf-8")
+    assert "$restartStarted" in smoke_source
+    assert "healthUpdatedAt -le $restartStarted" in smoke_source
+    assert "watchdogUpdatedAt -le $restartStarted" in smoke_source
     conditions = "\n".join(str(clause["condition"]) for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "if") for clause in item["clauses"])
-    assert 'state -eq "RUNNING"' in conditions and 'state -eq "HEALTHY"' in conditions
-    assert "main_task" in conditions
+    assert 'state -ne "RUNNING"' in smoke_source
+    assert 'state -notin @("HEALTHY", "WAITING_MANUAL_LEASE")' in smoke_source
+    assert "Get-ScheduledTask -TaskName $MainTask" in smoke_source
+    assert conditions
 
 
 def test_builder_and_integrity_use_v16_baselines() -> None:
@@ -228,15 +244,15 @@ def test_release_integrity_requires_provenance_and_normalized_manifest_paths() -
     assert "files" in {item["member"] for item in facts(path, "member")}
     assert "test_v16_deployment_contract.py" in artifact_validator["extent_text"]
     assert any(item["name"] == "Assert-ReleaseArtifactTestFiles" and item["scope"] == "function:Assert-SignedReleaseArchive" for item in facts(path, "command"))
-    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}"
+    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}"
     cases = [
         (correct, 0),
         ("@{}", 1),
         ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','extra.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','test_v16_deployment_contract.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py','TEST_V16_DEPLOYMENT_CONTRACT.PY')}", 1),
-        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','extra.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','test_v16_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','TEST_V16_DEPLOYMENT_CONTRACT.PY')}", 1),
+        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}", 1),
     ]
     script = "function Assert-ReleaseArtifactTestFiles" + artifact_validator["extent_text"].split("function Assert-ReleaseArtifactTestFiles", 1)[1] + "\n"
     script += "function Invoke-ArtifactCase([object]$m){try{Assert-ReleaseArtifactTestFiles -Manifest $m; return 0}catch{return 1}}\n"

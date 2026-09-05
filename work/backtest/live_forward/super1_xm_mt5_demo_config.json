@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "environment": "XM_MT5_DEMO_ORDER",
+  "account_mode": "DEMO_ORDER",
+  "account_login": [REDACTED,
+  "feed": "XM_MT5",
+  "timezone": "America/New_York",
+  "closed_bar_delay_seconds": 8,
+  "poll_seconds": 30,
+  "history_days": 10,
+  "execution": "MT5_DEMO_ORDERS",
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "pair_cap_r": -1.0,
+  "manual_required": false,
+  "terminal_path": "C:\\Super1\\mt5\\terminal64.exe",
+  "portable": true,
+  "expected_company": "XM Global Limited",
+  "expected_server": "XMGlobal-MT5 2",
+  "magic_number": 260805101,
+  "order_comment_prefix": "SUPER1",
+  "target": "LOCAL_WINDOWS_PC",
+  "isolation_required": true,
+  "demo_order_execution_enabled": true,
+  "real_money_live_enabled": false,
+  "real_money_execution_allowed": false,
+  "daily_manual_start_required": true,
+  "unattended_execution_allowed": false,
+  "candidate_path": "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
+  "candidate_file_sha256": "ea86920354d9c3a92b2961b30834d32a006b245a7c093f41929efa7556e6a6ee",
+  "candidate_artifact_sha256": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
+  "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
+  "signal_contract_sha256": "32db5b2fb7dd1941798e198fbfcc18cf9de6883102a8bfa87e5ceb39bb14e31b",
+  "rth_session_calendar": {
+    "path": "live_forward/calendars/us_equity_rth_2026.json",
+    "sha256": "9aeeece3ec255fc0392cdc74baeef4de9751384bf4f67d906199aa16139cf830",
+    "calendar_id": "US_EQUITY_RTH_2026"
+  },
+  "deviation_points": 20,
+  "base_risk_percent": 1.0,
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1,
+    "terminal_history_days": 365
+  },
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "entry_weekday": "Monday",
+        "direction": "short"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "market_schedule_ny": {
+    "timezone": "America/New_York",
+    "weekly_open_sunday": "21:00",
+    "weekly_close_friday": "20:00",
+    "daily_breaks": [
+      [
+        "20:00",
+        "21:00"
+      ]
+    ],
+    "planned_closures": [],
+    "evidence": "discover_super1_xm_account.py"
+  },
+  "legs": {
+    "nq": {
+      "epic": "US100Cash",
+      "symbol": "XM_MT5_US100CASH_SUPER1",
+      "timeframe": "3m"
+    },
+    "spx": {
+      "epic": "US500Cash",
+      "symbol": "XM_MT5_US500CASH_SUPER1",
+      "timeframe": "5m"
+    }
+  },
+  "htf": "15m"
+}

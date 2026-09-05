@@ -10,6 +10,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
 $OriginalPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
@@ -41,13 +43,13 @@ if (-not (Test-Path -LiteralPath $ScheduledTasksModule -PathType Leaf)) {
 }
 Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
 
-$Root = [IO.Path]::GetFullPath("C:\Super1")
-$App = [IO.Path]::GetFullPath((Join-Path $Root "app"))
-$State = [IO.Path]::GetFullPath((Join-Path $Root "state"))
+$Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
+$App = [IO.Path]::GetFullPath([string]$RuntimeContract.app)
+$State = [IO.Path]::GetFullPath([string]$RuntimeContract.state)
 $ArchiveRoot = [IO.Path]::GetFullPath((Join-Path $Root "archive"))
-$Python = [IO.Path]::GetFullPath((Join-Path $Root "venv311\Scripts\python.exe"))
-$MainTask = "Super1XM"
-$WatchdogTask = "Super1Watchdog"
+$Python = [IO.Path]::GetFullPath([string]$RuntimeContract.python)
+$MainTask = [string]$RuntimeContract.main_task
+$WatchdogTask = [string]$RuntimeContract.watchdog_task
 $RunScript = [IO.Path]::GetFullPath((Join-Path $Root "app\deploy\run_super1_windows.ps1"))
 $TrustedScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\rollover_super1_campaign_windows.ps1"))
 $CurrentScript = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
@@ -67,9 +69,9 @@ if (-not (Test-Path -LiteralPath $FailureHelper -PathType Leaf) -or
 }
 . $FailureHelper
 $InternalFlatScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\check_super1_flat_windows.ps1"))
-$ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
+$ProbeControl = [IO.Path]::GetFullPath([string]$RuntimeContract.control)
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
-$TerminalPin = [IO.Path]::GetFullPath((Join-Path $App "deploy\terminal_runtime_pin.json"))
+$TerminalPin = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.runtime_trust) "terminal_runtime_pin.json"))
 $CapitalCandidate = [IO.Path]::GetFullPath((Join-Path $Root "run_capital_forward.py.candidate"))
 $CapitalTarget = [IO.Path]::GetFullPath((Join-Path $Root "app\scripts\run_capital_forward.py"))
 $XmCandidate = [IO.Path]::GetFullPath((Join-Path $Root "run_xm_mt5_forward.py.candidate"))
@@ -174,7 +176,7 @@ function Assert-FrozenSuper1TaskContracts {
 Assert-Super1SecureDirectoryAcl -Path $ArchiveRoot
 Assert-Super1SecureDirectoryAcl -Path $ProbeControl -RunnerSid $runnerSid
 if (Test-Path -LiteralPath $ProbeRequest) {
-    throw "Super1 probe-control already contains an active request."
+    throw "Super1 control directory already contains an active request."
 }
 Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask
 
@@ -320,11 +322,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $runtime = Get-Content -LiteralPath $RuntimeCandidate -Raw | ConvertFrom-Json
-if (
-    [int]$runtime.account_login -ne [REDACTED -or
+if ([int]$runtime.account_login -le 0 -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
-    [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
-) {
+    [string]::IsNullOrWhiteSpace([string]$runtime.expected_company) -or
+    [string]$runtime.environment -cne "XM_MT5_DEMO_ORDER") {
     throw "Super1 staged runtime has an unexpected broker identity."
 }
 $readinessPattern = '^' + [regex]::Escape($ArchiveRoot) +

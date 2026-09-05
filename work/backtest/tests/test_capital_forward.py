@@ -639,6 +639,15 @@ def test_unknown_broker_state_recovers_before_next_cycle_without_fatal_latch(
             del request
             type(self).send_count += 1
 
+        def stop_reconciliation(self, output_root, reason):
+            del output_root, reason
+            return {
+                "safe_stop": "PASS",
+                "owned_pending": 0,
+                "open_positions": 0,
+                "unknown_exposure": 0,
+            }
+
         def close(self) -> None:
             pass
 
@@ -706,7 +715,7 @@ def test_shutdown_cancel_readback_failure_remains_fatal(tmp_path) -> None:
         raise AssertionError("Controlled shutdown accepted an unverified broker readback.")
 
     latch = MODULE.read_json(MODULE.fatal_latch_path(tmp_path))
-    assert latch["state"] == "UNSAFE_OPEN_ORDERS"
+    assert latch["state"] == "UNSAFE_STOP_NO_SEND"
     assert latch["shutdown_reason"] == "SIGNAL_SHUTDOWN_VERIFY"
 
 

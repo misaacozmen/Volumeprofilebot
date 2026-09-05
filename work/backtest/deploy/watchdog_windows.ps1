@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$HealthPath,
     [Parameter(Mandatory = $true)]
-    [string]$ProcessPattern,
+    [string]$ProcessPattern = "",
     [Parameter(Mandatory = $true)]
     [string]$StatusPath,
     [int]$PollSeconds = 60,
@@ -18,6 +18,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
+$CanonicalRunner = [string]$RuntimeContract.python
+$CanonicalHarness = [string](Join-Path ([string]$RuntimeContract.app) "scripts\run_super1_xm_mt5_forward.py")
+$CanonicalTerminal = [string]$RuntimeContract.terminal
+$LeasePath = Join-Path ([string]$RuntimeContract.control) "session-lease.json"
+$ConfigPath = Join-Path ([string]$RuntimeContract.app) ([string]$RuntimeContract.runtime_config)
+$ManifestPath = Join-Path ([string]$RuntimeContract.app) ([string]$RuntimeContract.manifest)
+$CanonicalState = [string]$RuntimeContract.state
+$RestartBudgetLatchPath = Join-Path ([string]$RuntimeContract.state) "RESTART_BUDGET_EXHAUSTED_NO_SEND.json"
+$RunnerAccount = [string]$RuntimeContract.runner_account
 Add-Type -AssemblyName System.Security
 $restartHistory = [System.Collections.Generic.List[DateTimeOffset]]::new()
 $deliveredTelegramKeys = [System.Collections.Generic.HashSet[string]]::new(
@@ -44,6 +55,11 @@ $TelegramAlertStates = @(
     "ALARM_BROKER_UNKNOWN",
     "ALARM_DATA_INVALID",
     "ALARM_RESTART_LOOP"
+)
+$AllowedMainHealthStates = @(
+    "RUNNING", "RETRYING", "WAITING_CREDENTIALS", "STOPPED", "INITIALIZED",
+    "CAMPAIGN_WARMUP", "CRITICAL_STOP", "UNSAFE_OPEN_ORDERS", "UNSAFE_STOP_NO_SEND",
+    "UNKNOWN_NO_SEND"
 )
 
 function Write-JsonAtomically {
@@ -514,6 +530,49 @@ function Read-HealthRecord {
     }
 }
 
+function Read-Super1ActiveLease {
+    if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) { return $null }
+    try {
+        $lease = Get-Content -LiteralPath $LeasePath -Raw | ConvertFrom-Json
+        $now = [DateTimeOffset]::UtcNow
+        $expires = [DateTimeOffset]::Parse([string]$lease.expires_at_utc).ToUniversalTime()
+        if ([string]$lease.state -cne "ACTIVE" -or $expires -le $now) { return $null }
+        if ([string]$lease.machine_binding -cne $env:COMPUTERNAME.ToUpperInvariant()) { return $null }
+        $configHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $manifestHash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([string]$lease.config_sha256 -cne $configHash -or
+            [string]$lease.app_manifest_sha256 -cne $manifestHash -or
+            [string]$lease.mode -cne "DEMO_ORDER") { return $null }
+        return $lease
+    }
+    catch { return $null }
+}
+
+function Get-Super1ExactRunnerProcesses {
+    $runnerSid = $null
+    try {
+        $runnerSid = (New-Object Security.Principal.NTAccount("$env:COMPUTERNAME\$RunnerAccount")).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+    catch { return @() }
+    $matches = @()
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+        if ([string]$process.ExecutablePath -cne $CanonicalRunner -or
+            [string]$process.CommandLine -notmatch [regex]::Escape($CanonicalRunner) -or
+            [string]$process.CommandLine -notmatch [regex]::Escape($CanonicalHarness) -or
+            [string]$process.CommandLine -notmatch [regex]::Escape($CanonicalState)) { continue }
+        try {
+            $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction Stop
+            $account = if ([string]$owner.Domain) { "$($owner.Domain)\$($owner.User)" } else { [string]$owner.User }
+            $sid = (New-Object Security.Principal.NTAccount($account)).Translate([Security.Principal.SecurityIdentifier]).Value
+            if ($sid -ceq $runnerSid) { $matches += $process }
+        }
+        catch { }
+    }
+    return @($matches)
+}
+
 function Write-WatchdogRecord {
     param([hashtable]$Record)
 
@@ -572,7 +631,21 @@ function Restart-MainTask {
 
     $now = [DateTimeOffset]::UtcNow
     Prune-RestartHistory -Now $now
+    if ($null -eq (Read-Super1ActiveLease)) {
+        return [pscustomobject]@{ Restarted = $false; State = "WAITING_MANUAL_LEASE"; Detail = "$Reason; no active manual lease" }
+    }
+    if (Test-Path -LiteralPath $RestartBudgetLatchPath -PathType Leaf) {
+        return [pscustomobject]@{ Restarted = $false; State = "RESTART_BUDGET_EXHAUSTED_NO_SEND"; Detail = "Persistent restart-budget latch is set." }
+    }
     if ($restartHistory.Count -ge $MaximumRestarts) {
+        Write-JsonAtomically -Path $RestartBudgetLatchPath -Value @{
+            schema_version = 1
+            state = "RESTART_BUDGET_EXHAUSTED_NO_SEND"
+            restart_count = $restartHistory.Count
+            restart_window_minutes = $RestartWindowMinutes
+            updated_at_utc = $now.ToString("o")
+            reason = $Reason
+        }
         return [pscustomobject]@{
             Restarted = $false
             State = "ALARM_RESTART_LOOP"
@@ -580,16 +653,22 @@ function Restart-MainTask {
         }
     }
 
-    Stop-ScheduledTask -TaskName $MainTaskName -ErrorAction SilentlyContinue
-    Get-CimInstance Win32_Process |
-        Where-Object {
-            $_.Name -like "python*.exe" -and
-            $_.CommandLine -like "*$ProcessPattern*" -and
-            $_.ProcessId -ne $PID
-        } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 2
-    Start-ScheduledTask -TaskName $MainTaskName
+    $mutex = [Threading.Mutex]::new($false, [string]$RuntimeContract.order_mutex)
+    $held = $false
+    try {
+        $held = $mutex.WaitOne(30000)
+        if (-not $held) { return [pscustomobject]@{ Restarted = $false; State = "UNKNOWN_NO_SEND"; Detail = "Could not acquire order transport mutex." } }
+        Stop-ScheduledTask -TaskName $MainTaskName -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        if (@(Get-Super1ExactRunnerProcesses).Count -ne 0) {
+            return [pscustomobject]@{ Restarted = $false; State = "UNKNOWN_NO_SEND"; Detail = "Existing exact Runner process did not stop gracefully." }
+        }
+        Start-ScheduledTask -TaskName $MainTaskName
+    }
+    finally {
+        if ($held) { [void]$mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
     $restartHistory.Add($now)
     Save-RestartHistory
     return [pscustomobject]@{
@@ -608,17 +687,11 @@ while ($true) {
     try {
         Prune-RestartHistory -Now $observed
         Invoke-TelegramOutboxDelivery | Out-Null
+        $lease = Read-Super1ActiveLease
         $task = Get-ScheduledTask -TaskName $MainTaskName
         $taskInfo = Get-ScheduledTaskInfo -TaskName $MainTaskName
         $taskState = $task.State.ToString()
-        $processes = @(
-            Get-CimInstance Win32_Process |
-                Where-Object {
-                    $_.Name -like "python*.exe" -and
-                    $_.CommandLine -like "*$ProcessPattern*" -and
-                    $_.ProcessId -ne $PID
-                }
-        )
+        $processes = @(Get-Super1ExactRunnerProcesses)
         $health = Read-HealthRecord
         $healthState = if ($null -eq $health) { "MISSING" } else { [string]$health.state }
         $executionState = if ($null -eq $health) { "" } else { [string]$health.last_cycle.execution.state }
@@ -631,7 +704,17 @@ while ($true) {
         $state = "HEALTHY"
         $action = "NONE"
         $detail = "main task and heartbeat are healthy"
-        if ($healthState -in @("CRITICAL_STOP", "UNSAFE_OPEN_ORDERS")) {
+        if ($null -eq $lease) {
+            $state = "WAITING_MANUAL_LEASE"
+            $action = "NONE"
+            $detail = "No active manual lease; automatic restart is disabled."
+        }
+        elseif ($healthState -and $healthState -notin $AllowedMainHealthStates) {
+            $state = "UNKNOWN_NO_SEND"
+            $action = "NONE"
+            $detail = "Main health state is outside the allowlist: $healthState"
+        }
+        elseif ($healthState -in @("CRITICAL_STOP", "UNSAFE_OPEN_ORDERS", "UNSAFE_STOP_NO_SEND")) {
             $state = "ALARM_CRITICAL"
             $detail = [string]$health.error
         }
@@ -709,7 +792,9 @@ while ($true) {
 
         Write-WatchdogRecord @{
             schema_version = 1
-            observed_at_utc = $observed.ToString("o")
+             observed_at_utc = $observed.ToString("o")
+             updated_at_utc = $observed.ToString("o")
+             lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
             state = $state
             action = $action
             detail = $detail

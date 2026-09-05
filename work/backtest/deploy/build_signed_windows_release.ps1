@@ -174,7 +174,7 @@ try {
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
     }
-    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v16_deployment_contract.py")
+    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_super1_runtime_hardening.py", "test_check_mt5_flat.py", "test_v16_deployment_contract.py")
     $artifactTestRoot = Join-Path $Stage "artifact_tests"
     New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
     foreach ($testFile in $artifactTestFiles) {
@@ -295,7 +295,7 @@ try {
     $artifactPytestPassCount = [int]$artifactGate.pass_count
     $artifactPytestSkippedCount = [int]$artifactGate.skipped_count
     $artifactPytestNodeIdSha256 = [string]$artifactGate.nodeid_sha256
-    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v16_deployment_contract.py --junitxml=<artifact-suite>"
+    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_super1_runtime_hardening.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v16_deployment_contract.py --junitxml=<artifact-suite>"
     $artifactPytestPassed = ($artifactPytestSkippedCount -eq 0 -and $artifactPytestPassCount -eq $artifactPytestCollectedCount)
     $lockedDependencies = @($lockLines)
     Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force
@@ -349,18 +349,31 @@ try {
     }
     else {
         $requiredPayloadFiles += @(
+            "deploy/bootstrap_super1_fresh_windows.ps1",
             "deploy/check_super1_flat_windows.ps1",
+            "deploy/finalize_super1_fresh_windows.ps1",
+            "deploy/install_super1_windows.ps1",
+            "deploy/install_super1_watchdog_windows.ps1",
+            "deploy/recover_super1_isolated_user.ps1",
             "deploy/rollover_super1_campaign_windows.ps1",
             "deploy/run_super1_windows.ps1",
             "deploy/run_super1_demo_smoke_windows.ps1",
+            "deploy/resume_super1_fresh_windows.ps1",
             "deploy/stage_signed_upgrader_windows.ps1",
             "deploy/super1_secure_task.ps1",
+            "deploy/super1_runtime_contract.ps1",
+            "deploy/super1_binding_proof.ps1",
+            "deploy/stop_super1_local_windows.ps1",
+            "deploy/start_super1_local_windows.ps1",
+            "deploy/test_super1_local_readiness.ps1",
             "deploy/upgrade_super1_signed_app_windows.ps1",
             "live_forward/super1_xm_mt5_demo_config.json",
             "research_candidates/super1/super1_manifest.json",
             "research_candidates/super1/super1_signal_contract.json",
             "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
-            "scripts/run_super1_xm_mt5_forward.py"
+            "scripts/run_super1_xm_mt5_forward.py",
+            "scripts/super1_runtime_guard.py",
+            "scripts/discover_super1_xm_account.py"
         )
         $requiredPayloadFiles += $Super1ProvenanceFiles
     }

@@ -1,13 +1,15 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$Contract = Assert-Super1RuntimeContract
 
-$Root = "C:\Super1"
-$App = Join-Path $Root "app"
-$Python = Join-Path $Root "venv311\Scripts\python.exe"
+$Root = [string]$Contract.root
+$App = [string]$Contract.app
+$Python = [string]$Contract.python
 $Wheelhouse = Join-Path $Root "wheelhouse"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
 $ExpectedMt5Sha256 = "FD8CA7875A13DED372492BC8C06B2DDDDEBE6B522BEA62E81BA203436B012320"
-$Terminal = Join-Path $Root "mt5\terminal64.exe"
+$Terminal = [string]$Contract.terminal
 
 foreach ($RequiredPath in @($App, $Python, $Wheelhouse, $Mt5Installer)) {
     if (-not (Test-Path -LiteralPath $RequiredPath)) {
@@ -47,7 +49,6 @@ Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" |
     Where-Object { $_.ExecutablePath -eq $Terminal } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 New-Item -ItemType File -Force -Path (Join-Path (Split-Path -Parent $Terminal) "portable.txt") | Out-Null
-Set-Content -LiteralPath (Join-Path $Root "mt5-terminal.txt") -Value $Terminal -Encoding ascii
 
 & $Python --version
 & $Python -m pip show MetaTrader5 pandas

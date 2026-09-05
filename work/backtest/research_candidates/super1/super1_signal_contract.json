@@ -9,7 +9,7 @@
     "config_path": "forward_shadow/frozen_config.json",
     "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
     "generator_path": "scripts/run_capital_forward.py",
-    "generator_sha256": "80d634a39add23ff882416bcbc0433a8e4d4f633bde8d5a2934ada583cf4df5a",
+    "generator_sha256": "8d7c3372d1079c6e9a24e71da617c8eed74d7712c22c63e8a1439590584ba957",
     "payload_adapter_path": "scripts/run_forward_shadow.py",
     "payload_adapter_sha256": "5105421aa378770af357ec57f0ec8782e227ae56091690afd82ce578f8b609f4",
     "engine_source_sha256": "a7456f84c7d07c09a728d0c8c83f8b7e491ed61bbce124c06bcf412beb31530f"
@@ -21,7 +21,7 @@
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY",
     "defines_base_signals": false,
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
-    "runtime_sha256": "fb3bf82152ea07487cf8c032947aeb4bd4034c4439b2f5e08c68cec02117a6a6"
+    "runtime_sha256": "11c96a21af44731da77074fd0f4c5f699d64f7a374e87e62aadb07bf5dac4662"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",

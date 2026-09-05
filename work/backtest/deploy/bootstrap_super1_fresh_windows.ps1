@@ -5,14 +5,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$Contract = Assert-Super1RuntimeContract
 
-$Root = "C:\Super1"
+$Root = [string]$Contract.root
 $Archive = Join-Path $Root "super1-forward.zip"
-$App = Join-Path $Root "app"
+$App = [string]$Contract.app
 $PythonInstaller = Join-Path $Root "python-3.11.9-amd64.exe"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
 $ExpectedMt5Sha256 = "FD8CA7875A13DED372492BC8C06B2DDDDEBE6B522BEA62E81BA203436B012320"
-$Terminal = Join-Path $Root "mt5\terminal64.exe"
+$Terminal = [string]$Contract.terminal
 $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -88,7 +90,7 @@ if ($Mt5Signature.Status -ne "Valid" -or `
 }
 Start-Process -FilePath $Mt5Installer -ArgumentList @(
     "/auto",
-    "/path:`"C:\Super1\mt5`""
+    "/path:`"$(Split-Path -Parent $Terminal)`""
 ) -Wait
 
 $Deadline = (Get-Date).AddMinutes(5)
@@ -102,7 +104,6 @@ Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" |
     Where-Object { $_.ExecutablePath -eq $Terminal } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 New-Item -ItemType File -Force -Path (Join-Path (Split-Path -Parent $Terminal) "portable.txt") | Out-Null
-Set-Content -LiteralPath (Join-Path $Root "mt5-terminal.txt") -Value $Terminal -Encoding ascii
 
 & $Python --version
 & $Python -m pip show MetaTrader5 pandas
