@@ -134,6 +134,35 @@ def test_contract_path_resolver_returns_release_triple() -> None:
     assert "C:\\Super1\\super1-forward.manifest.sig" in paths
 
 
+def test_contract_member_accesses_are_checked_with_powershell_ast() -> None:
+    root_literal = str(ROOT).replace("'", "''")
+    command = f"""
+$contractPath = '{root_literal}\\deploy\\super1_runtime_contract.ps1'
+. $contractPath
+$contractKeys = @((Get-Super1RuntimeContract).PSObject.Properties.Name)
+$used = @()
+foreach ($file in @(Get-ChildItem -LiteralPath '{root_literal}\\deploy' -Filter '*.ps1' -File)) {{
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) {{ throw "PowerShell parse failure: $($file.Name)" }}
+    $used += @($ast.FindAll({{
+        param($node)
+        if ($node -isnot [System.Management.Automation.Language.MemberExpressionAst]) {{ return $false }}
+        $expression = $node.Expression
+        return $expression -is [System.Management.Automation.Language.VariableExpressionAst] -and
+            $expression.VariablePath.UserPath -ieq 'Contract'
+    }}, $true) | ForEach-Object {{ [string]$_.Member.Value }})
+}}
+$unknown = @($used | Sort-Object -Unique | Where-Object {{ $_ -notin $contractKeys }})
+if ($unknown.Count -gt 0) {{ throw "Unknown Super1 contract members: $($unknown -join ',')" }}
+Write-Output (($used | Sort-Object -Unique) -join ',')
+"""
+    result = _powershell("-Command", command)
+    assert result.returncode == 0, result.stderr
+    assert "health" in result.stdout and "release_signature" in result.stdout
+
+
 def test_missing_health_contract_fails_in_real_powershell(tmp_path: Path) -> None:
     source = Path(_contract_script()).read_text(encoding="utf-8")
     source = source.replace('    health = "C:\\Super1\\state\\health.json"\n', "")
