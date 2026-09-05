@@ -718,6 +718,7 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert "Get-CollectionNodeIds" in source
     assert "pytest_nodeid_sha256" in source
     assert "artifact_pytest_nodeid_sha256" in source
+    assert 'tests\\v08_helpers.py' in source
     assert "deploy/stage_signed_upgrader_windows.ps1" in source
     for key in (
         "release_id",

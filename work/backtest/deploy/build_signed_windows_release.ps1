@@ -181,6 +181,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $SourceRoot (Join-Path "tests" $testFile)) -Destination (Join-Path $artifactTestRoot $testFile)
     }
     Copy-Item -LiteralPath (Join-Path $SourceRoot "tests\powershell_contract.py") -Destination (Join-Path $artifactTestRoot "powershell_contract.py")
+    Copy-Item -LiteralPath (Join-Path $SourceRoot "tests\v08_helpers.py") -Destination (Join-Path $artifactTestRoot "v08_helpers.py")
     $baselineSource = Join-Path $SourceRoot "outputs\reports\engine_reliability_audit_2025_feb_mar\run_manifest.json"
     $baselineTarget = Join-Path $Stage "outputs\reports\engine_reliability_audit_2025_feb_mar"
     New-Item -ItemType Directory -Force -Path $baselineTarget | Out-Null
