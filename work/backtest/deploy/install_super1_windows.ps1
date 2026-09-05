@@ -71,7 +71,7 @@ $PasswordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePass
 try {
     $env:XM_MT5_READ_ONLY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPtr)
     $env:XM_MT5_TERMINAL_PATH = $Terminal
-    $env:XM_MT5_SERVER = "XMGlobal-MT5 6"
+    $env:XM_MT5_SERVER = "XMGlobal-MT5 2"
     $DiscoveryJson = & $Python (Join-Path $App "scripts\discover_super1_xm_account.py")
     if ($LASTEXITCODE -ne 0 -or -not $DiscoveryJson) {
         throw "Super1 XM account discovery failed."
@@ -124,7 +124,7 @@ Start-Sleep -Seconds 5
     -HealthPath (Join-Path $Root "state\health.json") `
     -ProcessPattern "run_super1_xm_mt5_forward.py"
 
-$env:XM_MT5_SERVER = "XMGlobal-MT5 6"
+$env:XM_MT5_SERVER = "XMGlobal-MT5 2"
 $env:XM_MT5_TERMINAL_PATH = $Terminal
 try {
     & $Python (Join-Path $App "scripts\run_super1_xm_mt5_forward.py") --output-root (Join-Path $Root "state") status

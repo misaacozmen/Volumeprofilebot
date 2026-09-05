@@ -418,7 +418,7 @@ def test_super1_upgrade_never_executes_the_mutable_old_venv_as_administrator() -
 def test_python_and_runtime_dependencies_are_exactly_pinned() -> None:
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'pandas==3.0.3' in project
-    assert 'MetaTrader5==5.0.6090' in project
+    assert 'MetaTrader5==5.0.6162' in project
     assert 'setuptools==81.0.0' in project
 
 
@@ -753,3 +753,25 @@ def test_release_integrity_validates_entries_and_rejects_credentials_and_source_
     assert "Production source file missing from release archive" in source
     assert "Production file content mismatch between source and release archive" in source
     assert "Release archive contains unexpected production entry not present in source tree" in source
+
+
+def test_fresh_super1_install_is_manual_and_new_york_window_guarded() -> None:
+    finalize = text("finalize_super1_fresh_windows.ps1")
+    watchdog_installer = text("install_watchdog_windows.ps1")
+    start = text("start_super1_local_windows.ps1")
+    stop = text("stop_super1_local_windows.ps1")
+
+    assert "New-ScheduledTaskTrigger -AtLogOn" not in finalize
+    assert "Start-ScheduledTask -TaskName $TaskName" not in finalize
+    assert "-ManualStart" in finalize
+    assert "Super1 Baslat.lnk" in finalize
+    assert "Super1 Durdur.lnk" in finalize
+    assert "[switch]$ManualStart" in watchdog_installer
+    assert "if ($ManualStart)" in watchdog_installer
+    assert 'FindSystemTimeZoneById("Eastern Standard Time")' in start
+    assert 'ParseExact("09:20"' in start
+    assert 'ParseExact("13:00"' in start
+    assert 'Start-ScheduledTask -TaskName $TaskName' in start
+    assert 'Stop-ScheduledTask -TaskName "Super1Watchdog"' in stop
+    assert 'Stop-ScheduledTask -TaskName "Super1XM"' in stop
+    assert 'ExecutablePath -eq "C:\\Super1\\mt5\\terminal64.exe"' in stop

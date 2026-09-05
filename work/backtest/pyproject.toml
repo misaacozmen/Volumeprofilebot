@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.15"
 dependencies = [
     "pandas==3.0.3",
     "numpy>=1.26.0",
-    "MetaTrader5==5.0.6090; platform_system == 'Windows'",
+    "MetaTrader5==5.0.6162; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

@@ -88,7 +88,7 @@ if ([string]::IsNullOrWhiteSpace($Password)) { throw "Missing XM password on std
 $Secure = ConvertTo-SecureString $Password -AsPlainText -Force
 $env:XM_MT5_READ_ONLY_PASSWORD = $Password
 $env:XM_MT5_TERMINAL_PATH = "C:\Super1\mt5\terminal64.exe"
-$env:XM_MT5_SERVER = "XMGlobal-MT5 6"
+$env:XM_MT5_SERVER = "XMGlobal-MT5 2"
 try {
     $Json = & "C:\Super1\venv311\Scripts\python.exe" `
         "C:\Super1\app\scripts\discover_super1_xm_account.py"
@@ -97,7 +97,7 @@ try {
     if ($Discovery.state -ne "FOUND" -or -not $Discovery.demo_verified) {
         throw "Isolated discovery did not verify a demo account."
     }
-    if ($Discovery.login -ne 0 -or $Discovery.server -ne "XMGlobal-MT5 6") {
+    if ($Discovery.login -ne [REDACTED -or $Discovery.server -ne "XMGlobal-MT5 2") {
         throw "Unexpected isolated XM identity."
     }
     if ($Discovery.symbols.nq -ne "US100Cash" -or $Discovery.symbols.spx -ne "US500Cash") {

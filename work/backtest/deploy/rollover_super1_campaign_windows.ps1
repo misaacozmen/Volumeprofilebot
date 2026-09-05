@@ -321,7 +321,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $runtime = Get-Content -LiteralPath $RuntimeCandidate -Raw | ConvertFrom-Json
 if (
-    [int]$runtime.account_login -ne 0 -or
+    [int]$runtime.account_login -ne [REDACTED -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
 ) {

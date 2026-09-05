@@ -117,3 +117,24 @@ window is America/New_York 09:20 through 13:00; DST must be resolved from the
 America/New_York time zone rather than fixed conversion to the PC's local clock.
 A separate operator confirmation remains mandatory before any demo smoke order or
 continuous unattended run.
+
+## Phase 3 preparation validation — 2026-09-05
+
+The local target was verified against the new XM demo account without sending an
+order. The terminal reported `trade_mode=0`, `connected=true`,
+`trade_allowed=true`, and `tradeapi_disabled=false`. The verified broker binding
+is stored in the protected runtime configuration.
+
+```text
+terminal_build=6180
+MetaTrader5_package=5.0.6162
+targeted_tests=154 passed
+full_suite=533 passed
+failed=0
+errors=0
+skipped=0
+manual_session_control=PASS
+new_york_start_guard=09:20
+new_york_stop_boundary=13:00
+broker_order_authorized=false
+```

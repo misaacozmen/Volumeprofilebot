@@ -7,7 +7,7 @@ $App = Join-Path $Root "app"
 $PythonExe = "C:\Program Files\Python311\python.exe"
 $PythonInstaller = Join-Path $Root "python-3.11.9-amd64.exe"
 $Mt5Installer = Join-Path $Root "xm.com5setup.exe"
-$ExpectedMt5Sha256 = "9125EE0D9CF947C6EF6EFAC392E4410214D39144901159E146D532E45171267A"
+$ExpectedMt5Sha256 = "CDDD18777AFEB19361AE8F0BC1BCB3C3996F5DDBD78A0A4194D65E640154E2E9"
 $Terminal = Join-Path $Root "mt5\terminal64.exe"
 $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
 

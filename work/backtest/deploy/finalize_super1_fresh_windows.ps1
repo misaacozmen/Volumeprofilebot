@@ -31,7 +31,7 @@ $PasswordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePass
 try {
     $env:XM_MT5_READ_ONLY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPtr)
     $env:XM_MT5_TERMINAL_PATH = $Terminal
-    $env:XM_MT5_SERVER = "XMGlobal-MT5 6"
+    $env:XM_MT5_SERVER = "XMGlobal-MT5 2"
     $DiscoveryJson = & $Python (Join-Path $App "scripts\discover_super1_xm_account.py")
     if ($LASTEXITCODE -ne 0 -or -not $DiscoveryJson) {
         throw "Super1 XM account discovery failed."
@@ -66,7 +66,6 @@ finally {
 
 $Launcher = Join-Path $App "deploy\run_super1_windows.ps1"
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $Principal = New-ScheduledTaskPrincipal `
     -UserId $CurrentUser `
@@ -81,25 +80,28 @@ $Settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
-    -Trigger $Trigger `
     -Principal $Principal `
     -Settings $Settings | Out-Null
-Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 8
 & (Join-Path $App "deploy\install_watchdog_windows.ps1") `
     -Root $Root `
     -MainTaskName $TaskName `
     -WatchdogTaskName "Super1Watchdog" `
     -HealthPath (Join-Path $Root "state\health.json") `
-    -ProcessPattern "run_super1_xm_mt5_forward.py"
+    -ProcessPattern "run_super1_xm_mt5_forward.py" `
+    -ManualStart
 
-$env:XM_MT5_SERVER = "XMGlobal-MT5 6"
-$env:XM_MT5_TERMINAL_PATH = $Terminal
-try {
-    & $Python (Join-Path $App "scripts\run_super1_xm_mt5_forward.py") `
-        --output-root (Join-Path $Root "state") status
+$Desktop = [Environment]::GetFolderPath("Desktop")
+$Shell = New-Object -ComObject WScript.Shell
+foreach ($ShortcutSpec in @(
+    @{ Name = "Super1 Baslat.lnk"; Script = "start_super1_local_windows.ps1" },
+    @{ Name = "Super1 Durdur.lnk"; Script = "stop_super1_local_windows.ps1" }
+)) {
+    $Shortcut = $Shell.CreateShortcut((Join-Path $Desktop $ShortcutSpec.Name))
+    $Shortcut.TargetPath = (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+    $Shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$([IO.Path]::GetFullPath((Join-Path $App "deploy\$($ShortcutSpec.Script)")))`""
+    $Shortcut.WorkingDirectory = $Root
+    $Shortcut.IconLocation = "$Terminal,0"
+    $Shortcut.Save()
 }
-finally {
-    $env:XM_MT5_SERVER = $null
-    $env:XM_MT5_TERMINAL_PATH = $null
-}
+
+Write-Host "Super1 fresh installation is ready for manual desktop start/stop." -ForegroundColor Green

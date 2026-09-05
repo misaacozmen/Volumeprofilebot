@@ -252,7 +252,7 @@ try {
     & $Python -m pip download --disable-pip-version-check --only-binary=:all: `
         --platform win_amd64 --python-version 311 --implementation cp --abi cp311 `
         --dest $Wheelhouse `
-            "pandas==3.0.3" "MetaTrader5==5.0.6090" "setuptools==81.0.0" "wheel==0.48.0" "pytest==8.4.1"
+            "pandas==3.0.3" "MetaTrader5==5.0.6162" "setuptools==81.0.0" "wheel==0.48.0" "pytest==8.4.1"
     if ($LASTEXITCODE -ne 0) { throw "Windows wheelhouse build failed." }
 
     $lockLines = foreach ($wheel in Get-ChildItem -LiteralPath $Wheelhouse -File | Sort-Object Name) {
@@ -442,7 +442,7 @@ try {
         pytest_passed_count = $pytestPassedCount
         dependencies = [ordered]@{
             pandas = "3.0.3"
-            MetaTrader5 = "5.0.6090"
+            MetaTrader5 = "5.0.6162"
             setuptools = "81.0.0"
             wheel = "0.48.0"
             pytest = "8.4.1"

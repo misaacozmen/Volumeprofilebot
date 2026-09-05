@@ -4,7 +4,7 @@
   "candidate_path": "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
   "candidate_file_sha256": "ea86920354d9c3a92b2961b30834d32a006b245a7c093f41929efa7556e6a6ee",
   "candidate_artifact_sha256": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
-  "config_sha256": "c6a6098258503cee7c277ff615090ccc3112b8a5e32793a770fded35e24fe3ee",
+  "config_sha256": "b30831e7192bff479d281d17cf64ca95e86dfff83ae4dc2167d9b5bfd8d653b9",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
   "signal_contract_sha256": "8ba11805edad37696732a2b1fd8423a73d0627f0cc9ab4a4ddb35f3f51118975",
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",

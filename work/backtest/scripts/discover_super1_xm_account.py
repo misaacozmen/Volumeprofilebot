@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 
 
-LOGIN = 0
-SERVER = "XMGlobal-MT5 6"
+LOGIN = [REDACTED
+SERVER = "XMGlobal-MT5 2"
 COMPANY = "XM Global Limited"
 
 
