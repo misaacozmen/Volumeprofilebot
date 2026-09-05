@@ -779,3 +779,13 @@ def test_fresh_super1_install_is_manual_and_new_york_window_guarded() -> None:
     assert 'Stop-ScheduledTask -TaskName "Super1Watchdog"' in stop
     assert 'Stop-ScheduledTask -TaskName "Super1XM"' in stop
     assert 'ExecutablePath -eq "C:\\Super1\\mt5\\terminal64.exe"' in stop
+
+
+def test_fresh_super1_bootstrap_accepts_only_complete_cpython311() -> None:
+    bootstrap = text("bootstrap_super1_fresh_windows.ps1")
+
+    assert '[string]$PythonExe = "C:\\Program Files\\Python311\\python.exe"' in bootstrap
+    assert 'Lib\\encodings\\__init__.py' in bootstrap
+    assert 'Python 3.11 standard library is incomplete' in bootstrap
+    assert '3.11|CPython' in bootstrap
+    assert 'Requested existing Python 3.11 executable is missing' in bootstrap
