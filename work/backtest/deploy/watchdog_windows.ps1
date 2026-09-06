@@ -530,22 +530,80 @@ function Read-HealthRecord {
     }
 }
 
-function Read-Super1ActiveLease {
-    if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) { return $null }
+function Get-Super1ReadinessEvidence {
+    $archiveRoot = Join-Path ([string]$RuntimeContract.root) "archive"
+    $best = $null
+    if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) { return $null }
+    foreach ($transaction in @(Get-ChildItem -LiteralPath $archiveRoot -Directory -Filter "readiness-*" -Force -ErrorAction SilentlyContinue)) {
+        $producerPath = Join-Path $transaction.FullName "output\producer.json"
+        if (-not (Test-Path -LiteralPath $producerPath -PathType Leaf)) { continue }
+        try {
+            $producer = Get-Content -LiteralPath $producerPath -Raw | ConvertFrom-Json
+            $produced = [DateTimeOffset]::Parse([string]$producer.produced_at_utc).ToUniversalTime()
+            $now = [DateTimeOffset]::UtcNow
+            if ([string]$producer.kind -cne "binding_readiness" -or
+                ($now - $produced).TotalSeconds -gt 180 -or
+                ($null -ne $best -and $produced -le $best.produced_at_utc) -or
+                [int]$producer.producer_process_id -le 4) { continue }
+            $best = [pscustomobject]@{
+                transaction_id = [string]$producer.transaction_id
+                nonce = [string]$producer.nonce
+                request_sha256 = [string]$producer.request_sha256
+                producer_process_id = [int]$producer.producer_process_id
+                producer_runner_sid = [string]$producer.producer_runner_sid
+                produced_at_utc = $produced
+            }
+        }
+        catch { }
+    }
+    return $best
+}
+
+function Read-Super1LeaseState {
+    if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) {
+        return [pscustomobject]@{ State = "MISSING"; Lease = $null; LeaseId = ""; Detail = "lease file is missing" }
+    }
+    $lease = $null
     try {
         $lease = Get-Content -LiteralPath $LeasePath -Raw | ConvertFrom-Json
+        $leaseId = [string]$lease.lease_id
         $now = [DateTimeOffset]::UtcNow
         $expires = [DateTimeOffset]::Parse([string]$lease.expires_at_utc).ToUniversalTime()
-        if ([string]$lease.state -cne "ACTIVE" -or $expires -le $now) { return $null }
-        if ([string]$lease.machine_binding -cne $env:COMPUTERNAME.ToUpperInvariant()) { return $null }
+        if ([string]$lease.state -ceq "REVOKED") {
+            return [pscustomobject]@{ State = "REVOKED"; Lease = $lease; LeaseId = $leaseId; Detail = "lease is revoked" }
+        }
+        if ([string]$lease.state -cne "ACTIVE") {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "lease state is not ACTIVE" }
+        }
+        if ($expires -le $now) {
+            return [pscustomobject]@{ State = "EXPIRED"; Lease = $lease; LeaseId = $leaseId; Detail = "lease expiry has passed" }
+        }
+        if ([string]$lease.machine_binding -cne $env:COMPUTERNAME.ToUpperInvariant()) {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "machine binding mismatch" }
+        }
         $configHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $manifestHash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
         if ([string]$lease.config_sha256 -cne $configHash -or
             [string]$lease.app_manifest_sha256 -cne $manifestHash -or
-            [string]$lease.mode -cne "DEMO_ORDER") { return $null }
-        return $lease
+            [string]$lease.mode -cne "DEMO_ORDER") {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "lease hash or mode binding mismatch" }
+        }
+        return [pscustomobject]@{ State = "ACTIVE"; Lease = $lease; LeaseId = $leaseId; Detail = "active lease is valid" }
     }
-    catch { return $null }
+    catch {
+        return [pscustomobject]@{
+            State = "INVALID"
+            Lease = $lease
+            LeaseId = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+            Detail = "lease is unreadable or invalid: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Read-Super1ActiveLease {
+    $evidence = Read-Super1LeaseState
+    if ([string]$evidence.State -eq "ACTIVE") { return $evidence.Lease }
+    return $null
 }
 
 function Get-Super1ExactRunnerProcesses {
@@ -631,7 +689,7 @@ function Restart-MainTask {
 
     $now = [DateTimeOffset]::UtcNow
     Prune-RestartHistory -Now $now
-    if ($null -eq (Read-Super1ActiveLease)) {
+    if ([string](Read-Super1LeaseState).State -ne "ACTIVE") {
         return [pscustomobject]@{ Restarted = $false; State = "WAITING_MANUAL_LEASE"; Detail = "$Reason; no active manual lease" }
     }
     if (Test-Path -LiteralPath $RestartBudgetLatchPath -PathType Leaf) {
@@ -709,12 +767,14 @@ while ($true) {
     try {
         Prune-RestartHistory -Now $observed
         Invoke-TelegramOutboxDelivery | Out-Null
-        $lease = Read-Super1ActiveLease
+        $leaseEvidence = Read-Super1LeaseState
+        $lease = $leaseEvidence.Lease
         $task = Get-ScheduledTask -TaskName $MainTaskName
         $taskInfo = Get-ScheduledTaskInfo -TaskName $MainTaskName
         $taskState = $task.State.ToString()
         $processes = @(Get-Super1ExactRunnerProcesses)
         $health = Read-HealthRecord
+        $readinessEvidence = Get-Super1ReadinessEvidence
         $healthState = if ($null -eq $health) { "MISSING" } else { [string]$health.state }
         $executionState = if ($null -eq $health) { "" } else { [string]$health.last_cycle.execution.state }
         $healthAge = $null
@@ -726,16 +786,16 @@ while ($true) {
         $state = "HEALTHY"
         $action = "NONE"
         $detail = "main task and heartbeat are healthy"
-        $leaseExpired = $false
-        if ($null -ne $lease) {
-            try { $leaseExpired = [DateTimeOffset]::UtcNow -ge ([DateTimeOffset]::Parse([string]$lease.expires_at_utc).ToUniversalTime()) }
-            catch { $leaseExpired = $true }
-        }
         if ($healthState -eq "MISSING") {
-            if ($null -eq $lease) {
-                $state = "WAITING_MANUAL_LEASE"
+            if ([string]$leaseEvidence.State -ne "ACTIVE") {
+                $state = switch ([string]$leaseEvidence.State) {
+                    "EXPIRED" { "LEASE_EXPIRED_SAFE_STOP_PENDING"; break }
+                    "REVOKED" { "LEASE_REVOKED_SAFE_STOP_PENDING"; break }
+                    "INVALID" { "LEASE_INVALID_SAFE_STOP_PENDING"; break }
+                    default { "WAITING_MANUAL_LEASE"; break }
+                }
                 if ($processes.Count -gt 0) {
-                    $null = Ensure-Super1SafeStopRequest -Lease $null -Reason "watchdog observed missing main health without a manual lease"
+                    $null = Ensure-Super1SafeStopRequest -Lease $lease -Reason "watchdog observed missing main health with lease state $($leaseEvidence.State)"
                     $action = "REQUEST_SAFE_STOP"
                 }
                 else { $action = "NONE" }
@@ -752,23 +812,22 @@ while ($true) {
             $action = "NONE"
             $detail = "Main health is unreadable; broker state is not proven."
         }
-        elseif ($null -eq $lease) {
-            $state = "WAITING_MANUAL_LEASE"
+        elseif ([string]$leaseEvidence.State -ne "ACTIVE") {
+            $state = switch ([string]$leaseEvidence.State) {
+                "EXPIRED" { "LEASE_EXPIRED_SAFE_STOP_PENDING"; break }
+                "REVOKED" { "LEASE_REVOKED_SAFE_STOP_PENDING"; break }
+                "INVALID" { "LEASE_INVALID_SAFE_STOP_PENDING"; break }
+                default { "WAITING_MANUAL_LEASE"; break }
+            }
             if ($processes.Count -gt 0) {
-                $null = Ensure-Super1SafeStopRequest -Lease $null -Reason "watchdog observed a running Super1 process without a manual lease"
+                $null = Ensure-Super1SafeStopRequest -Lease $lease -Reason "watchdog observed a running Super1 process with lease state $($leaseEvidence.State)"
                 $action = "REQUEST_SAFE_STOP"
-                $detail = "No active manual lease; automatic restart is disabled and safe stop is requested."
+                $detail = "Lease state $($leaseEvidence.State); automatic restart is disabled and safe stop is requested."
             }
             else {
                 $action = "NONE"
-                $detail = "No active manual lease and no exact Super1 process; automatic restart is disabled."
+                $detail = "Lease state $($leaseEvidence.State) and no exact Super1 process; automatic restart is disabled."
             }
-        }
-        elseif ($leaseExpired) {
-            $null = Ensure-Super1SafeStopRequest -Lease $lease -Reason "manual Super1 lease expired"
-            $state = "LEASE_EXPIRED_SAFE_STOP_PENDING"
-            $action = "REQUEST_SAFE_STOP"
-            $detail = "Lease expired; no restart is permitted until broker reconciliation proves safe stop."
         }
         elseif ($healthState -and $healthState -notin $AllowedMainHealthStates) {
             $state = "UNKNOWN_NO_SEND"
@@ -855,8 +914,8 @@ while ($true) {
             schema_version = 1
              observed_at_utc = $observed.ToString("o")
              updated_at_utc = $observed.ToString("o")
-             lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
-            invocation_nonce = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+            lease_id = [string]$leaseEvidence.LeaseId
+            invocation_nonce = [string]$leaseEvidence.LeaseId
             runner_sid = if ($null -eq $lease) { "" } else { [string]$lease.runner_sid }
             state = $state
             action = $action
@@ -870,6 +929,12 @@ while ($true) {
             health_age_seconds = $healthAge
             restart_count_in_window = $restartHistory.Count
             restart_window_minutes = $RestartWindowMinutes
+            watchdog_sid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            readiness_transaction_id = if ($null -eq $readinessEvidence) { "" } else { [string]$readinessEvidence.transaction_id }
+            readiness_nonce = if ($null -eq $readinessEvidence) { "" } else { [string]$readinessEvidence.nonce }
+            readiness_request_sha256 = if ($null -eq $readinessEvidence) { "" } else { [string]$readinessEvidence.request_sha256 }
+            readiness_producer_pid = if ($null -eq $readinessEvidence) { 0 } else { [int]$readinessEvidence.producer_process_id }
+            readiness_producer_sid = if ($null -eq $readinessEvidence) { "" } else { [string]$readinessEvidence.producer_runner_sid }
         }
         Send-DecisionNotifications -Health $health
         Invoke-PremarketAudit -Health $health -TaskState $taskState -ProcessCount $processes.Count -Observed $observed
@@ -882,6 +947,12 @@ while ($true) {
             action = "NONE"
             detail = $_.Exception.Message
             invocation_nonce = ""
+            watchdog_sid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            readiness_transaction_id = ""
+            readiness_nonce = ""
+            readiness_request_sha256 = ""
+            readiness_producer_pid = 0
+            readiness_producer_sid = ""
             main_task = $MainTaskName
             restart_count_in_window = $restartHistory.Count
             restart_window_minutes = $RestartWindowMinutes

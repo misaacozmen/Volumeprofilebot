@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
+from uuid import uuid4
 from contextlib import contextmanager
 from typing import Any
 
@@ -630,17 +631,27 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                             connection.execute(
                                 f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'
                             )
-                # Legacy R5 rows did not carry a stable id.  Backfill from the
-                # immutable JSON before enforcing uniqueness for all new rows.
+                # Legacy rows did not carry a stable id.  Sequence is part of
+                # the migration input so identical payloads cannot collide.
                 legacy_rows = connection.execute(
                     "SELECT sequence, event_json FROM order_event_outbox "
                     "WHERE event_id IS NULL OR event_id = ''"
                 ).fetchall()
                 for sequence, event_json in legacy_rows:
-                    legacy_id = sha256(str(event_json).encode("utf-8")).hexdigest()
+                    legacy_id = sha256(
+                        f"{int(sequence)}\0{str(event_json)}".encode("utf-8")
+                    ).hexdigest()
+                    migrated_json = str(event_json)
+                    try:
+                        payload = json.loads(str(event_json))
+                        if isinstance(payload, dict):
+                            payload["event_id"] = legacy_id
+                            migrated_json = core.canonical_json(payload)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
                     connection.execute(
-                        "UPDATE order_event_outbox SET event_id = ? WHERE sequence = ?",
-                        (legacy_id, int(sequence)),
+                        "UPDATE order_event_outbox SET event_id = ?, event_json = ? WHERE sequence = ?",
+                        (legacy_id, migrated_json, int(sequence)),
                     )
                 connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS ux_order_event_outbox_event_id "
@@ -709,32 +720,47 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
 
     def _drain_order_outbox(self, output_root: Path) -> None:
         connection = self._ready_order_connection(output_root)
+        temporary: Path | None = None
         try:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT sequence, event_id, event_json FROM order_event_outbox "
-                "WHERE delivered_at IS NULL ORDER BY sequence"
+                "SELECT sequence, event_id, event_json FROM order_event_outbox ORDER BY sequence"
             ).fetchall()
-            delivered_ids = {
-                str(item.get("event_id"))
-                for item in self._events(output_root)
-                if item.get("event_id")
-            }
-            for sequence, event_id, event_json in rows:
-                if str(event_id) not in delivered_ids:
-                    payload = json.loads(str(event_json))
-                    payload["event_id"] = str(event_id)
-                    core.append_jsonl(self._order_log(output_root), payload)
-                    delivered_ids.add(str(event_id))
-                connection.execute(
-                    "UPDATE order_event_outbox SET delivered_at = ? WHERE sequence = ?",
-                    (core.utc_now().isoformat(), int(sequence)),
-                )
+            log_path = self._order_log(output_root)
+            existing = self._events(output_root)
+            outbox_ids = {str(event_id) for _, event_id, _ in rows}
+            direct_events = [
+                item for item in existing
+                if not item.get("event_id") or str(item.get("event_id")) not in outbox_ids
+            ]
+            outbox_events: list[dict[str, Any]] = []
+            for _, event_id, event_json in rows:
+                payload = json.loads(str(event_json))
+                if not isinstance(payload, dict):
+                    raise core.CriticalLiveError("Order outbox payload is not a JSON object.")
+                payload["event_id"] = str(event_id)
+                outbox_events.append(payload)
+            records = direct_events + outbox_events
+            records.sort(key=lambda item: str(item.get("recorded_at") or ""))
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = log_path.with_name(f"{log_path.name}.{uuid4().hex}.tmp")
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                for record in records:
+                    handle.write(core.canonical_json(record) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, log_path)
+            connection.execute(
+                "UPDATE order_event_outbox SET delivered_at = ? WHERE delivered_at IS NULL",
+                (core.utc_now().isoformat(),),
+            )
             connection.commit()
         except Exception:
             connection.rollback()
             raise
         finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
             connection.close()
 
     @staticmethod
@@ -743,11 +769,27 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         order_id: str,
         payload: dict[str, object],
     ) -> str:
-        """Insert one immutable event with a deterministic replay-safe id."""
-        canonical = core.canonical_json(payload)
-        event_id = sha256(canonical.encode("utf-8")).hexdigest()
+        """Insert one immutable event with a UUID generated exactly once."""
+        comparable = dict(payload)
+        comparable.pop("event_id", None)
+        comparable_json = core.canonical_json(comparable)
+        for existing_id, existing_json in connection.execute(
+            "SELECT event_id, event_json FROM order_event_outbox WHERE order_id = ?",
+            (order_id,),
+        ).fetchall():
+            try:
+                existing_payload = json.loads(str(existing_json))
+                if isinstance(existing_payload, dict):
+                    existing_payload.pop("event_id", None)
+                    if core.canonical_json(existing_payload) == comparable_json:
+                        return str(existing_id)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        event_id = str(uuid4())
+        stored_payload = {**comparable, "event_id": event_id}
+        canonical = core.canonical_json(stored_payload)
         connection.execute(
-            "INSERT OR IGNORE INTO order_event_outbox "
+            "INSERT INTO order_event_outbox "
             "(event_id, order_id, event_json) VALUES (?, ?, ?)",
             (event_id, order_id, canonical),
         )

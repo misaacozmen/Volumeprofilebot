@@ -17,6 +17,7 @@ $checks = [ordered]@{}
 $script:FlatEvidence = $null
 $script:BindingEvidence = $null
 $script:RealMoneyAllowed = $true
+$script:ReadinessCleanupSealed = $false
 
 function Add-ReadinessCheck([string]$Name, [scriptblock]$Check) {
     try {
@@ -41,6 +42,17 @@ function Write-ReadinessJson([object]$Payload) {
     finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 . (Join-Path $PSScriptRoot "super1_secure_task.ps1")
+
+function Stop-Super1ReadinessTaskBounded([string]$TaskName) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    do {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ([string]$task.State -eq "Ready") { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "Readiness cleanup could not seal task in Ready state: $TaskName"
+}
 
 function Invoke-Super1BindingReadiness {
     $leasePath = Join-Path ([string]$Contract.control) "session-lease.json"
@@ -98,40 +110,56 @@ function Invoke-Super1BindingReadiness {
         }
         Start-ScheduledTask -TaskName ([string]$Contract.watchdog_task) -ErrorAction Stop
         $watchdogDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        $watchdogEvidence = $false
         do {
             if (Test-Path -LiteralPath $watchdogStatus -PathType Leaf) {
                 try {
                     $watchdog = Get-Content -Raw -LiteralPath $watchdogStatus | ConvertFrom-Json
-                    if ([string]$watchdog.state -ceq "WAITING_MANUAL_LEASE" -and [string]$watchdog.lease_id -eq "") { break }
+                    $watchdogFresh = [DateTimeOffset]::Parse([string]$watchdog.updated_at_utc).ToUniversalTime() -ge $requestedAt.ToUniversalTime()
+                    $watchdogEvidence = $watchdogFresh -and
+                        [string]$watchdog.state -ceq "WAITING_MANUAL_LEASE" -and
+                        [string]$watchdog.lease_id -eq "" -and
+                        [string]$watchdog.readiness_transaction_id -ceq $transactionId -and
+                        [string]$watchdog.readiness_nonce -ceq $nonce -and
+                        [string]$watchdog.readiness_request_sha256 -ceq [string]$binding.request_sha256 -and
+                        [int]$watchdog.readiness_producer_pid -eq [int]$binding.producer_process_id -and
+                        [string]$watchdog.readiness_producer_sid -ceq $runnerSid -and
+                        [string]$watchdog.watchdog_sid -ceq "S-1-5-18"
+                    if ($watchdogEvidence) { break }
                 } catch { }
             }
             Start-Sleep -Milliseconds 500
         } while ([DateTimeOffset]::UtcNow -lt $watchdogDeadline)
-        if ($null -eq $watchdog -or [string]$watchdog.state -cne "WAITING_MANUAL_LEASE" -or [string]$watchdog.lease_id -ne "") {
-            throw "Watchdog did not publish a fresh lease-less WAITING_MANUAL_LEASE record."
-        }
-        Stop-ScheduledTask -TaskName ([string]$Contract.watchdog_task) -ErrorAction SilentlyContinue
-        foreach ($taskName in @([string]$Contract.main_task, [string]$Contract.watchdog_task)) {
-            if ([string](Get-ScheduledTask -TaskName $taskName -ErrorAction Stop).State -ne "Ready") {
-                throw "Readiness task did not return to Ready: $taskName"
-            }
+        if (-not $watchdogEvidence) {
+            throw "Watchdog did not publish a fresh nonce/request/PID/SID-bound lease-less record."
         }
         if ([int]$result.open_orders -ne 0 -or [int]$result.open_positions -ne 0) {
             throw "Binding readiness did not prove flat broker exposure."
         }
+        Seal-Super1SecureEvidenceTree -Path $transaction
+        Assert-Super1SecureSealedTree -Path $transaction
         return [ordered]@{
             transaction_id = $transactionId
             nonce = $nonce
             producer = $binding
             watchdog_state = [string]$watchdog.state
             lease_active = $false
+            cleanup_sealed = $true
         }
     }
     finally {
+        $cleanupErrors = New-Object Collections.Generic.List[string]
+        foreach ($taskName in @([string]$Contract.watchdog_task, [string]$Contract.main_task)) {
+            try { Stop-Super1ReadinessTaskBounded -TaskName $taskName }
+            catch { $cleanupErrors.Add("${taskName}: $($_.Exception.Message)") }
+        }
         if ($activeLock) { $activeLock.Dispose() }
         $requestLock.Dispose()
         $activePath = Join-Path ([string]$Contract.control) "active.json"
         if (Test-Path -LiteralPath $activePath -PathType Leaf) { Remove-Item -LiteralPath $activePath -Force }
+        if (Test-Path -LiteralPath $activePath -PathType Leaf) { $cleanupErrors.Add("active request was not sealed") }
+        if ($cleanupErrors.Count -gt 0) { throw "Readiness cleanup/seal failed: $($cleanupErrors -join '; ')" }
+        $script:ReadinessCleanupSealed = $true
     }
 }
 . (Join-Path $PSScriptRoot "super1_binding_proof.ps1")
@@ -246,7 +274,7 @@ Add-ReadinessCheck "main_watchdog_fresh_health" {
     $now = [DateTimeOffset]::UtcNow
     if (($now - [DateTimeOffset]::Parse([string]$health.updated_at).ToUniversalTime()).TotalSeconds -gt 1800 -or
         ($now - [DateTimeOffset]::Parse([string]$watchdog.updated_at_utc).ToUniversalTime()).TotalSeconds -gt 1800) { throw "Main/watchdog health is stale." }
-    if ([string]$health.state -notin @("STOPPED", "WAITING_MANUAL_LEASE") -or [string]$watchdog.state -ne "WAITING_MANUAL_LEASE") { throw "Health state is not an allowlisted stopped/manual state." }
+    if ([string]$health.state -notin @("INITIALIZED", "STOPPED", "WAITING_MANUAL_LEASE") -or [string]$watchdog.state -ne "WAITING_MANUAL_LEASE") { throw "Health state is not an allowlisted stopped/manual state." }
     if ([string]$health.state -in @("CRITICAL_STOP", "UNSAFE_STOP_NO_SEND", "UNKNOWN_NO_SEND") -or
         [string]$watchdog.state -in @("WATCHDOG_ERROR", "ALARM_CRITICAL", "UNKNOWN_NO_SEND")) { throw "Critical or unknown health cannot satisfy readiness." }
 }
@@ -263,6 +291,17 @@ def count(sql):
     return int(db.execute(sql).fetchone()[0] or 0)
 total = count("SELECT COUNT(*) FROM order_event_outbox")
 distinct = count("SELECT COUNT(DISTINCT event_id) FROM order_event_outbox")
+binding_missing = count("""
+SELECT COUNT(*) FROM order_event_outbox
+WHERE json_extract(event_json, '$.event') IN ('SEND_ARMED','SEND_UNKNOWN','SUBMITTED')
+  AND (
+    COALESCE(json_extract(event_json, '$.lease_binding.lease_id'), '') = '' OR
+    COALESCE(json_extract(event_json, '$.lease_binding.release_id'), '') = '' OR
+    COALESCE(json_extract(event_json, '$.lease_binding.runner_sid'), '') = '' OR
+    COALESCE(json_extract(event_json, '$.lease_binding.invocation_nonce'), '') = '' OR
+    COALESCE(json_extract(event_json, '$.lease_binding.lease_sha256'), '') = ''
+  )
+""")
 print(json.dumps({
     "send_armed": count("SELECT COUNT(*) FROM order_intents WHERE status='SEND_ARMED'"),
     "accepted": count("SELECT COUNT(*) FROM order_intents WHERE status='SUBMITTED' AND broker_ticket IS NOT NULL"),
@@ -270,7 +309,8 @@ print(json.dumps({
     "duplicate": total - distinct,
     "outbox_total": total,
     "outbox_distinct": distinct,
-    "intent_total": count("SELECT COUNT(*) FROM order_intents")
+    "intent_total": count("SELECT COUNT(*) FROM order_intents"),
+    "binding_missing": binding_missing
 }))
 db.close()
 '@ $dbPath
@@ -281,6 +321,7 @@ db.close()
 $sendArmed = if ($null -eq $ledger) { 1 } else { [int]$ledger.send_armed }
 $acceptedSendCount = if ($null -eq $ledger) { 1 } else { [int]$ledger.accepted }
 $unknown = if ($null -eq $ledger) { 1 } else { [int]$ledger.unknown }
+$bindingMissing = if ($null -eq $ledger) { 1 } else { [int]$ledger.binding_missing }
 $duplicateSend = if ($null -eq $ledger) { 1 } else { [int]$ledger.duplicate }
 $triggerCount = 0
 try {
@@ -294,10 +335,10 @@ $leaseActive = $false
 if (Test-Path -LiteralPath $leasePath) { try { $leaseActive = ([string](Get-Content -Raw $leasePath | ConvertFrom-Json).state -ceq "ACTIVE") } catch { $leaseActive = $true } }
 $pass = @($checks.Values | Where-Object { $_.state -ne "PASS" }).Count -eq 0 -and
     $sendArmed -eq 0 -and $acceptedSendCount -eq 0 -and $duplicateSend -eq 0 -and $unknown -eq 0 -and
-    $triggerCount -eq 0 -and -not $leaseActive
+    $triggerCount -eq 0 -and $bindingMissing -eq 0 -and -not $leaseActive
 $report = [ordered]@{
     schema_version = 1
-    state = if ($pass) { "READY_FOR_ADMIN_INSTALL_SIMULATION" } else { "NOT_READY_NO_SEND" }
+    state = if ($pass -and $script:ReadinessCleanupSealed) { "READY_FOR_DEMO_SMOKE" } else { "NOT_READY_NO_SEND" }
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
     checks = $checks
     foreign_exposure = if ($null -eq $script:FlatEvidence) { 1 } else { [int]$script:FlatEvidence.open_orders + [int]$script:FlatEvidence.open_positions }
@@ -309,7 +350,9 @@ $report = [ordered]@{
     accepted_send_count = $acceptedSendCount
     unattended_trigger = $triggerCount
     real_money_allowed = $script:RealMoneyAllowed
-    lease_less_fake_or_integration_send_count = if ($null -eq $ledger) { 1 } else { $acceptedSendCount + $unknown + $sendArmed }
+    lease_less_fake_or_integration_send_count = $bindingMissing
+    binding_missing_send_state_count = $bindingMissing
+    cleanup_sealed = $script:ReadinessCleanupSealed
 }
 Write-ReadinessJson $report
 $report | ConvertTo-Json -Depth 20

@@ -353,6 +353,7 @@ try {
             "deploy/check_super1_flat_windows.ps1",
             "deploy/finalize_super1_fresh_windows.ps1",
             "deploy/install_super1_windows.ps1",
+            "deploy/super1_install_transaction.ps1",
             "deploy/install_super1_watchdog_windows.ps1",
             "deploy/recover_super1_isolated_user.ps1",
             "deploy/rollover_super1_campaign_windows.ps1",

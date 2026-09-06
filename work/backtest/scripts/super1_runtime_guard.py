@@ -69,6 +69,14 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def trade_date_ny(now: datetime | None = None) -> str:
+    """Derive the lease day from the same injectable UTC clock used by gates."""
+    observed = utc_now() if now is None else now
+    if observed.tzinfo is None:
+        raise Super1RuntimeError("Runtime clock must be timezone-aware.")
+    return observed.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+
 def parse_utc(value: object, field: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise Super1RuntimeError(f"Lease {field} is missing.")
@@ -203,7 +211,7 @@ def load_lease(root: Path, config: dict[str, Any], manifest_sha256: str | None =
     now = utc_now()
     if not str(lease.get("campaign_id") or "").strip() or not str(lease.get("release_id") or "").strip():
         raise Super1RuntimeError("Session lease campaign/release binding is missing.")
-    expected_trade_date = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    expected_trade_date = trade_date_ny(now)
     if str(lease.get("trade_date_ny")) != expected_trade_date:
         raise Super1RuntimeError("Session lease is bound to another New York trade date.")
     not_before = parse_utc(lease.get("not_before_utc"), "not_before_utc")

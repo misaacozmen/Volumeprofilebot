@@ -112,9 +112,15 @@ $plain = $null
     & $icacls $credentialPath /inheritance:r /grant:r "SYSTEM:(F)" "BUILTIN\Administrators:(F)" "${runnerUser}:(R)" /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not protect the Runner-bound credential metadata ACL." }
     $taskAction = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
-    $taskPrincipal = New-ScheduledTaskPrincipal -UserId $runnerUser -LogonType Password -RunLevel Limited
     $taskSettings = New-ScheduledTaskSettingsSet -RestartCount 0 -RestartInterval (New-TimeSpan -Minutes 15) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName ([string]$Contract.main_task) -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings -User $runnerUser -Password $runnerPlain -Force | Out-Null
+    Register-ScheduledTask `
+        -TaskName ([string]$Contract.main_task) `
+        -Action $taskAction `
+        -Settings $taskSettings `
+        -User $runnerUser `
+        -Password $runnerPlain `
+        -RunLevel Limited `
+        -Force | Out-Null
 }
 finally {
     if ($runnerPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($runnerPointer) }

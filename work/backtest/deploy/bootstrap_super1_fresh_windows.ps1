@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
-    [Parameter(Mandatory = $true)][ValidatePattern('^super1-local-demo-20260905-r6$')][string]$ExpectedReleaseId,
+    [Parameter(Mandatory = $true)][ValidatePattern('^super1-local-demo-20260906-r7$')][string]$ExpectedReleaseId,
     [Parameter(Mandatory = $true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArchiveSha256,
     [string]$PythonExe = "C:\Program Files\Python311\python.exe"
 )
@@ -36,7 +36,7 @@ $ReleaseManifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfil
 if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ExpectedArchiveSha256.ToLowerInvariant() -or
     [string]$ReleaseManifest.release_id -cne $ExpectedReleaseId -or
     [string]$ReleaseManifest.archive_file -cne "super1-forward.zip") {
-    throw "R6 bootstrap release identity/hash/archive binding failed."
+    throw "R7 bootstrap release identity/hash/archive binding failed."
 }
 if (Test-Path -LiteralPath $App) {
     throw "Super1 app already exists; refusing to overwrite it."
@@ -76,6 +76,11 @@ if ($LASTEXITCODE -ne 0 -or $PythonIdentity -cne "3.11|CPython") {
 }
 
 Expand-Archive -LiteralPath $Archive -DestinationPath $App
+$signedConfig = Join-Path $App "live_forward\super1_xm_mt5_demo_config.json"
+if (-not (Test-Path -LiteralPath $signedConfig -PathType Leaf) -or
+    [bool]((Get-Content -Raw -LiteralPath $signedConfig | ConvertFrom-Json).portable)) {
+    throw "R7 bootstrap refuses a portable MT5 runtime configuration."
+}
 & $PythonExe -m venv (Join-Path $Root "venv311")
 $Python = Join-Path $Root "venv311\Scripts\python.exe"
 Install-LockedRelease -Python $Python -App $App
@@ -111,7 +116,6 @@ if (-not (Test-Path -LiteralPath $Terminal)) {
 Get-CimInstance Win32_Process -Filter "Name = 'terminal64.exe'" |
     Where-Object { $_.ExecutablePath -eq $Terminal } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-New-Item -ItemType File -Force -Path (Join-Path (Split-Path -Parent $Terminal) "portable.txt") | Out-Null
 
 & $Python --version
 & $Python -m pip show MetaTrader5 pandas

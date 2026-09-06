@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
-    [Parameter(Mandatory = $true)][ValidatePattern('^super1-local-demo-20260905-r6$')][string]$ExpectedReleaseId,
+    [Parameter(Mandatory = $true)][ValidatePattern('^super1-local-demo-20260906-r7$')][string]$ExpectedReleaseId,
     [Parameter(Mandatory = $true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArchiveSha256,
     [string]$PythonExe = "C:\Program Files\Python311\python.exe",
     [switch]$PlanOnly,
@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
 $Contract = Assert-Super1RuntimeContract
+. (Join-Path $PSScriptRoot "super1_install_transaction.ps1")
 
 function Assert-Super1Administrator {
     if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -22,6 +23,79 @@ function Write-Super1Pin([string]$Path, [object]$Value) {
     $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try { [IO.File]::WriteAllText($temporary, (ConvertTo-Json $Value -Depth 8) + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath $temporary -Destination $Path -Force }
     finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+}
+
+function Copy-Super1ImmutableFile([string]$Source, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw "Release input is missing: $Source" }
+    if (Test-Path -LiteralPath $Destination) { throw "Immutable staging destination already exists: $Destination" }
+    $sourceStream = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $destinationStream = $null
+    try {
+        $destinationStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $sourceStream.CopyTo($destinationStream)
+        $destinationStream.Flush($true)
+    }
+    finally {
+        if ($destinationStream) { $destinationStream.Dispose() }
+        if ($sourceStream) { $sourceStream.Dispose() }
+    }
+}
+
+function Get-Super1TreeSnapshot([string]$Path) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $resolved)) { return [ordered]@{ exists = $false; type = "missing" } }
+    $item = Get-Item -LiteralPath $resolved -Force
+    if ($item.PSIsContainer) {
+        $rows = New-Object Collections.Generic.List[string]
+        foreach ($file in @(Get-ChildItem -LiteralPath $resolved -Recurse -File -Force -ErrorAction Stop)) {
+            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Cannot snapshot reparse-backed path: $($file.FullName)" }
+            $relative = $file.FullName.Substring($resolved.Length).TrimStart('\', '/') -replace '\\', '/'
+            $rows.Add("$relative=$((Get-Super1Hash $file.FullName))")
+        }
+        $joined = ($rows | Sort-Object) -join "`n"
+        $treeHash = [Security.Cryptography.SHA256]::Create()
+        try {
+            $treeSha256 = [BitConverter]::ToString($treeHash.ComputeHash([Text.Encoding]::UTF8.GetBytes($joined))).Replace("-", "").ToLowerInvariant()
+        }
+        finally { $treeHash.Dispose() }
+        return [ordered]@{
+            exists = $true
+            type = "directory"
+            file_count = $rows.Count
+            tree_sha256 = $treeSha256
+            owner = [string](Get-Acl -LiteralPath $resolved).Owner
+            sddl = [string](Get-Acl -LiteralPath $resolved).Sddl
+        }
+    }
+    return [ordered]@{ exists = $true; type = "file"; sha256 = Get-Super1Hash $resolved; owner = [string](Get-Acl -LiteralPath $resolved).Owner; sddl = [string](Get-Acl -LiteralPath $resolved).Sddl }
+}
+
+function Get-Super1TaskSnapshot([string]$TaskName, [string]$Destination) {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) { return [ordered]@{ task = $TaskName; exists = $false } }
+    if ([string]$task.State -in @("Running", "Queued")) {
+        throw "Super1 task is active; refusing to replace it during a fresh transaction: $TaskName"
+    }
+    $xml = Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    [IO.File]::WriteAllText($Destination, $xml, (New-Object Text.UTF8Encoding($false)))
+    return [ordered]@{
+        task = $TaskName
+        exists = $true
+        xml = $Destination
+        xml_sha256 = Get-Super1Hash $Destination
+        state = [string]$task.State
+        last_task_result = [int64](Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction Stop).LastTaskResult
+        principal = [string]$task.Principal.UserId
+        logon_type = [string]$task.Principal.LogonType
+        run_level = [string]$task.Principal.RunLevel
+        settings = [ordered]@{
+            restart_count = [int]$task.Settings.RestartCount
+            wake_to_run = [bool]$task.Settings.WakeToRun
+            disallow_start_on_batteries = [bool]$task.Settings.DisallowStartIfOnBatteries
+            stop_on_batteries = [bool]$task.Settings.StopIfGoingOnBatteries
+        }
+        trigger_count = @($task.Triggers).Count
+    }
 }
 
 $integrity = Join-Path $PSScriptRoot "release_integrity.ps1"
@@ -35,35 +109,43 @@ function Invoke-Super1ReleasePreflight {
         [Parameter(Mandatory = $true)][string]$ArchiveSha256
     )
     $directoryPath = [IO.Path]::GetFullPath($Directory)
-    if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) { throw "R6 release directory is missing: $directoryPath" }
+    if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) { throw "R7 release directory is missing: $directoryPath" }
     $archivePath = Join-Path $directoryPath "super1-forward.zip"
     $manifestPath = Join-Path $directoryPath "super1-forward.manifest.json"
     $signaturePath = Join-Path $directoryPath "super1-forward.manifest.sig"
     foreach ($path in @($archivePath, $manifestPath, $signaturePath)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Signed R6 triple is incomplete: $path" }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Signed R7 triple is incomplete: $path" }
+    }
+    $topLevel = @(Get-ChildItem -LiteralPath $directoryPath -Force)
+    if ($topLevel.Count -ne 3 -or @($topLevel | Where-Object { -not $_.PSIsContainer -and $_.Name -notin @("super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig") }).Count -ne 0) {
+        throw "R7 release directory must contain exactly the signed triple."
     }
     $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -cne $ArchiveSha256.ToLowerInvariant()) { throw "R6 archive hash does not match -ExpectedArchiveSha256." }
+    if ($actualHash -cne $ArchiveSha256.ToLowerInvariant()) { throw "R7 archive hash does not match -ExpectedArchiveSha256." }
     $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
     $signed = Assert-SignedReleaseArchive -Archive $archivePath -ExpectedProfile "super1" -SourceRoot $sourceRoot -RequireProvenance
     if ([string]$signed.archive_file -cne "super1-forward.zip" -or
         [string]$signed.release_id -cne $ReleaseId -or
-        [string]$signed.archive_sha256 -cne $actualHash) { throw "R6 signed manifest identity/archive binding is invalid." }
+        [string]$signed.archive_sha256 -cne $actualHash) { throw "R7 signed manifest identity/archive binding is invalid." }
     if ([int]$signed.pytest_collected_count -lt 566 -or
         [int]$signed.artifact_pytest_collected_count -lt 259 -or
         [int]$signed.pytest_pass_count -ne [int]$signed.pytest_collected_count -or
         [int]$signed.artifact_pytest_pass_count -ne [int]$signed.artifact_pytest_collected_count -or
         [int]$signed.pytest_skipped_count -ne 0 -or [int]$signed.artifact_pytest_skipped_count -ne 0) {
-        throw "R6 signed test inventory is below 566/259 or contains skipped tests."
+        throw "R7 signed test inventory is below 566/259 or contains skipped tests."
     }
-    if (Test-Path -LiteralPath (Join-Path $sourceRoot ".git") -PathType Container) {
-        $dirty = @(& git -C $sourceRoot status --porcelain)
-        if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw "R6 source tree is not clean before install." }
-        $head = (& git -C $sourceRoot rev-parse HEAD).Trim()
-        if ($head -cne [string]$signed.git_commit) { throw "R6 signed commit does not match clean source HEAD." }
+    $gitRoot = (& git -C $sourceRoot rev-parse --show-toplevel 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitRoot)) {
+        $gitRoot = (& git rev-parse --show-toplevel 2>$null).Trim()
     }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitRoot)) { throw "Could not resolve the repository root for R7 provenance." }
+    $dirty = @(& git -C $gitRoot status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw "R7 source tree is not clean before install." }
+    $head = (& git -C $gitRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $head -cne [string]$signed.git_commit) { throw "R7 signed commit does not match clean source HEAD." }
     foreach ($critical in @(
         @{ path = "deploy/install_super1_windows.ps1"; actual = $PSCommandPath },
+        @{ path = "deploy/super1_install_transaction.ps1"; actual = (Join-Path $PSScriptRoot "super1_install_transaction.ps1") },
         @{ path = "deploy/release_integrity.ps1"; actual = $integrity }
     )) {
         $entry = @($signed.files | Where-Object { [string]$_.path -ceq $critical.path })
@@ -85,8 +167,7 @@ function Invoke-Super1ReleasePreflight {
 $preflight = Invoke-Super1ReleasePreflight -Directory $ReleaseDirectory -ReleaseId $ExpectedReleaseId -ArchiveSha256 $ExpectedArchiveSha256
 if ($PlanOnly -or $WhatIf) {
     [ordered]@{
-        state = "PLAN_ONLY_PRECHECK_PASS"
-        mutation = $false
+        state = "PREINSTALL_SIGNED_RELEASE_PREFLIGHT_PASS"
         release_id = $preflight.release_id
         archive = $preflight.archive
         manifest = $preflight.manifest
@@ -95,7 +176,10 @@ if ($PlanOnly -or $WhatIf) {
         git_commit = $preflight.git_commit
         pytest_collected = $preflight.pytest_collected
         artifact_pytest_collected = $preflight.artifact_pytest_collected
-        transaction_triple = "same-journal-release-triple-with-rollback"
+        transaction_simulated = $false
+        admin_install_executed = $false
+        readiness_executed = $false
+        mutation = $false
     } | ConvertTo-Json -Depth 6
     exit 0
 }
@@ -130,10 +214,17 @@ $taskBackups = @()
 $newTargets = @()
 $runnerCredentialBackup = $null
 $runnerCredentialPath = $null
+$runnerCredentialExistedBefore = $false
 $tasksWereRemoved = $false
 $newTasksRegistered = $false
 $rootAclBackupPath = $null
 $aclBackupEntries = @()
+$preState = $null
+$preRootSnapshot = $null
+$oldTasksRemoved = $false
+$stagedReleaseRoot = $null
+$readinessExecuted = $false
+$readinessState = $null
 $transactionJournal = Join-Path $transactionRoot "transaction.json"
 $releaseMetadata = [ordered]@{
     release_id = [string]$preflight.release_id
@@ -153,15 +244,62 @@ function Write-Super1TransactionJournal([string]$Status, [string]$ErrorMessage =
         status = $Status
         error = $ErrorMessage
         updated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
+        pre_state = $preState
         signed_release_triple = $releaseMetadata
         moved = @($movedEntries)
         task_backups = @($taskBackups)
+        readiness_executed = $readinessExecuted
+        readiness_state = $readinessState
     }
     [IO.File]::WriteAllText(
         $transactionJournal,
         (($payload | ConvertTo-Json -Depth 8 -Compress) + [Environment]::NewLine),
         (New-Object Text.UTF8Encoding($false))
     )
+}
+
+function Get-Super1PreStateSnapshot([string]$TaskBackupRoot) {
+    $taskStates = @()
+    foreach ($taskName in $taskNames) {
+        $taskBackupPath = Join-Path $TaskBackupRoot ($taskName + ".xml")
+        $taskStates += Get-Super1TaskSnapshot -TaskName $taskName -Destination $taskBackupPath
+    }
+    $credentialHash = $null
+    $credentialExists = $false
+    $existingRunner = Get-LocalUser -Name $runnerName -ErrorAction SilentlyContinue
+    if ($null -ne $existingRunner) {
+        $runnerIdentity = "$env:COMPUTERNAME\$runnerName"
+        try {
+            $runnerSid = ([Security.Principal.NTAccount]::new($runnerIdentity)).Translate([Security.Principal.SecurityIdentifier]).Value
+            $runnerProfile = Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object { [string]$_.SID -ceq $runnerSid } | Select-Object -First 1
+            if ($runnerProfile -and $runnerProfile.LocalPath) {
+                $candidateCredential = Join-Path ([string]$runnerProfile.LocalPath) "AppData\Local\Super1\xm-password.dpapi"
+                $credentialExists = Test-Path -LiteralPath $candidateCredential -PathType Leaf
+                if ($credentialExists) { $credentialHash = Get-Super1Hash $candidateCredential }
+            }
+        }
+        catch { $credentialExists = $false; $credentialHash = $null }
+    }
+    return [ordered]@{
+        root = $preRootSnapshot
+        app = Get-Super1TreeSnapshot $app
+        venv = Get-Super1TreeSnapshot $oldVenv
+        state = Get-Super1TreeSnapshot $oldState
+        control = Get-Super1TreeSnapshot $oldControl
+        trust = Get-Super1TreeSnapshot $oldTrust
+        terminal = Get-Super1TreeSnapshot $terminalRoot
+        portable_marker = Get-Super1TreeSnapshot $portableMarker
+        release_archive = Get-Super1TreeSnapshot ([string]$Contract.release_archive)
+        release_manifest = Get-Super1TreeSnapshot ([string]$Contract.release_manifest)
+        release_signature = Get-Super1TreeSnapshot ([string]$Contract.release_signature)
+        runner = [ordered]@{
+            exists = $null -ne $existingRunner
+            sid = if ($null -eq $existingRunner) { $null } else { [string]$existingRunner.SID }
+            enabled = if ($null -eq $existingRunner) { $null } else { [bool]$existingRunner.Enabled }
+        }
+        credential = [ordered]@{ exists = $credentialExists; sha256 = $credentialHash }
+        tasks = @($taskStates)
+    }
 }
 
 function Move-Super1ExistingToArchive([string]$Source, [string]$Destination) {
@@ -189,24 +327,86 @@ function Protect-Super1RecoveryRoot([string]$Path) {
     if ($LASTEXITCODE -ne 0) { throw "Could not protect the Super1 recovery transaction archive." }
 }
 
+function Assert-Super1ExtractedPayload([string]$Path, [object]$Manifest) {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Recurse -Force)) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Extracted R7 payload contains a reparse point: $($entry.FullName)"
+        }
+    }
+    $expected = @{}
+    foreach ($file in @($Manifest.files)) {
+        $relative = ([string]$file.path) -replace '\\', '/'
+        if ([string]::IsNullOrWhiteSpace($relative) -or $relative.StartsWith('/') -or $relative.Contains('../')) {
+            throw "Signed R7 manifest contains an unsafe extracted path: $relative"
+        }
+        $expected[$relative] = [string]$file.sha256
+        $target = Join-Path $Path ($relative -replace '/', '\\')
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
+            (Get-Super1Hash $target) -cne [string]$file.sha256) {
+            throw "Extracted R7 payload hash mismatch: $relative"
+        }
+    }
+    $actual = @(
+        Get-ChildItem -LiteralPath $Path -Recurse -File -Force |
+            ForEach-Object { $_.FullName.Substring($Path.Length).TrimStart('\\', '/') -replace '\\', '/' }
+    )
+    $unexpected = @($actual | Where-Object { -not $expected.ContainsKey($_) })
+    if ($unexpected.Count -gt 0 -or $actual.Count -ne $expected.Count) {
+        throw "Extracted R7 payload contains unexpected or missing files."
+    }
+}
+
 $runner = Get-LocalUser -Name $runnerName -ErrorAction SilentlyContinue
 $runnerPassword = $null
-if ($null -eq $runner) {
-    $runnerPassword = Read-Host "Super1Runner Windows parolasi" -AsSecureString
-    New-LocalUser -Name $runnerName -Password $runnerPassword -Description "Super1 local non-administrator runner" -AccountNeverExpires -PasswordNeverExpires | Out-Null
-    $runnerCreated = $true
-}
 
 $state = [string]$Contract.state
 $control = [string]$Contract.control
 $trust = [string]$Contract.runtime_trust
+$icacls = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
+$terminalRoot = Split-Path -Parent $terminal
+$portableMarker = Join-Path $terminalRoot "portable.txt"
+$portableModeDetected = Test-Path -LiteralPath $portableMarker -PathType Leaf
 try {
+    $preRootSnapshot = Get-Super1TreeSnapshot $root
     New-Item -ItemType Directory -Force -Path $transactionRoot | Out-Null
     Protect-Super1RecoveryRoot -Path $transactionRoot
+    $taskBackupRoot = Join-Path $transactionRoot "task-backup"
+    New-Item -ItemType Directory -Force -Path $taskBackupRoot | Out-Null
+    $preState = Get-Super1PreStateSnapshot -TaskBackupRoot $taskBackupRoot
+    $taskBackups = @($preState.tasks | Where-Object { [bool]$_.exists } | ForEach-Object {
+        [pscustomobject]@{ task = [string]$_.task; xml = [string]$_.xml }
+    })
     Write-Super1TransactionJournal -Status "PREPARED"
 
+    if ($null -eq $runner) {
+        $runnerPassword = Read-Host "Super1Runner Windows parolasi" -AsSecureString
+        New-LocalUser -Name $runnerName -Password $runnerPassword -Description "Super1 local non-administrator runner" -AccountNeverExpires -PasswordNeverExpires | Out-Null
+        $runnerCreated = $true
+        $runner = Get-LocalUser -Name $runnerName -ErrorAction Stop
+    }
+
+    $stagedReleaseRoot = Join-Path $transactionRoot "release-staging"
+    New-Item -ItemType Directory -Force -Path $stagedReleaseRoot | Out-Null
+    $externalArchive = $archive
+    $externalManifest = $releaseManifest
+    $externalSignature = $releaseSignature
+    $stagedArchive = Join-Path $stagedReleaseRoot "super1-forward.zip"
+    $stagedManifest = Join-Path $stagedReleaseRoot "super1-forward.manifest.json"
+    $stagedSignature = Join-Path $stagedReleaseRoot "super1-forward.manifest.sig"
+    Copy-Super1ImmutableFile -Source $externalArchive -Destination $stagedArchive
+    Copy-Super1ImmutableFile -Source $externalManifest -Destination $stagedManifest
+    Copy-Super1ImmutableFile -Source $externalSignature -Destination $stagedSignature
+    $stagedSigned = Assert-SignedReleaseArchive -Archive $stagedArchive -ExpectedProfile "super1" -SourceRoot ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))) -RequireProvenance
+    if ([string]$stagedSigned.release_id -cne [string]$preflight.release_id -or
+        [string]$stagedSigned.archive_sha256 -cne [string]$preflight.archive_sha256) {
+        throw "Staged R7 release triple changed during immutable copy."
+    }
+    $archive = $stagedArchive
+    $releaseManifest = $stagedManifest
+    $releaseSignature = $stagedSignature
+    Write-Super1TransactionJournal -Status "STAGED_RELEASE_VERIFIED"
+
     $rootAclBackupPath = Join-Path $transactionRoot "root.acl"
-    $icacls = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
     & $icacls $root /save $rootAclBackupPath /c /q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not back up the existing Super1 root ACL." }
     & $icacls $root /inheritance:r /grant:r "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" /Q | Out-Null
@@ -218,20 +418,18 @@ try {
         @{ source = $releaseSignature; destination = [string]$Contract.release_signature; name = "release-signature.previous" }
     )) {
         Move-Super1ExistingToArchive -Source $item.destination -Destination (Join-Path $transactionRoot $item.name)
-        Copy-Item -LiteralPath $item.source -Destination $item.destination -Force
+        Copy-Super1ImmutableFile -Source $item.source -Destination $item.destination
         $newTargets += $item.destination
     }
     Write-Super1TransactionJournal -Status "RELEASE_TRIPLE_PROMOTED"
 
-    $taskBackupRoot = Join-Path $transactionRoot "task-backup"
-    New-Item -ItemType Directory -Force -Path $taskBackupRoot | Out-Null
     foreach ($taskName in $taskNames) {
-        $taskBackupPath = Join-Path $taskBackupRoot ($taskName + ".xml")
-        if (Export-Super1ExistingTask -TaskName $taskName -Destination $taskBackupPath) {
+        if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
-            $tasksWereRemoved = $true
         }
     }
+    $oldTasksRemoved = $true
+    Write-Super1TransactionJournal -Status "TASKS_ARCHIVED"
 
     $runnerIdentity = "$env:COMPUTERNAME\$runnerName"
     $runnerSid = if ($null -ne $runner) {
@@ -240,6 +438,7 @@ try {
         ).Value
     } else { $null }
     if ($runnerSid) {
+        $runnerCredentialExistedBefore = [bool]$preState.credential.exists
         $runnerProfile = Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object {
             [string]$_.SID -ceq $runnerSid
         } | Select-Object -First 1
@@ -259,7 +458,8 @@ try {
         @{ name = "venv311"; path = $oldVenv },
         @{ name = "state"; path = $oldState },
         @{ name = "control"; path = $oldControl },
-        @{ name = "runtime-trust"; path = $oldTrust }
+        @{ name = "runtime-trust"; path = $oldTrust },
+        @{ name = "terminal"; path = $terminalRoot }
     )) {
         if (Test-Path -LiteralPath $item.path) {
             & $icacls $item.path /save (Join-Path $aclBackupRoot ($item.name + ".acl")) /t /c /q | Out-Null
@@ -275,9 +475,20 @@ try {
     Move-Super1ExistingToArchive -Source $oldState -Destination (Join-Path $transactionRoot "state.previous")
     Move-Super1ExistingToArchive -Source $oldControl -Destination (Join-Path $transactionRoot "control.previous")
     Move-Super1ExistingToArchive -Source $oldTrust -Destination (Join-Path $transactionRoot "runtime-trust.previous")
+    Move-Super1ExistingToArchive -Source $portableMarker -Destination (Join-Path $transactionRoot "portable.txt.previous")
+    if ($portableModeDetected) {
+        $portableStateArchive = Join-Path $transactionRoot "portable-state.previous"
+        New-Item -ItemType Directory -Force -Path $portableStateArchive | Out-Null
+        foreach ($portableName in @("bases", "config", "MQL5", "profiles", "logs", "templates", "tester")) {
+            Move-Super1ExistingToArchive `
+                -Source (Join-Path $terminalRoot $portableName) `
+                -Destination (Join-Path $portableStateArchive $portableName)
+        }
+    }
     Write-Super1TransactionJournal -Status "OLD_STATE_ARCHIVED"
 
     Expand-Archive -LiteralPath $archive -DestinationPath $appNext
+    Assert-Super1ExtractedPayload -Path $appNext -Manifest $stagedSigned
     $python = Join-Path $root "venv311\Scripts\python.exe"
     $newTargets += $oldVenv
     & $pythonPath -m venv (Join-Path $root "venv311")
@@ -291,12 +502,20 @@ try {
     $helper = Join-Path $app "deploy\super1_secure_task.ps1"
     . $helper
     $runnerSid = Get-Super1SecurePrincipalSid -Identity $runnerIdentity
+    & $icacls $root /grant:r "${runnerSid}:(RX)" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not grant the Runner root traverse/read access." }
     $newTargets += $state
     New-Super1SecureDirectory -Path $state -RunnerSid $runnerSid -RunnerRights ([Security.AccessControl.FileSystemRights]::Modify) | Out-Null
     $newTargets += $control
     New-Super1SecureDirectory -Path $control -RunnerSid $runnerSid | Out-Null
     $newTargets += $trust
     New-Super1SecureDirectory -Path $trust -RunnerSid $runnerSid | Out-Null
+    & $icacls $oldVenv /inheritance:r /grant:r "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" "${runnerSid}:(OI)(CI)(RX)" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not grant the Runner venv read/execute access." }
+    if (Test-Path -LiteralPath $terminalRoot -PathType Container) {
+        & $icacls $terminalRoot /inheritance:r /grant:r "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" "${runnerSid}:(OI)(CI)(RX)" /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not harden the dedicated XM terminal program tree." }
+    }
     Protect-ReleaseApp -App $app -RunnerIdentity "$env:COMPUTERNAME\$runnerName"
 
     $terminalSignature = Get-AuthenticodeSignature -LiteralPath $terminal
@@ -319,61 +538,40 @@ try {
     & $python -I -E -B (Join-Path $app "scripts\run_super1_xm_mt5_forward.py") --output-root $state init
     if ($LASTEXITCODE -ne 0) { throw "Fresh Super1 campaign initialization failed." }
     & (Join-Path $app "deploy\finalize_super1_fresh_windows.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "Fresh Super1 task finalization failed." }
     $newTasksRegistered = $true
+    $readinessOutput = & (Join-Path $app "deploy\test_super1_local_readiness.ps1")
+    $readinessExecuted = $true
+    if ($LASTEXITCODE -ne 0) { throw "Fresh Super1 readiness failed." }
+    $readinessState = ((($readinessOutput -join "`n") | ConvertFrom-Json).state)
+    if ([string]$readinessState -cne "READY_FOR_DEMO_SMOKE") {
+        throw "Fresh Super1 readiness did not return READY_FOR_DEMO_SMOKE."
+    }
+    Write-Super1TransactionJournal -Status "READINESS_COMPLETE"
     Write-Super1TransactionJournal -Status "COMPLETE"
 }
 catch {
     if (Test-Path -LiteralPath $appNext) { Remove-Item -LiteralPath $appNext -Recurse -Force }
     $failure = [string]$_.Exception.Message
-    $rollbackErrors = New-Object Collections.Generic.List[string]
-    try {
-        foreach ($taskName in $taskNames) {
-            if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-                Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
-            }
-        }
-    } catch { $rollbackErrors.Add("task removal: $($_.Exception.Message)") }
-    foreach ($target in $newTargets) {
-        if (Test-Path -LiteralPath $target) {
-            try {
-                $failedTarget = Join-Path $transactionRoot (([IO.Path]::GetFileName($target)) + ".failed")
-                if (-not (Test-Path -LiteralPath $failedTarget)) {
-                    Move-Item -LiteralPath $target -Destination $failedTarget -Force
-                }
-            } catch { $rollbackErrors.Add("new target ${target}: $($_.Exception.Message)") }
-        }
-    }
-    foreach ($entry in @($movedEntries | Select-Object -Reverse)) {
-        if (Test-Path -LiteralPath $entry.archive -PathType Container -and -not (Test-Path -LiteralPath $entry.source)) {
-            try { Move-Item -LiteralPath $entry.archive -Destination $entry.source } catch { $rollbackErrors.Add("restore $($entry.source): $($_.Exception.Message)") }
-        }
-    }
-    foreach ($backup in $taskBackups) {
-        try {
-            Register-ScheduledTask -TaskName ([string]$backup.task) -Xml (Get-Content -Raw -LiteralPath ([string]$backup.xml)) -Force | Out-Null
-        } catch { $rollbackErrors.Add("restore task $($backup.task): $($_.Exception.Message)") }
-    }
-    if ($runnerCredentialBackup -and $runnerCredentialPath -and (Test-Path -LiteralPath $runnerCredentialBackup)) {
-        try { Copy-Item -LiteralPath $runnerCredentialBackup -Destination $runnerCredentialPath -Force } catch { $rollbackErrors.Add("restore Runner credential metadata: $($_.Exception.Message)") }
-    }
-    if ($runnerCreated) {
-        try { Remove-LocalUser -Name $runnerName -ErrorAction Stop } catch { $rollbackErrors.Add("remove newly created Runner: $($_.Exception.Message)") }
-    }
-    foreach ($entry in @($aclBackupEntries | Select-Object -Reverse)) {
-        if (Test-Path -LiteralPath ([string]$entry.backup) -PathType Leaf -and Test-Path -LiteralPath ([string]$entry.path)) {
-            try {
-                & $icacls ([string]$entry.path) /restore ([string]$entry.backup) /c /q | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "icacls exit code $LASTEXITCODE" }
-            }
-            catch { $rollbackErrors.Add("restore ACL $($entry.path): $($_.Exception.Message)") }
-        }
-    }
-    if ($rootAclBackupPath -and (Test-Path -LiteralPath $rootAclBackupPath -PathType Leaf)) {
-        try {
-            & $icacls $root /restore $rootAclBackupPath /c /q | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "icacls exit code $LASTEXITCODE" }
-        }
-        catch { $rollbackErrors.Add("restore ACL ${root}: $($_.Exception.Message)") }
+    $rollbackErrors = Invoke-Super1TransactionRollback `
+        -RootPath $root `
+        -TransactionPath $transactionRoot `
+        -TaskNameList $taskNames `
+        -OldTasksRemoved $oldTasksRemoved `
+        -NewTargetList $newTargets `
+        -MovedEntryList $movedEntries `
+        -TaskBackupList $taskBackups `
+        -CredentialBackup $runnerCredentialBackup `
+        -CredentialPath $runnerCredentialPath `
+        -RunnerWasCreated $runnerCreated `
+        -RunnerName $runnerName `
+        -AclBackupList $aclBackupEntries `
+        -RootAclBackup $rootAclBackupPath `
+        -IcaclsPath $icacls
+    if ($runnerCredentialPath -and -not $runnerCredentialExistedBefore -and
+        (Test-Path -LiteralPath $runnerCredentialPath -PathType Leaf)) {
+        try { Remove-Item -LiteralPath $runnerCredentialPath -Force }
+        catch { $rollbackErrors.Add("remove newly created Runner credential metadata: $($_.Exception.Message)") }
     }
     try { Write-Super1TransactionJournal -Status "ROLLED_BACK" -ErrorMessage $failure } catch { $rollbackErrors.Add("journal: $($_.Exception.Message)") }
     if ($rollbackErrors.Count -gt 0) {

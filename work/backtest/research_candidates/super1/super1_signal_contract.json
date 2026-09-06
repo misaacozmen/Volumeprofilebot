@@ -21,11 +21,11 @@
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY",
     "defines_base_signals": false,
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
-    "runtime_sha256": "805186a1a408168d0192fd063b5fc5e92a4c184b65851ae4dd9f08a72f27eebc"
+    "runtime_sha256": "0cd92e0a17e2a9ddff24064f21162fd22295f29bca4c5999af38147623f56ba7"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
-    "sha256": "720dc8365134b65e02ac88e4d9fc6ab3c84c7c54e3e85b25198f21f1d42d568e",
+    "sha256": "501bdb86f91dcfd7d55d76e9dabd34938e595cb28a9adf892242fb82c3e8f561",
     "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
   },
   "rth_session_calendar": {

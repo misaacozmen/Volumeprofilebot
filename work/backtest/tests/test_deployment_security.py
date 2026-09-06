@@ -105,13 +105,14 @@ def test_installers_limit_restart_and_task_privilege() -> None:
 
 def test_super1_fresh_install_archives_existing_state_and_rolls_back() -> None:
     source = text("install_super1_windows.ps1")
+    transaction = text("super1_install_transaction.ps1")
     for archived in ("app.previous", "venv311.previous", "state.previous", "control.previous", "runtime-trust.previous"):
         assert archived in source
     assert "fresh-install-" in source
     assert "Export-ScheduledTask" in source
     assert "icacls.exe" in source
     assert "Super1 task is active; refusing to replace" in source
-    assert "Register-ScheduledTask -TaskName ([string]$backup.task)" in source
+    assert "Register-ScheduledTask -TaskName ([string]$backup.task)" in transaction
     assert "Super1 fresh-install transaction rolled back" in source
     assert "Super1 app already exists; refusing to overwrite" not in source
 
