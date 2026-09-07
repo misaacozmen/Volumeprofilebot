@@ -374,6 +374,7 @@ try {
             "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
             "scripts/run_super1_xm_mt5_forward.py",
             "scripts/super1_runtime_guard.py",
+            "scripts/super1_lease_cli.py",
             "scripts/discover_super1_xm_account.py"
         )
         $requiredPayloadFiles += $Super1ProvenanceFiles

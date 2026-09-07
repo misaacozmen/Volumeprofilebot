@@ -22,6 +22,7 @@ $ErrorActionPreference = "Stop"
 $RuntimeContract = Assert-Super1RuntimeContract
 $CanonicalRunner = [string]$RuntimeContract.python
 $CanonicalHarness = [string](Join-Path ([string]$RuntimeContract.app) "scripts\run_super1_xm_mt5_forward.py")
+$LeaseCli = [string](Join-Path ([string]$RuntimeContract.app) "scripts\super1_lease_cli.py")
 $CanonicalTerminal = [string]$RuntimeContract.terminal
 $LeasePath = Join-Path ([string]$RuntimeContract.control) "session-lease.json"
 $ConfigPath = Join-Path ([string]$RuntimeContract.app) ([string]$RuntimeContract.runtime_config)
@@ -560,42 +561,44 @@ function Get-Super1ReadinessEvidence {
 }
 
 function Read-Super1LeaseState {
-    if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) {
-        return [pscustomobject]@{ State = "MISSING"; Lease = $null; LeaseId = ""; Detail = "lease file is missing" }
-    }
-    $lease = $null
+    $stdoutPath = "$LeasePath.$PID.lease-cli.stdout"
+    $stderrPath = "$LeasePath.$PID.lease-cli.stderr"
     try {
-        $lease = Get-Content -LiteralPath $LeasePath -Raw | ConvertFrom-Json
-        $leaseId = [string]$lease.lease_id
-        $now = [DateTimeOffset]::UtcNow
-        $expires = [DateTimeOffset]::Parse([string]$lease.expires_at_utc).ToUniversalTime()
-        if ([string]$lease.state -ceq "REVOKED") {
-            return [pscustomobject]@{ State = "REVOKED"; Lease = $lease; LeaseId = $leaseId; Detail = "lease is revoked" }
+        if (-not (Test-Path -LiteralPath $LeaseCli -PathType Leaf)) {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $null; LeaseId = ""; Detail = "canonical lease CLI is missing" }
         }
-        if ([string]$lease.state -cne "ACTIVE") {
-            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "lease state is not ACTIVE" }
+        $process = Start-Process -FilePath $CanonicalRunner -ArgumentList @(
+            "-I", "-E", "-B", $LeaseCli, "--root", ([string]$RuntimeContract.root)
+        ) -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { [IO.File]::ReadAllText($stdoutPath) } else { "" }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { [IO.File]::ReadAllText($stderrPath) } else { "" }
+        $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($lines.Count -ne 1 -or $process.ExitCode -notin @(0, 2)) {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $null; LeaseId = ""; Detail = "canonical lease CLI failed: exit=$($process.ExitCode) $stderr" }
         }
-        if ($expires -le $now) {
-            return [pscustomobject]@{ State = "EXPIRED"; Lease = $lease; LeaseId = $leaseId; Detail = "lease expiry has passed" }
+        $payload = $lines[0] | ConvertFrom-Json -ErrorAction Stop
+        $state = [string]$payload.state
+        if ($state -notin @("ACTIVE", "MISSING", "REVOKED", "EXPIRED", "INVALID")) {
+            return [pscustomobject]@{ State = "INVALID"; Lease = $null; LeaseId = [string]$payload.lease_id; Detail = "canonical lease CLI returned an unknown state" }
         }
-        if ([string]$lease.machine_binding -cne $env:COMPUTERNAME.ToUpperInvariant()) {
-            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "machine binding mismatch" }
+        return [pscustomobject]@{
+            State = $state
+            Lease = $payload.lease
+            LeaseId = [string]$payload.lease_id
+            Detail = [string]$payload.detail
         }
-        $configHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $manifestHash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ([string]$lease.config_sha256 -cne $configHash -or
-            [string]$lease.app_manifest_sha256 -cne $manifestHash -or
-            [string]$lease.mode -cne "DEMO_ORDER") {
-            return [pscustomobject]@{ State = "INVALID"; Lease = $lease; LeaseId = $leaseId; Detail = "lease hash or mode binding mismatch" }
-        }
-        return [pscustomobject]@{ State = "ACTIVE"; Lease = $lease; LeaseId = $leaseId; Detail = "active lease is valid" }
     }
     catch {
         return [pscustomobject]@{
             State = "INVALID"
-            Lease = $lease
-            LeaseId = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+            Lease = $null
+            LeaseId = ""
             Detail = "lease is unreadable or invalid: $($_.Exception.Message)"
+        }
+    }
+    finally {
+        foreach ($path in @($stdoutPath, $stderrPath)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
         }
     }
 }
@@ -689,33 +692,29 @@ function Restart-MainTask {
 
     $now = [DateTimeOffset]::UtcNow
     Prune-RestartHistory -Now $now
-    if ([string](Read-Super1LeaseState).State -ne "ACTIVE") {
-        return [pscustomobject]@{ Restarted = $false; State = "WAITING_MANUAL_LEASE"; Detail = "$Reason; no active manual lease" }
-    }
-    if (Test-Path -LiteralPath $RestartBudgetLatchPath -PathType Leaf) {
-        return [pscustomobject]@{ Restarted = $false; State = "RESTART_BUDGET_EXHAUSTED_NO_SEND"; Detail = "Persistent restart-budget latch is set." }
-    }
-    if ($restartHistory.Count -ge $MaximumRestarts) {
-        Write-JsonAtomically -Path $RestartBudgetLatchPath -Value @{
-            schema_version = 1
-            state = "RESTART_BUDGET_EXHAUSTED_NO_SEND"
-            restart_count = $restartHistory.Count
-            restart_window_minutes = $RestartWindowMinutes
-            updated_at_utc = $now.ToString("o")
-            reason = $Reason
-        }
-        return [pscustomobject]@{
-            Restarted = $false
-            State = "ALARM_RESTART_LOOP"
-            Detail = "$Reason; restart limit reached"
-        }
-    }
-
     $mutex = [Threading.Mutex]::new($false, [string]$RuntimeContract.order_mutex)
     $held = $false
     try {
         $held = $mutex.WaitOne(30000)
         if (-not $held) { return [pscustomobject]@{ Restarted = $false; State = "UNKNOWN_NO_SEND"; Detail = "Could not acquire order transport mutex." } }
+        $leaseEvidence = Read-Super1LeaseState
+        if ([string]$leaseEvidence.State -ne "ACTIVE") {
+            return [pscustomobject]@{ Restarted = $false; State = "WAITING_MANUAL_LEASE"; Detail = "$Reason; no active manual lease" }
+        }
+        if (Test-Path -LiteralPath $RestartBudgetLatchPath -PathType Leaf) {
+            return [pscustomobject]@{ Restarted = $false; State = "RESTART_BUDGET_EXHAUSTED_NO_SEND"; Detail = "Persistent restart-budget latch is set." }
+        }
+        if ($restartHistory.Count -ge $MaximumRestarts) {
+            Write-JsonAtomically -Path $RestartBudgetLatchPath -Value @{
+                schema_version = 1
+                state = "RESTART_BUDGET_EXHAUSTED_NO_SEND"
+                restart_count = $restartHistory.Count
+                restart_window_minutes = $RestartWindowMinutes
+                updated_at_utc = $now.ToString("o")
+                reason = $Reason
+            }
+            return [pscustomobject]@{ Restarted = $false; State = "ALARM_RESTART_LOOP"; Detail = "$Reason; restart limit reached" }
+        }
         Stop-ScheduledTask -TaskName $MainTaskName -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         if (@(Get-Super1ExactRunnerProcesses).Count -ne 0) {
@@ -739,17 +738,29 @@ function Restart-MainTask {
 function Ensure-Super1SafeStopRequest {
     param([object]$Lease, [string]$Reason)
     $path = Join-Path ([string]$RuntimeContract.control) "stop-request.json"
+    $leaseHash = if (Test-Path -LiteralPath $LeasePath -PathType Leaf) {
+        (Get-FileHash -LiteralPath $LeasePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else { "" }
+    $leaseId = if ($null -eq $Lease) { "" } else { [string]$Lease.lease_id }
     if (Test-Path -LiteralPath $path -PathType Leaf) {
         try {
             $existing = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
-            if ([string]$existing.request_id -and [string]$existing.reason) { return $existing }
+            $requested = [DateTimeOffset]::Parse([string]$existing.requested_at_utc).ToUniversalTime()
+            if ([string]$existing.request_id -and
+                [string]$existing.lease_id -ceq $leaseId -and
+                [string]$existing.lease_sha256 -ceq $leaseHash -and
+                [string]$existing.reason -ceq $Reason -and
+                ([DateTimeOffset]::UtcNow - $requested).TotalSeconds -le 90) { return $existing }
+            $archive = Join-Path ([string]$RuntimeContract.control) ("stop-archive-" + [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + ".json")
+            Move-Item -LiteralPath $path -Destination $archive -Force
         }
         catch { }
     }
     $request = [ordered]@{
         schema_version = 1
         request_id = [Guid]::NewGuid().ToString()
-        lease_id = if ($null -eq $Lease) { "" } else { [string]$Lease.lease_id }
+        lease_id = $leaseId
+        lease_sha256 = $leaseHash
         reason = $Reason
         requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
         requested_by = "Super1Watchdog"
@@ -915,7 +926,7 @@ while ($true) {
              observed_at_utc = $observed.ToString("o")
              updated_at_utc = $observed.ToString("o")
             lease_id = [string]$leaseEvidence.LeaseId
-            invocation_nonce = [string]$leaseEvidence.LeaseId
+            invocation_nonce = if ($null -eq $lease) { "" } else { [string]$lease.invocation_nonce }
             runner_sid = if ($null -eq $lease) { "" } else { [string]$lease.runner_sid }
             state = $state
             action = $action

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import math
-import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -26,6 +25,7 @@ from super1_runtime_guard import (
     load_lease,
     load_runtime_config,
     load_runtime_manifest,
+    runtime_binding_expectations,
     order_mutex,
 )
 
@@ -408,45 +408,35 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             )
         # The signed config, never the environment, owns the broker server.
         super().__init__(config, {**secrets, "XM_MT5_SERVER": expected_server})
-        self._manual_lease_required = True
         self._super1_record: dict[str, Any] | None = None
         self._active_risk_scale: float | None = None
         self._last_sizing: dict[str, Any] | None = None
         self._last_lease_binding: dict[str, str] | None = None
 
     def _assert_super1_lease(self, output_root: Path, *, for_order: bool = True) -> dict[str, Any]:
-        if not getattr(self, "_manual_lease_required", False):
-            return {}
         app_root = Path(__file__).resolve().parents[1]
         _, _, manifest_sha256 = load_runtime_manifest(app_root)
+        bindings = runtime_binding_expectations(Path(output_root).resolve().parent, self.config)
         lease = load_lease(
             Path(output_root).resolve().parent,
             self.config,
             manifest_sha256,
             for_order=for_order,
+            expected_bindings=bindings,
         )
-        if lease.get("config_sha256") != core.file_hash(xm.RUNTIME_CONFIG):
-            raise Super1RuntimeError("Session lease config hash does not match the signed config.")
-        candidate_path = (Path(__file__).resolve().parents[1] / str(self.config["candidate_path"])).resolve()
-        if lease.get("candidate_sha256") != core.file_hash(candidate_path):
-            raise Super1RuntimeError("Session lease candidate hash does not match the sealed candidate.")
-        release_manifest = Path(output_root).resolve().parent / "super1-forward.manifest.json"
-        if not release_manifest.is_file():
-            raise Super1RuntimeError("Signed Super1 release manifest is missing during order gating.")
-        try:
-            release = json.loads(release_manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise Super1RuntimeError("Signed Super1 release manifest is unreadable during order gating.") from exc
-        if str(lease.get("release_id")) != str(release.get("release_id")):
-            raise Super1RuntimeError("Session lease release id does not match the installed signed release.")
         lease_path = Path(output_root).resolve().parent / "control" / "session-lease.json"
         self._last_lease_binding = {
+            "binding_kind": "LIVE_LEASE",
             "lease_id": str(lease.get("lease_id") or ""),
             "release_id": str(lease.get("release_id") or ""),
             "runner_sid": str(lease.get("runner_sid") or ""),
-            "invocation_nonce": os.environ.get("SUPER1_INVOCATION_NONCE", ""),
+            "invocation_nonce": str(lease.get("invocation_nonce") or ""),
             "lease_sha256": file_sha256(lease_path),
             "config_sha256": str(lease.get("config_sha256") or ""),
+            "candidate_sha256": str(lease.get("candidate_sha256") or ""),
+            "harness_sha256": str(lease.get("harness_sha256") or ""),
+            "manifest_sha256": str(lease.get("app_manifest_sha256") or ""),
+            "release_manifest_sha256": str(lease.get("release_manifest_sha256") or ""),
         }
         return lease
 
@@ -469,10 +459,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     ) -> dict[str, object]:
         with order_mutex():
             self._assert_super1_lease(output_root, for_order=True)
-            # Production clients always own an MT5 adapter.  Lightweight
-            # filter/risk fakes intentionally stop before broker access.
-            if getattr(self, "mt5", None) is not None:
-                assert_account_binding(self.mt5, self.config)
+            if getattr(self, "mt5", None) is None:
+                raise Super1RuntimeError("Super1 production client has no MT5 adapter.")
+            assert_account_binding(self.mt5, self.config)
             return self._place_candidate_under_mutex(
                 output_root,
                 decision,
@@ -489,18 +478,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         event: dict[str, object],
     ) -> dict[str, object]:
         binding = getattr(self, "_last_lease_binding", None)
-        if binding is None:
-            if getattr(self, "_manual_lease_required", False):
-                raise Super1RuntimeError("SEND_ARMED requires a verified Super1 lease binding.")
-            binding = {
-                "lease_id": "FAKE_ADAPTER",
-                "release_id": "FAKE_ADAPTER",
-                "runner_sid": "FAKE_ADAPTER",
-                "invocation_nonce": "FAKE_ADAPTER",
-                "lease_sha256": "f" * 64,
-                "config_sha256": "f" * 64,
-            }
-            self._last_lease_binding = binding
+        if not binding or binding.get("binding_kind") != "LIVE_LEASE":
+            raise Super1RuntimeError("SEND_ARMED requires a verified LIVE_LEASE binding.")
         return super()._arm_send(
             output_root,
             order_id,
@@ -518,8 +497,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     ) -> None:
         binding = getattr(self, "_last_lease_binding", None)
         if status in {"SUBMITTED", "SEND_UNKNOWN"}:
-            if binding is None:
-                raise Super1RuntimeError(f"{status} requires a verified Super1 lease binding.")
+            if not binding or binding.get("binding_kind") != "LIVE_LEASE":
+                raise Super1RuntimeError(f"{status} requires a verified LIVE_LEASE binding.")
             event = {**event, "lease_binding": dict(binding)}
         return super()._transition_order_intent(
             output_root,
@@ -540,12 +519,6 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     ) -> None:
         """Revalidate every mutable broker/runtime fact at the send boundary."""
         del order_id, final_context
-        # Unit/integration adapters that deliberately exercise the parent
-        # transport do not own a live Super1 lease.  The production client
-        # sets this flag in __init__; without it, fail closed by delegating to
-        # the parent hook rather than inventing broker state in a fake.
-        if not getattr(self, "_manual_lease_required", False):
-            return
         lease = self._assert_super1_lease(output_root, for_order=True)
         expires = pd.Timestamp(str(lease["expires_at_utc"])).tz_convert("UTC")
         if (expires - pd.Timestamp(core.utc_now())).total_seconds() < 10:
@@ -674,6 +647,10 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             return super().cancel_all_pending(output_root, reason)
 
     def stop_reconciliation(self, output_root: Path, reason: str) -> dict[str, object]:
+        with order_mutex():
+            return self._stop_reconciliation_under_mutex(output_root, reason)
+
+    def _stop_reconciliation_under_mutex(self, output_root: Path, reason: str) -> dict[str, object]:
         """Prove that the dedicated demo account is safe after cancellation."""
         del reason
         self._ensure_demo()

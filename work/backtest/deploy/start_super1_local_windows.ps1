@@ -41,11 +41,13 @@ function Write-Super1AtomicJson([string]$Path, [object]$Value) {
     finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-function Write-Super1StopRequest([string]$Path, [string]$LeaseId, [string]$Reason) {
+function Write-Super1StopRequest([string]$Path, [string]$LeaseId, [string]$LeaseSha256, [string]$InvocationNonce, [string]$Reason) {
     Write-Super1AtomicJson -Path $Path -Value ([ordered]@{
         schema_version = 1
         request_id = [Guid]::NewGuid().ToString()
         lease_id = $LeaseId
+        lease_sha256 = $LeaseSha256
+        invocation_nonce = $InvocationNonce
         requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
         reason = $Reason
         requested_by = "Super1StartFailClosed"
@@ -245,6 +247,7 @@ try {
     $lease = [ordered]@{
         schema_version = 1
         lease_id = [Guid]::NewGuid().ToString()
+        invocation_nonce = [Guid]::NewGuid().ToString()
         campaign_id = [string]$lock.campaign_id
         trade_date_ny = $dateKey
         issued_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
@@ -252,6 +255,7 @@ try {
         order_not_before_utc = $orderNotBeforeLocal.ToUniversalTime().ToString("o")
         expires_at_utc = $expiryLocal.ToUniversalTime().ToString("o")
         release_id = [string]$release.release_id
+        release_manifest_sha256 = Get-Super1Hash $releaseManifestPath
         app_manifest_sha256 = Get-Super1Hash $manifestPath
         config_sha256 = Get-Super1Hash $configPath
         candidate_sha256 = [string]$runtime.candidate_file_sha256
@@ -293,7 +297,7 @@ do {
             $mainFresh = $healthStateOk -and
                 ([DateTimeOffset]::Parse([string]$health.updated_at).ToUniversalTime() -gt [DateTimeOffset]::Parse($lease.issued_at_utc).ToUniversalTime()) -and
                 [string]$health.lease_id -ceq [string]$lease.lease_id -and
-                [string]$health.invocation_nonce -ceq [string]$lease.lease_id -and
+                [string]$health.invocation_nonce -ceq [string]$lease.invocation_nonce -and
                 [string]$health.runner_sid -ceq [string]$runnerSid
             if ($mainFresh) {
                 $mainPid = [int]$health.process_id
@@ -336,7 +340,11 @@ $mutex = [Threading.Mutex]::new($false, [string]$Contract.order_mutex)
 try {
     if ($mutex.WaitOne(30000)) {
         Revoke-Super1Lease -LeasePath $leasePath -Reason "fresh health timeout"
-        Write-Super1StopRequest -Path (Join-Path $control "stop-request.json") -LeaseId ([string]$lease.lease_id) -Reason "START_HEALTH_TIMEOUT"
+        Write-Super1StopRequest -Path (Join-Path $control "stop-request.json") `
+            -LeaseId ([string]$lease.lease_id) `
+            -LeaseSha256 (Get-Super1Hash $leasePath) `
+            -InvocationNonce ([string]$lease.invocation_nonce) `
+            -Reason "START_HEALTH_TIMEOUT"
         [void]$mutex.ReleaseMutex()
     }
 }

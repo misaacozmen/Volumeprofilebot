@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param()
+param(
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{32}$')][string]$InstallTransactionId,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F-]{36}$')][string]$ReadinessNonce
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -55,14 +58,16 @@ function Stop-Super1ReadinessTaskBounded([string]$TaskName) {
 }
 
 function Invoke-Super1BindingReadiness {
+    $transaction = $null
+    $requestLock = $null
     $leasePath = Join-Path ([string]$Contract.control) "session-lease.json"
     if (Test-Path -LiteralPath $leasePath -PathType Leaf) {
         $lease = Get-Content -Raw -LiteralPath $leasePath | ConvertFrom-Json
         if ([string]$lease.state -ceq "ACTIVE") { throw "Readiness requires no active manual lease." }
     }
     $runnerSid = Get-Super1SecurePrincipalSid -Identity "$env:COMPUTERNAME\$([string]$Contract.runner_account)"
-    $transactionId = [Guid]::NewGuid().ToString("N")
-    $nonce = [Guid]::NewGuid().ToString("N")
+    $transactionId = $InstallTransactionId
+    $nonce = $ReadinessNonce
     $transaction = [IO.Path]::GetFullPath((Join-Path (Join-Path $root "archive") ("readiness-" + $transactionId)))
     $output = Join-Path $transaction "output"
     $resultPath = Join-Path $output "result.json"
@@ -141,6 +146,8 @@ function Invoke-Super1BindingReadiness {
         return [ordered]@{
             transaction_id = $transactionId
             nonce = $nonce
+            install_transaction_id = $InstallTransactionId
+            readiness_nonce = $ReadinessNonce
             producer = $binding
             watchdog_state = [string]$watchdog.state
             lease_active = $false
@@ -154,12 +161,19 @@ function Invoke-Super1BindingReadiness {
             catch { $cleanupErrors.Add("${taskName}: $($_.Exception.Message)") }
         }
         if ($activeLock) { $activeLock.Dispose() }
-        $requestLock.Dispose()
+        if ($requestLock) { $requestLock.Dispose() }
         $activePath = Join-Path ([string]$Contract.control) "active.json"
         if (Test-Path -LiteralPath $activePath -PathType Leaf) { Remove-Item -LiteralPath $activePath -Force }
         if (Test-Path -LiteralPath $activePath -PathType Leaf) { $cleanupErrors.Add("active request was not sealed") }
+        if ($transaction -and (Test-Path -LiteralPath $transaction -PathType Container)) {
+            try {
+                Seal-Super1SecureEvidenceTree -Path $transaction
+                Assert-Super1SecureSealedTree -Path $transaction
+                $script:ReadinessCleanupSealed = $true
+            }
+            catch { $cleanupErrors.Add("seal evidence: $($_.Exception.Message)") }
+        }
         if ($cleanupErrors.Count -gt 0) { throw "Readiness cleanup/seal failed: $($cleanupErrors -join '; ')" }
-        $script:ReadinessCleanupSealed = $true
     }
 }
 . (Join-Path $PSScriptRoot "super1_binding_proof.ps1")

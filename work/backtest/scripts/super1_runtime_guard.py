@@ -44,6 +44,8 @@ LEASE_FIELDS = {
     "state",
     "revoked_at_utc",
     "revocation_reason",
+    "invocation_nonce",
+    "release_manifest_sha256",
 }
 
 
@@ -195,32 +197,90 @@ def _lease_path(root: Path) -> Path:
     return root / "control" / LEASE_FILE_NAME
 
 
-def load_lease(root: Path, config: dict[str, Any], manifest_sha256: str | None = None, *, for_order: bool = True) -> dict[str, Any]:
-    path = _lease_path(root)
-    lease = _read_json_object(path)
+def runtime_binding_expectations(root: Path, config: dict[str, Any]) -> dict[str, str]:
+    """Derive every immutable binding from the installed, signed runtime."""
+    root = root.resolve()
+    app_root = root / "app"
+    config_path = app_root / "live_forward" / "super1_xm_mt5_demo_config.json"
+    manifest_path = app_root / "research_candidates" / "super1" / "super1_manifest.json"
+    candidate_path = (app_root / str(config.get("candidate_path") or "")).resolve()
+    try:
+        candidate_path.relative_to(app_root.resolve())
+    except ValueError as exc:
+        raise Super1RuntimeError("Installed Super1 candidate path escapes the app root.") from exc
+    if not config_path.is_file() or not manifest_path.is_file() or not candidate_path.is_file():
+        raise Super1RuntimeError("Installed Super1 binding inputs are incomplete.")
+    harness_paths = (
+        app_root / "scripts" / "run_capital_forward.py",
+        app_root / "live_forward" / "capital_demo_config.json",
+        app_root / "forward_shadow" / "baseline_lock.json",
+    )
+    if any(not path.is_file() or path.is_symlink() for path in harness_paths):
+        raise Super1RuntimeError("Installed Super1 harness inputs are incomplete.")
+    harness_digest = hashlib.sha256()
+    for path in harness_paths:
+        harness_digest.update(path.name.encode("utf-8"))
+        harness_digest.update(path.read_bytes())
+    release_manifest_path = root / "super1-forward.manifest.json"
+    if not release_manifest_path.is_file():
+        raise Super1RuntimeError("Installed signed release manifest is missing.")
+    try:
+        release = _read_json_object(release_manifest_path)
+    except Super1RuntimeError:
+        raise
+    return {
+        "manifest_sha256": file_sha256(manifest_path),
+        "config_sha256": file_sha256(config_path),
+        "candidate_sha256": file_sha256(candidate_path),
+        "harness_sha256": harness_digest.hexdigest(),
+        "release_manifest_sha256": file_sha256(release_manifest_path),
+        "release_id": str(release.get("release_id") or ""),
+    }
+
+
+def _validate_lease_payload(
+    root: Path,
+    lease: dict[str, Any],
+    config: dict[str, Any],
+    manifest_sha256: str | None,
+    *,
+    for_order: bool,
+    now: datetime,
+    expected_bindings: dict[str, str] | None,
+) -> dict[str, Any]:
     if set(lease) - LEASE_FIELDS or int(lease.get("schema_version", 0)) != 1:
         raise Super1RuntimeError("Session lease schema is invalid.")
     try:
         uuid.UUID(str(lease["lease_id"]))
-    except (KeyError, ValueError, AttributeError) as exc:
-        raise Super1RuntimeError("Session lease id is invalid.") from exc
+        uuid.UUID(str(lease["invocation_nonce"]))
+    except (KeyError, ValueError, AttributeError, TypeError) as exc:
+        raise Super1RuntimeError("Session lease id or invocation nonce is invalid.") from exc
     if lease.get("state") not in ALLOWED_LEASE_STATES:
         raise Super1RuntimeError("Session lease state is not allowlisted.")
     if lease.get("state") != "ACTIVE":
         raise Super1RuntimeError("Session lease is revoked.")
-    now = utc_now()
     if not str(lease.get("campaign_id") or "").strip() or not str(lease.get("release_id") or "").strip():
         raise Super1RuntimeError("Session lease campaign/release binding is missing.")
-    expected_trade_date = trade_date_ny(now)
-    if str(lease.get("trade_date_ny")) != expected_trade_date:
+    if str(lease.get("trade_date_ny")) != trade_date_ny(now):
         raise Super1RuntimeError("Session lease is bound to another New York trade date.")
+    issued = parse_utc(lease.get("issued_at_utc"), "issued_at_utc")
     not_before = parse_utc(lease.get("not_before_utc"), "not_before_utc")
+    order_not_before = parse_utc(
+        lease.get("order_not_before_utc", lease.get("not_before_utc")),
+        "order_not_before_utc",
+    )
     expires = parse_utc(lease.get("expires_at_utc"), "expires_at_utc")
-    if not_before >= expires or now < not_before or now >= expires:
+    if not issued <= not_before <= order_not_before < expires or now < not_before or now >= expires:
         raise Super1RuntimeError("Session lease is outside its validity interval.")
     if any(
         not isinstance(lease.get(field), str) or not re.fullmatch(r"[a-f0-9]{64}", lease[field], re.I)
-        for field in ("app_manifest_sha256", "config_sha256", "candidate_sha256", "harness_sha256")
+        for field in (
+            "app_manifest_sha256",
+            "config_sha256",
+            "candidate_sha256",
+            "harness_sha256",
+            "release_manifest_sha256",
+        )
     ):
         raise Super1RuntimeError("Session lease hash binding is invalid.")
     if lease.get("mode") != "DEMO_ORDER":
@@ -236,17 +296,86 @@ def load_lease(root: Path, config: dict[str, Any], manifest_sha256: str | None =
     if str(lease.get("machine_binding")) != machine_binding():
         raise Super1RuntimeError("Session lease is bound to another machine.")
     runner_sid = str(lease.get("runner_sid") or "")
+    if not re.fullmatch(r"S-\d-(?:\d+-)+\d+", runner_sid):
+        raise Super1RuntimeError("Session lease Runner SID is invalid.")
     if os.name == "nt" and runner_sid != _current_user_sid():
         raise Super1RuntimeError("Session lease is bound to another Runner SID.")
-    order_not_before = parse_utc(
-        lease.get("order_not_before_utc", lease.get("not_before_utc")),
-        "order_not_before_utc",
-    )
     if for_order and now < order_not_before:
         raise Super1RuntimeError("Session lease is not yet order-enabled.")
     if manifest_sha256 is not None and str(lease.get("app_manifest_sha256")) != manifest_sha256:
         raise Super1RuntimeError("Session lease release manifest binding differs.")
+    if expected_bindings:
+        for field in (
+            "manifest_sha256",
+            "config_sha256",
+            "candidate_sha256",
+            "harness_sha256",
+            "release_manifest_sha256",
+            "release_id",
+        ):
+            if str(lease.get("app_manifest_sha256" if field == "manifest_sha256" else field)) != str(expected_bindings.get(field)):
+                raise Super1RuntimeError(f"Session lease {field} binding differs from installed signed runtime.")
     return lease
+
+
+def load_lease(
+    root: Path,
+    config: dict[str, Any],
+    manifest_sha256: str | None = None,
+    *,
+    for_order: bool = True,
+    expected_bindings: dict[str, str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    path = _lease_path(root)
+    lease = _read_json_object(path)
+    return _validate_lease_payload(
+        root,
+        lease,
+        config,
+        manifest_sha256,
+        for_order=for_order,
+        now=utc_now() if now is None else now,
+        expected_bindings=expected_bindings,
+    )
+
+
+def read_lease_state(
+    root: Path,
+    *,
+    expected_bindings: dict[str, str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return a safe watchdog classification without importing MT5 or credentials."""
+    path = _lease_path(root)
+    if not path.is_file():
+        return {"state": "MISSING", "lease": None, "lease_id": "", "detail": "lease file is missing"}
+    try:
+        lease = _read_json_object(path)
+        lease_id = str(lease.get("lease_id") or "")
+        if lease.get("state") == "REVOKED":
+            return {"state": "REVOKED", "lease": lease, "lease_id": lease_id, "detail": "lease is revoked"}
+        observed = utc_now() if now is None else now
+        try:
+            expires = parse_utc(lease.get("expires_at_utc"), "expires_at_utc")
+            if expires <= observed:
+                return {"state": "EXPIRED", "lease": lease, "lease_id": lease_id, "detail": "lease expired"}
+        except Super1RuntimeError:
+            pass
+        config, _, _ = load_runtime_config(root / "app")
+        manifest, _, manifest_hash = load_runtime_manifest(root / "app")
+        del manifest
+        validated = load_lease(
+            root,
+            config,
+            manifest_hash,
+            for_order=False,
+            expected_bindings=expected_bindings or runtime_binding_expectations(root, config),
+            now=observed,
+        )
+        return {"state": "ACTIVE", "lease": validated, "lease_id": lease_id, "detail": "lease is valid"}
+    except Super1RuntimeError as exc:
+        return {"state": "INVALID", "lease": lease if "lease" in locals() else None, "lease_id": lease_id if "lease_id" in locals() else "", "detail": str(exc)}
 
 
 _fallback_locks: dict[str, threading.RLock] = {}

@@ -29,7 +29,7 @@
   "candidate_file_sha256": "ea86920354d9c3a92b2961b30834d32a006b245a7c093f41929efa7556e6a6ee",
   "candidate_artifact_sha256": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
-  "signal_contract_sha256": "4a8d2fe99cd0f6fef8926841822f35985c97420aca79996dc5152f5219777b7b",
+  "signal_contract_sha256": "52d778853de238c974d660f01f4cf83cc2fd373f636b0d4ef2e600c3443e9b5b",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2026.json",
     "sha256": "9aeeece3ec255fc0392cdc74baeef4de9751384bf4f67d906199aa16139cf830",

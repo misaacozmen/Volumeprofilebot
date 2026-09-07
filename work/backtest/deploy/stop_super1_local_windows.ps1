@@ -52,14 +52,17 @@ $control = [string]$Contract.control
 $leasePath = Join-Path $control "session-lease.json"
 $stopPath = Join-Path $control "stop-request.json"
 $lease = $null
-if (Test-Path -LiteralPath $leasePath -PathType Leaf) {
-    $lease = Get-Content -Raw -LiteralPath $leasePath | ConvertFrom-Json
-}
 $mutex = [Threading.Mutex]::new($false, [string]$Contract.order_mutex)
 $held = $false
 try {
     $held = $mutex.WaitOne(30000)
     if (-not $held) { throw "Could not acquire Super1 order transport mutex." }
+    if (Test-Path -LiteralPath $leasePath -PathType Leaf) {
+        $lease = Get-Content -Raw -LiteralPath $leasePath | ConvertFrom-Json
+    }
+    $leaseSha256 = if (Test-Path -LiteralPath $leasePath -PathType Leaf) {
+        (Get-FileHash -LiteralPath $leasePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else { "" }
     if ($null -ne $lease) {
         $lease.state = "REVOKED"
         $lease.revoked_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
@@ -70,6 +73,8 @@ try {
         schema_version = 1
         request_id = [Guid]::NewGuid().ToString()
         lease_id = if ($null -eq $lease) { "" } else { [string]$lease.lease_id }
+        lease_sha256 = $leaseSha256
+        invocation_nonce = if ($null -eq $lease) { "" } else { [string]$lease.invocation_nonce }
         requested_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
         reason = "OPERATOR_STOP"
     }

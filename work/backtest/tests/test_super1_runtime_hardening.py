@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -44,15 +45,17 @@ def test_lease_binds_identity_and_order_window(tmp_path: Path, monkeypatch: pyte
     control = tmp_path / "control"
     control.mkdir()
     lease = {
-        "schema_version": 1,
-        "lease_id": "6c66d8b4-6b03-4d4c-a2dd-9ac4e7ff5c26",
+            "schema_version": 1,
+            "lease_id": "6c66d8b4-6b03-4d4c-a2dd-9ac4e7ff5c26",
+            "invocation_nonce": "7d77e4e9-1fd7-4e77-9d74-8e9bb22dcf7f",
         "campaign_id": "campaign-1",
         "trade_date_ny": guard.trade_date_ny(now),
         "issued_at_utc": (now - timedelta(minutes=1)).isoformat(),
         "not_before_utc": (now - timedelta(minutes=1)).isoformat(),
         "order_not_before_utc": (now - timedelta(seconds=1)).isoformat(),
         "expires_at_utc": (now + timedelta(minutes=20)).isoformat(),
-        "release_id": "release-1",
+            "release_id": "release-1",
+            "release_manifest_sha256": "e" * 64,
         "app_manifest_sha256": "a" * 64,
         "config_sha256": "b" * 64,
         "candidate_sha256": "c" * 64,
@@ -151,6 +154,57 @@ def test_contract_path_resolver_returns_release_triple() -> None:
     assert "C:\\Super1\\super1-forward.manifest.sig" in paths
 
 
+def test_r8_read_only_lease_cli_classifies_missing_without_runtime_imports(tmp_path: Path) -> None:
+    cli = ROOT / "scripts" / "super1_lease_cli.py"
+    result = subprocess.run(
+        [sys.executable, "-I", "-E", "-B", str(cli), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["state"] == "MISSING"
+    assert "MetaTrader5" not in cli.read_text(encoding="utf-8")
+
+
+def test_r8_readiness_is_a_validated_child_process_and_failure_is_transactional() -> None:
+    installer = (ROOT / "deploy" / "install_super1_windows.ps1").read_text(encoding="utf-8")
+    readiness = (ROOT / "deploy" / "test_super1_local_readiness.ps1").read_text(encoding="utf-8")
+    assert "Start-Process" in installer
+    assert "-RedirectStandardOutput" in installer
+    assert "-RedirectStandardError" in installer
+    assert "READY_FOR_DEMO_SMOKE" in installer
+    assert "readinessEvidence.install_transaction_id" in installer
+    assert "readinessEvidence.readiness_nonce" in installer
+    assert '& (Join-Path $app "deploy\\test_super1_local_readiness.ps1")' not in installer
+    assert "Seal-Super1SecureEvidenceTree -Path $transaction" in readiness
+    assert "Assert-Super1SecureSealedTree -Path $transaction" in readiness
+    assert "$InstallTransactionId" in readiness and "$ReadinessNonce" in readiness
+
+
+def test_r8_production_order_source_has_no_fake_adapter_or_jsonl_source() -> None:
+    super1_source = (ROOT / "scripts" / "run_super1_xm_mt5_forward.py").read_text(encoding="utf-8")
+    transport_source = (ROOT / "scripts" / "run_xm_mt5_forward.py").read_text(encoding="utf-8")
+    watchdog = (ROOT / "deploy" / "watchdog_windows.ps1").read_text(encoding="utf-8")
+    assert "FAKE_ADAPTER" not in super1_source
+    assert "append_jsonl" not in transport_source
+    assert "SELECT event_json FROM order_event_outbox ORDER BY sequence" in transport_source
+    assert "super1_lease_cli.py" in watchdog
+    assert "Read-Super1LeaseState" in watchdog
+    assert "Global\\Super1OrderTransport" not in watchdog or "order_mutex" in watchdog
+
+
+def test_r8_runner_can_only_read_immutable_release_manifest_by_install_contract() -> None:
+    installer = (ROOT / "deploy" / "install_super1_windows.ps1").read_text(encoding="utf-8")
+    assert '"${runnerSid}:(RX)"' in installer
+    assert "release_manifest" in installer
+    assert "/setowner \"*S-1-5-18\"" in installer
+    assert "ReadAndExecute" in (ROOT / "deploy" / "super1_secure_task.ps1").read_text(encoding="utf-8")
+
+
 def test_contract_member_accesses_are_checked_with_powershell_ast() -> None:
     root_literal = str(ROOT).replace("'", "''")
     command = f"""
@@ -200,11 +254,11 @@ def test_installer_does_not_fallback_to_root_archive(tmp_path: Path) -> None:
     installer = ROOT / "deploy" / "install_super1_windows.ps1"
     result = _powershell(
         "-File", str(installer), "-ReleaseDirectory", str(tmp_path),
-        "-ExpectedReleaseId", "super1-local-demo-20260906-r7",
+        "-ExpectedReleaseId", "super1-local-demo-20260907-r8",
         "-ExpectedArchiveSha256", "0" * 64, "-PlanOnly",
     )
     assert result.returncode != 0
-    assert "Signed R7 triple" in (result.stderr + result.stdout)
+    assert "Signed R8 triple" in (result.stderr + result.stdout)
 
 
 def test_legacy_outbox_is_migrated_to_unique_event_id(tmp_path: Path) -> None:
@@ -299,6 +353,7 @@ def _lease_template(config: dict[str, object], now) -> dict[str, object]:
     return {
         "schema_version": 1,
         "lease_id": "6c66d8b4-6b03-4d4c-a2dd-9ac4e7ff5c26",
+        "invocation_nonce": "7d77e4e9-1fd7-4e77-9d74-8e9bb22dcf7f",
         "campaign_id": "campaign-1",
         "trade_date_ny": now.astimezone().date().isoformat(),
         "issued_at_utc": (now - timedelta(minutes=1)).isoformat(),
@@ -306,6 +361,7 @@ def _lease_template(config: dict[str, object], now) -> dict[str, object]:
         "order_not_before_utc": (now - timedelta(seconds=1)).isoformat(),
         "expires_at_utc": (now + timedelta(minutes=20)).isoformat(),
         "release_id": "release-1",
+        "release_manifest_sha256": "e" * 64,
         "app_manifest_sha256": "a" * 64,
         "config_sha256": "b" * 64,
         "candidate_sha256": "c" * 64,
@@ -596,7 +652,8 @@ def test_r7_production_rollback_restores_leaf_and_container(tmp_path: Path) -> N
 
     command = f"""
 . {ps_quote(ROOT / 'deploy' / 'super1_install_transaction.ps1')}
-$errors = Invoke-Super1TransactionRollback `
+$errors = [System.Collections.Generic.List[string]]::new()
+Invoke-Super1TransactionRollback `
     -RootPath {ps_quote(root)} `
     -TransactionPath {ps_quote(transaction)} `
     -TaskNameList @('NoTaskForRollbackTest') `
@@ -607,6 +664,7 @@ $errors = Invoke-Super1TransactionRollback `
         [pscustomobject]@{{source={ps_quote(app)}; archive={ps_quote(app_archive)}}}
     ) `
     -RunnerWasCreated:$false `
+    -Errors $errors `
     -IcaclsPath (Join-Path $env:SystemRoot 'System32\\icacls.exe')
 if (@($errors).Count -ne 0) {{ throw (@($errors) -join '; ') }}
 if ((Get-Content -Raw -LiteralPath {ps_quote(leaf)}).Trim() -ne 'old-leaf') {{ throw 'leaf was not restored' }}

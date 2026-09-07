@@ -575,7 +575,7 @@ try {
     if ([string]$daemonLease.state -cne "ACTIVE" -or [string]$daemonLease.lease_id -eq "") {
         throw "Super1 daemon lease is not active."
     }
-    $env:SUPER1_INVOCATION_NONCE = [string]$daemonLease.lease_id
+    $env:SUPER1_INVOCATION_NONCE = [string]$daemonLease.invocation_nonce
     $env:SUPER1_RUNNER_SID = $RunnerSid
     $env:SUPER1_LAUNCHER_SHA256 = $LauncherSha256
     $env:SUPER1_INVOCATION_STARTED_AT = [DateTimeOffset]::UtcNow.ToString("o")

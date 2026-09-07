@@ -6,7 +6,9 @@ from pathlib import Path
 import hashlib
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -26,6 +28,40 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+class _TestSuper1Client(MODULE.Super1XmMt5DemoOrderClient):
+    """Test-only LIVE_LEASE adapter; production never bypasses its validator."""
+
+    def _assert_super1_lease(self, output_root: Path, *, for_order: bool = True) -> dict[str, object]:
+        del output_root, for_order
+        lease_id = str(uuid4())
+        self._last_lease_binding = {
+            "binding_kind": "LIVE_LEASE",
+            "lease_id": lease_id,
+            "release_id": "TEST_RELEASE",
+            "runner_sid": "S-1-5-18",
+            "invocation_nonce": str(uuid4()),
+            "lease_sha256": "a" * 64,
+            "config_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "harness_sha256": "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "release_manifest_sha256": "f" * 64,
+        }
+        return {"expires_at_utc": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()}
+
+    def _place_candidate(self, output_root, decision, symbol, reward_r, **kwargs):
+        with MODULE.order_mutex():
+            self._assert_super1_lease(output_root, for_order=True)
+            return self._place_candidate_under_mutex(output_root, decision, symbol, reward_r, **kwargs)
+
+    def _final_send_gate(self, output_root, order_id, request, decision, symbol, final_context):
+        del order_id, request, decision, symbol, final_context
+        self._assert_super1_lease(output_root, for_order=True)
+
+
+MODULE.Super1XmMt5DemoOrderClient = _TestSuper1Client
 
 
 def record(level: str, price: float, touches: int | None = None) -> dict:

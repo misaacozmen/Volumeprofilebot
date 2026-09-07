@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import run_capital_forward as core
+from super1_runtime_guard import order_mutex
 
 
 RUNTIME_CONFIG = ROOT / "live_forward" / "xm_mt5_demo_config.json"
@@ -504,7 +505,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     for table, columns in ORDER_SCHEMA.items()
                 )
                 if journal_mode == "wal" and complete:
-                    return {"state": "READY", "journal_mode": journal_mode, "wrote": False}
+                    legacy_rows = connection.execute(
+                        "SELECT event_id, event_json FROM order_event_outbox"
+                    ).fetchall()
+                    needs_event_migration = False
+                    for event_id, event_json in legacy_rows:
+                        try:
+                            payload = json.loads(str(event_json))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict) and (
+                            not event_id or str(payload.get("event_id") or "") != str(event_id)
+                        ):
+                            needs_event_migration = True
+                            break
+                    if not needs_event_migration:
+                        return {"state": "READY", "journal_mode": journal_mode, "wrote": False}
 
                 enabled = connection.execute("PRAGMA journal_mode=WAL").fetchone()
                 if enabled is None or str(enabled[0]).lower() != "wal":
@@ -634,10 +650,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 # Legacy rows did not carry a stable id.  Sequence is part of
                 # the migration input so identical payloads cannot collide.
                 legacy_rows = connection.execute(
-                    "SELECT sequence, event_json FROM order_event_outbox "
-                    "WHERE event_id IS NULL OR event_id = ''"
+                    "SELECT sequence, event_id, event_json FROM order_event_outbox"
                 ).fetchall()
-                for sequence, event_json in legacy_rows:
+                for sequence, event_id, event_json in legacy_rows:
+                    if event_id and str(event_id).strip():
+                        try:
+                            payload = json.loads(str(event_json))
+                            if isinstance(payload, dict) and str(payload.get("event_id") or "") != str(event_id):
+                                if "event_id" not in payload or not payload.get("event_id"):
+                                    payload["event_id"] = str(event_id)
+                                    connection.execute(
+                                        "UPDATE order_event_outbox SET event_json = ? WHERE sequence = ?",
+                                        (core.canonical_json(payload), int(sequence)),
+                                    )
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            pass
+                        continue
                     legacy_id = sha256(
                         f"{int(sequence)}\0{str(event_json)}".encode("utf-8")
                     ).hexdigest()
@@ -719,49 +747,69 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return self._order_connection(output_root)
 
     def _drain_order_outbox(self, output_root: Path) -> None:
-        connection = self._ready_order_connection(output_root)
-        temporary: Path | None = None
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT sequence, event_id, event_json FROM order_event_outbox ORDER BY sequence"
-            ).fetchall()
-            log_path = self._order_log(output_root)
-            existing = self._events(output_root)
-            outbox_ids = {str(event_id) for _, event_id, _ in rows}
-            direct_events = [
-                item for item in existing
-                if not item.get("event_id") or str(item.get("event_id")) not in outbox_ids
-            ]
-            outbox_events: list[dict[str, Any]] = []
-            for _, event_id, event_json in rows:
-                payload = json.loads(str(event_json))
-                if not isinstance(payload, dict):
-                    raise core.CriticalLiveError("Order outbox payload is not a JSON object.")
-                payload["event_id"] = str(event_id)
-                outbox_events.append(payload)
-            records = direct_events + outbox_events
-            records.sort(key=lambda item: str(item.get("recorded_at") or ""))
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = log_path.with_name(f"{log_path.name}.{uuid4().hex}.tmp")
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                for record in records:
-                    handle.write(core.canonical_json(record) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, log_path)
-            connection.execute(
-                "UPDATE order_event_outbox SET delivered_at = ? WHERE delivered_at IS NULL",
-                (core.utc_now().isoformat(),),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            if temporary is not None and temporary.exists():
-                temporary.unlink()
-            connection.close()
+        with order_mutex():
+            connection = self._ready_order_connection(output_root)
+            temporary: Path | None = None
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                rows = connection.execute(
+                    "SELECT sequence, event_id, event_json FROM order_event_outbox ORDER BY sequence"
+                ).fetchall()
+                log_path = self._order_log(output_root)
+                records: list[dict[str, Any]] = []
+                event_ids: list[str] = []
+                for sequence, event_id, event_json in rows:
+                    payload = json.loads(str(event_json))
+                    if not isinstance(payload, dict):
+                        raise core.CriticalLiveError(
+                            f"Order outbox payload is not a JSON object at sequence {sequence}."
+                        )
+                    if str(payload.get("event_id")) != str(event_id):
+                        raise core.CriticalLiveError(
+                            f"Order outbox event_id mismatch at sequence {sequence}."
+                        )
+                    records.append(payload)
+                    event_ids.append(str(event_id))
+                if len(event_ids) != len(set(event_ids)):
+                    raise core.CriticalLiveError("Order outbox contains duplicate event_id values.")
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = log_path.with_name(f"{log_path.name}.{uuid4().hex}.tmp")
+                with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                    for record in records:
+                        handle.write(core.canonical_json(record) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                self._replace_projection(temporary, log_path)
+                projected_ids = [
+                    str(json.loads(line)["event_id"])
+                    for line in log_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                if projected_ids != event_ids:
+                    raise core.CriticalLiveError("Order JSONL projection verification failed.")
+                if event_ids:
+                    placeholders = ",".join("?" for _ in event_ids)
+                    connection.execute(
+                        f"UPDATE order_event_outbox SET delivered_at = ? "
+                        f"WHERE sequence IN (SELECT sequence FROM order_event_outbox "
+                        f"WHERE event_id IN ({placeholders}))",
+                        (core.utc_now().isoformat(), *event_ids),
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                if temporary is not None and temporary.exists():
+                    temporary.unlink()
+                connection.close()
+
+    @staticmethod
+    def _replace_projection(temporary: Path, target: Path) -> None:
+        # os.replace is atomic on the supported local filesystems. The
+        # temporary file is fsynced before this point; the SQLite commit is
+        # deliberately held until the projection has been verified.
+        os.replace(temporary, target)
 
     @staticmethod
     def _insert_outbox(
@@ -1243,20 +1291,38 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         self._drain_order_outbox(output_root)
 
     def _append_order_event(self, output_root: Path, event: dict[str, object]) -> None:
-        core.append_jsonl(
-            self._order_log(output_root),
-            {"recorded_at": core.utc_now().isoformat(), "magic": self.magic, **event},
+        payload = {"recorded_at": core.utc_now().isoformat(), "magic": self.magic, **event}
+        order_key = str(
+            payload.get("order_id")
+            or f"EVENT:{payload.get('event', '')}:{payload.get('broker_ticket', payload.get('ticket', ''))}:{payload.get('known_time', payload['recorded_at'])}"
         )
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._insert_outbox(connection, order_key, payload)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
 
     def _events(self, output_root: Path) -> list[dict[str, Any]]:
-        path = self._order_log(output_root)
-        if not path.exists():
-            return []
-        return [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        connection = self._ready_order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT event_json FROM order_event_outbox ORDER BY sequence"
+            ).fetchall()
+            events = []
+            for (event_json,) in rows:
+                payload = json.loads(str(event_json))
+                if not isinstance(payload, dict):
+                    raise core.CriticalLiveError("Order outbox payload is not a JSON object.")
+                events.append(payload)
+            return events
+        finally:
+            connection.close()
 
     @staticmethod
     def _events_for_trade_date(events: list[dict[str, Any]], trade_date: str) -> list[dict[str, Any]]:
@@ -2889,7 +2955,40 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 )
                 return {"state": "IDEMPOTENT_ALREADY_SUBMITTED", "order_id": order_id}
             if events:
-                if broker:
+                if intent is None:
+                    # Re-read the CAS row without invoking the overridable
+                    # observation hook again; this second read is what makes
+                    # the parallel-send race deterministic.
+                    fresh_connection = self._ready_order_connection(output_root)
+                    try:
+                        fresh_row = fresh_connection.execute(
+                            "SELECT status, comment, broker_ticket FROM order_intents WHERE order_id = ?",
+                            (order_id,),
+                        ).fetchone()
+                    finally:
+                        fresh_connection.close()
+                    fresh_intent = None if fresh_row is None else {
+                        "status": str(fresh_row[0]),
+                        "comment": str(fresh_row[1]),
+                        "broker_ticket": fresh_row[2],
+                    }
+                    if fresh_intent is not None:
+                        intent = fresh_intent
+                        fresh_status = str(fresh_intent["status"])
+                        if fresh_status == "INTENT":
+                            retryable_intent = True
+                        elif fresh_status == "CHECK_RETRYABLE":
+                            retryable_check = True
+                        elif fresh_status == "PRE_SEND_DEFERRED":
+                            retryable_pre_send = True
+                        else:
+                            return {
+                                "state": f"IDEMPOTENT_{fresh_status}_NO_SEND",
+                                "order_id": order_id,
+                            }
+                if retryable_intent or retryable_check or retryable_pre_send:
+                    pass
+                elif broker:
                     ticket = int(getattr(broker[0][1], "ticket", 0) or 0)
                     self._adopt_order_intent(
                         output_root,
@@ -2905,9 +3004,10 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                         broker_ticket=ticket or None,
                     )
                     return {"state": "IDEMPOTENT_LINKED_EXISTING", "order_id": order_id}
-                raise core.CriticalLiveError(
-                    f"{order_id}: uncertain prior order intent; refusing duplicate."
-                )
+                else:
+                    raise core.CriticalLiveError(
+                        f"{order_id}: uncertain prior order intent; refusing duplicate."
+                    )
             if broker:
                 raise core.CriticalLiveError(
                     f"{order_id}: broker object exists without idempotency ledger."
@@ -4032,7 +4132,13 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(report, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         temp.replace(path)
-        core.append_jsonl(output_root / "daily_health" / f"{trade_date}.jsonl", report)
+        daily_log = output_root / "daily_health" / f"{trade_date}.jsonl"
+        daily_temp = daily_log.with_name(f"{daily_log.name}.{uuid4().hex}.tmp")
+        previous = daily_log.read_text(encoding="utf-8") if daily_log.exists() else ""
+        daily_temp.write_text(previous + core.canonical_json(report) + "\n", encoding="utf-8")
+        with daily_temp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        self._replace_projection(daily_temp, daily_log)
         return {"state": "WRITTEN", "path": str(path)}
 
     def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
