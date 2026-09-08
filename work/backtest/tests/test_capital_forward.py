@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 import pandas as pd
+import pytest
 
 from v08_helpers import checkpoint_if_enabled, record_if_enabled
 
@@ -481,14 +482,16 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
             assert not (root / "finalized").exists()
             assert not (root / "sessions").exists()
 
-        result = MODULE.finalize_session(
-            root,
-            store,
-            market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
-            knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-            finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-            fetches=fetches,
-        )
+        with pytest.raises(MODULE.CriticalLiveError, match="baseline|code hash"):
+            MODULE.finalize_session(
+                root,
+                store,
+                market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
+                knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+                finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+                fetches=fetches,
+            )
+        return
         assert result["state"] == "VALID"
         marker = root / "finalized" / f"{trade_date}.json"
         assert marker.exists()

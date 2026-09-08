@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "artifact_test_files": [
+    "test_audit_ledger.py",
+    "test_backtest_trust_boundary.py",
+    "test_check_mt5_flat.py",
+    "test_deployment_security.py",
+    "test_evaluation_window.py",
+    "test_financial_numeric_contracts.py",
+    "test_halt_sweep.py",
+    "test_instrument_contract.py",
+    "test_live_architecture_boundary.py",
+    "test_live_retry_policy.py",
+    "test_live_risk_guard.py",
+    "test_order_approval.py",
+    "test_order_state_machine.py",
+    "test_phase0_characterization.py",
+    "test_production_order_flow.py",
+    "test_risk_xray.py",
+    "test_runtime_settings.py",
+    "test_strategy_health.py",
+    "test_super1_runtime_hardening.py",
+    "test_super1_xm_forward.py",
+    "test_v16_deployment_contract.py",
+    "test_xm_mt5_forward.py"
+  ]
+}

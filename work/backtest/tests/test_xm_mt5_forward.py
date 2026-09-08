@@ -1090,7 +1090,7 @@ def test_smoke_rejects_foreign_exposure_before_order_check() -> None:
     mt5 = FakeOrderMt5()
     mt5.pending = [SimpleNamespace(ticket=1, magic=999)]
     mt5.order_check = lambda request: (_ for _ in ()).throw(AssertionError("order_check must not run"))
-    with pytest.raises(MODULE.core.CriticalLiveError, match="flat dedicated demo account"):
+    with pytest.raises(MODULE.core.CriticalLiveError, match="Super1 production order coordinator"):
         demo_client(mt5).smoke_order(Path("."), {"runtime_config_hash": "test"})
 
 
@@ -1098,21 +1098,13 @@ def test_smoke_rejects_foreign_position_exposure_before_order_check() -> None:
     mt5 = FakeOrderMt5()
     mt5.positions_get = lambda: (SimpleNamespace(ticket=1, magic=999),)
     mt5.order_check = lambda request: (_ for _ in ()).throw(AssertionError("order_check must not run"))
-    with pytest.raises(MODULE.core.CriticalLiveError, match="flat dedicated demo account"):
+    with pytest.raises(MODULE.core.CriticalLiveError, match="Super1 production order coordinator"):
         demo_client(mt5).smoke_order(Path("."), {"runtime_config_hash": "test"})
 
 
 def test_smoke_does_not_pass_when_foreign_exposure_remains_after_cancellation(tmp_path) -> None:
     mt5 = FakeOrderMt5()
-    foreign = SimpleNamespace(ticket=999, magic=999, comment="foreign")
-    original_remove = mt5.order_send
-    def remove_with_foreign(request):
-        result = original_remove(request)
-        if request["action"] == mt5.TRADE_ACTION_REMOVE:
-            mt5.pending.append(foreign)
-        return result
-    mt5.order_send = remove_with_foreign
-    with pytest.raises(MODULE.core.CriticalLiveError, match="return the dedicated demo account to flat"):
+    with pytest.raises(MODULE.core.CriticalLiveError, match="Super1 production order coordinator"):
         demo_client(mt5).smoke_order(tmp_path, {"runtime_config_hash": "test"})
 
 
@@ -1177,27 +1169,9 @@ def test_demo_identity_drift_is_rejected_before_order_permission() -> None:
     assert mt5.pending_send_count == 0
 
 
-def test_smoke_order_uses_minimum_demo_volume_and_is_immediately_cancelled(tmp_path) -> None:
-    client = demo_client(FakeOrderMt5())
-    result = client.smoke_order(
-        tmp_path,
-        {"runtime_config_hash": "runtime-hash"},
-    )
-    assert result["state"] == "PASS"
-    assert result["minimum_volume"] == 0.1
-    assert result["cancelled"]["state"] == "CANCELLED"
-    assert client.mt5.pending == []
-    events = [
-        __import__("json").loads(line)
-        for line in (tmp_path / "orders" / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert [event["event"] for event in events] == [
-        "SMOKE_SUBMITTED",
-        "CANCEL_ARMED",
-        "CANCEL_ACKNOWLEDGED",
-        "BROKER_STATE",
-        "CANCEL_RESOLVED",
-    ]
+def test_base_client_smoke_is_not_an_execution_path(tmp_path) -> None:
+    with pytest.raises(MODULE.core.CriticalLiveError, match="Super1 production order coordinator"):
+        demo_client(FakeOrderMt5()).smoke_order(tmp_path, {"runtime_config_hash": "runtime-hash"})
 
 
 def test_pending_request_aligns_all_prices_to_broker_tick_size() -> None:

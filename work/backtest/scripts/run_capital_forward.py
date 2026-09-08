@@ -19,6 +19,9 @@ from uuid import uuid4
 
 import pandas as pd
 
+from backtest.live.settings import environment_value
+from backtest.live.halt import HaltController, HaltError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -265,7 +268,7 @@ def campaign_lock(output_root: Path) -> dict[str, Any]:
     }
     if runtime["feed"] == "XM_MT5":
         server = str(runtime.get("expected_server") or "").strip()
-        supplied_server = os.environ.get("XM_MT5_SERVER", "").strip()
+        supplied_server = environment_value("XM_MT5_SERVER")
         if not server or (supplied_server and supplied_server != server):
             raise CriticalLiveError("XM broker identity must come from the signed runtime config.")
         expected["account_login"] = int(runtime["account_login"])
@@ -290,7 +293,7 @@ def credentials() -> dict[str, str] | None:
         if provided is None:
             return None
         return {str(key): str(value) for key, value in provided.items()}
-    values = {name: os.environ.get(name, "").strip() for name in REQUIRED_ENV}
+    values = {name: environment_value(name) for name in REQUIRED_ENV}
     if not all(values.values()):
         return None
     return values
@@ -1391,6 +1394,26 @@ def fatal_latch_path(output_root: Path) -> Path:
     return output_root / "fatal_latch.json"
 
 
+def no_send_sentinel_path(output_root: Path) -> Path:
+    return output_root / "runtime" / "no_send.sentinel.json"
+
+
+def write_no_send_sentinel(output_root: Path, reason: str, **details: object) -> Path:
+    path = no_send_sentinel_path(output_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": 1, "state": "UNKNOWN_NO_SEND", "reason": reason, "updated_at": utc_now().isoformat(), **details}
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def assert_no_send_sentinel_clear(output_root: Path) -> None:
+    path = no_send_sentinel_path(output_root)
+    if path.exists():
+        raise CriticalLiveError(f"Durable no-send sentinel is active: {path}")
+
+
 def broker_recovery_path(output_root: Path) -> Path:
     return output_root / "runtime" / "broker_recovery_required.json"
 
@@ -1425,25 +1448,24 @@ def write_broker_recovery(
 
 
 def write_fatal_latch(output_root: Path, state: str, error: str, **details: object) -> Path:
-    path = fatal_latch_path(output_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": 1,
-        "latched_at": utc_now().isoformat(),
-        "state": state,
-        "error": error,
-        **details,
-    }
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    temp.replace(path)
-    return path
+    controller = HaltController(output_root)
+    # ``HaltController.trigger`` owns the canonical reason field; callers may
+    # also provide a legacy ``reason`` detail, but it must not become a
+    # duplicate keyword at the boundary.
+    details = dict(details)
+    details.pop("reason", None)
+    controller.trigger(state, error=error, **details)
+    return controller.sentinel
 
 
 def assert_no_fatal_latch(output_root: Path) -> None:
-    path = fatal_latch_path(output_root)
-    if path.exists():
-        latch = read_json(path)
+    controller = HaltController(output_root)
+    try:
+        latch = controller.read()
+    except HaltError as exc:
+        raise CriticalLiveError(str(exc)) from exc
+    if latch is not None:
+        path = controller.sentinel
         raise CriticalLiveError(
             f"Persistent fatal latch {latch.get('state', 'UNKNOWN')} is set at {path}; "
             "inspect broker state and clear it explicitly before restart."
@@ -1470,7 +1492,7 @@ def write_health(output_root: Path, state: str, **details: object) -> None:
         ("launcher_sha256", "SUPER1_LAUNCHER_SHA256"),
         ("invocation_started_at_utc", "SUPER1_INVOCATION_STARTED_AT"),
     ):
-        value = os.environ.get(env_name, "").strip()
+        value = environment_value(env_name)
         if value:
             details.setdefault(key, value)
     details.setdefault("process_id", os.getpid())
@@ -1579,6 +1601,13 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
                 "cycle_started_at": cycle_started_at.isoformat(),
                 "evaluation_at": evaluation_now.isoformat(),
             },
+            "heartbeats": {
+                "last_market_data": cycle_started_at.isoformat(),
+                "last_signal_cycle": evaluation_now.isoformat(),
+                "last_risk_cycle": evaluation_now.isoformat(),
+                "last_reconciliation": evaluation_now.isoformat(),
+                "last_audit_anchor": evaluation_now.isoformat(),
+            },
         }
     preflight: dict[str, object] = {"state": "NOT_APPLICABLE"}
     preflight_order_transport = getattr(client, "preflight_order_transport", None)
@@ -1590,6 +1619,7 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
     preflight_ready = str(preflight.get("state")) in {"NOT_APPLICABLE", "PASS", "ALREADY_PASSED"}
     send_guard_at: pd.Timestamp | None = None
     if callable(reconcile) and preflight_ready:
+        assert_no_send_sentinel_clear(output_root)
         send_guard_at = utc_now()
         prefix_record = None
         if prefix.get("path") and Path(str(prefix["path"])).is_file():
@@ -1643,6 +1673,13 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
             "evaluation_at": evaluation_now.isoformat(),
             "send_guard_at": None if send_guard_at is None else send_guard_at.isoformat(),
             "finalization_at": finalization_at.isoformat(),
+        },
+        "heartbeats": {
+            "last_market_data": cycle_started_at.isoformat(),
+            "last_signal_cycle": evaluation_now.isoformat(),
+            "last_risk_cycle": None if send_guard_at is None else send_guard_at.isoformat(),
+            "last_reconciliation": finalization_at.isoformat(),
+            "last_audit_anchor": finalization_at.isoformat(),
         },
     }
 
@@ -1893,7 +1930,7 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
                 write_health(
                     output_root,
                     "RETRYING" if recovery_required else "WAITING_CREDENTIALS",
-                    missing=[name for name in REQUIRED_ENV if not os.environ.get(name, "").strip()],
+                    missing=[name for name in REQUIRED_ENV if not environment_value(name)],
                     broker_state="UNKNOWN_NO_SEND" if recovery_required else "NOT_CONNECTED",
                     recovery_required=recovery_required,
                     order_transport_present=transport,
@@ -1956,6 +1993,7 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
                     "RUNNING",
                     markets=verified,
                     last_cycle=result,
+                    **dict(result.get("heartbeats", {})),
                     order_transport_present=transport,
                 )
                 _STOP_EVENT.wait(int(runtime["poll_seconds"]))
@@ -2188,14 +2226,77 @@ def initialize(args: argparse.Namespace) -> None:
 def clear_fatal_latch(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).resolve()
     if not args.confirm:
-        raise CriticalLiveError("Clearing the fatal latch requires --confirm after broker inspection.")
-    path = fatal_latch_path(output_root)
-    if path.exists():
-        cleared = path.with_name(f"fatal_latch.cleared.{utc_now().strftime('%Y%m%dT%H%M%SZ')}.json")
-        path.replace(cleared)
-        print(json.dumps({"state": "CLEARED", "archived_latch": str(cleared)}))
-    else:
+        raise CriticalLiveError("Clearing the fatal latch requires signed recovery, exact broker-flat evidence, intact audit, and --confirm.")
+    required = {
+        "recovery_record": getattr(args, "recovery_record", ""),
+        "audit_db": getattr(args, "audit_db", ""),
+    }
+    if any(not str(value).strip() for value in required.values()):
+        raise CriticalLiveError("Clearing the fatal latch requires --recovery-record and --audit-db.")
+    canonical_audit_db = (output_root / "orders" / "idempotency.sqlite3").resolve()
+    supplied_audit_db = Path(required["audit_db"]).resolve()
+    if supplied_audit_db != canonical_audit_db:
+        raise CriticalLiveError(f"--audit-db must be the canonical order ledger: {canonical_audit_db}")
+    try:
+        recovery = read_json(Path(required["recovery_record"]).resolve())
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise CriticalLiveError("signed recovery record is unreadable") from exc
+    try:
+        from backtest.live.audit_ledger import AuditLedger, canonical_json
+        from backtest.live.halt import clear_halt_episode
+        ledger = AuditLedger(Path(required["audit_db"]).resolve())
+        ledger.verify()
+        connection = sqlite3.connect(Path(required["audit_db"]).resolve())
+        rows = connection.execute("SELECT status FROM order_intents WHERE status IN ('SEND_ARMED','SEND_UNKNOWN','CANCEL_UNKNOWN','CANCEL_ARMED','CANCEL_REJECTED')").fetchall()
+        connection.close()
+    except sqlite3.Error as exc:
+        raise CriticalLiveError("canonical order ledger cannot be inspected") from exc
+    if rows:
+        raise CriticalLiveError("unresolved SEND_ARMED/UNKNOWN/cancel controls remain")
+    controller = HaltController(output_root)
+    latch = controller.read()
+    if latch is None:
+        ledger.close()
         print(json.dumps({"state": "NOT_SET"}))
+        return
+    runtime = runtime_config()
+    campaign_id = str(runtime.get("campaign_id") or "")
+    account_key = str(runtime.get("account_login") or runtime.get("account_id") or "")
+    policy = {
+        "schema_version": 1,
+        "require_exact_active_episode": True,
+        "require_fresh_orders_and_positions": True,
+        "require_audit_anchor_before_cas": True,
+        "preserve_episode_history": True,
+    }
+    policy_hash = sha256(canonical_json(policy).encode("utf-8")).hexdigest()
+    trust_root = ROOT / "deploy" / "release-public-key.pem"
+    secrets = credentials()
+    if secrets is None:
+        ledger.close()
+        raise CriticalLiveError(f"Missing credentials for fresh broker readback: {', '.join(REQUIRED_ENV)}")
+    client = CapitalDemoClient(runtime, secrets)
+    try:
+        broker_read = getattr(client, "_mt5_collection", None)
+        if not callable(broker_read):
+            raise CriticalLiveError("broker client has no exact collection readback API")
+        result = clear_halt_episode(
+            controller,
+            recovery_record=recovery,
+            trusted_public_key=trust_root.read_bytes(),
+            expected_campaign=campaign_id,
+            expected_account=account_key,
+            expected_policy_hash=policy_hash,
+            read_orders=lambda: broker_read("orders_get"),
+            read_positions=lambda: broker_read("positions_get"),
+            audit_ledger=ledger,
+        )
+    finally:
+        ledger.close()
+        close_client = getattr(client, "close", None)
+        if callable(close_client):
+            close_client()
+    print(json.dumps(result, sort_keys=True))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -2216,6 +2317,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     clear_latch = sub.add_parser("clear-fatal-latch")
     clear_latch.add_argument("--confirm", action="store_true")
+    clear_latch.add_argument("--recovery-record")
+    clear_latch.add_argument("--audit-db")
     smoke = sub.add_parser("smoke-order")
     smoke.add_argument("--confirm-demo", action="store_true")
     report = sub.add_parser("daily-health")

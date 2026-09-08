@@ -13,16 +13,50 @@ function Get-ReleaseSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-Utf8Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        )).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-CanonicalArtifactTestFiles {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $manifestPath = Join-Path $Root "deploy\artifact_test_files.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Canonical artifact-test manifest is missing: $manifestPath"
+    }
+    $payload = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ([int]$payload.schema_version -ne 1) {
+        throw "Unsupported artifact-test manifest schema."
+    }
+    $files = @($payload.artifact_test_files | ForEach-Object { [string]$_ })
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($file in $files) {
+        if ($file -notmatch '^test_[A-Za-z0-9_]+\.py$' -or -not $seen.Add($file)) {
+            throw "Artifact-test list contains an invalid or duplicate entry: $file"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $Root (Join-Path "tests" $file)) -PathType Leaf)) {
+            throw "Artifact-test file is missing: $file"
+        }
+    }
+    $sorted = @($files | Sort-Object -CaseSensitive -Culture en-US)
+    if ($files.Count -eq 0 -or (($files -join "`n") -cne ($sorted -join "`n"))) {
+        throw "Artifact-test list must be canonical case-sensitive sorted order."
+    }
+    return $files
+}
+
 function Assert-ReleaseArtifactTestFiles {
-    param([Parameter(Mandatory = $true)][object]$Manifest)
-    $expected = @(
-        "test_deployment_security.py",
-        "test_xm_mt5_forward.py",
-        "test_super1_xm_forward.py",
-        "test_super1_runtime_hardening.py",
-        "test_check_mt5_flat.py",
-        "test_v16_deployment_contract.py"
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [string]$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
     )
+    $expected = @(Get-CanonicalArtifactTestFiles -Root $Root)
     $propertyNames = @($Manifest.PSObject.Properties | ForEach-Object Name)
     if ($propertyNames -notcontains "artifact_test_files") {
         throw "Release manifest artifact_test_files is missing."
@@ -160,6 +194,49 @@ function Assert-SignedReleaseArchive {
         $zip.Dispose()
     }
 
+    $hashProperties = @("engine_package_sha256", "release_archive_sha256", "calendar_artifact_sha256", "input_dataset_sha256")
+    foreach ($property in $hashProperties) {
+        $manifestProperty = $manifest.PSObject.Properties[$property]
+        if ($null -eq $manifestProperty -or [string]$manifestProperty.Value -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Release manifest hash field is missing or malformed: $property"
+        }
+    }
+    if ([string]$manifest.release_archive_sha256 -ne $actualArchiveHash -or
+        [string]$manifest.archive_sha256 -ne $actualArchiveHash) {
+        throw "Release archive hash fields are inconsistent."
+    }
+    $calendarEntry = "live_forward/calendars/us_equity_rth_2022_2026_v2.json"
+    if (-not $archiveFilesMap.ContainsKey($calendarEntry) -or
+        [string]$manifest.calendar_artifact_sha256 -ne [string]$archiveFilesMap[$calendarEntry]) {
+        throw "Signed calendar artifact hash is missing or inconsistent."
+    }
+    $engineDescriptor = @(
+        $archiveFilesMap.Keys |
+            Where-Object { $_ -match '^(backtest|scripts)/' } |
+            Sort-Object -CaseSensitive -Culture en-US |
+            ForEach-Object { "$_=$($archiveFilesMap[$_])" }
+    ) -join "`n"
+    if ([string]$manifest.engine_package_sha256 -ne (Get-Utf8Sha256 $engineDescriptor)) {
+        throw "Signed engine package hash is inconsistent with archive contents."
+    }
+    if ([bool]$manifest.reliability_audit_ready -ne $true -or
+        [string]$manifest.reliability_audit_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Fresh reliability audit attestation is missing."
+    }
+    $auditSummary = $manifest.reliability_audit_summary
+    if ($null -eq $auditSummary -or
+        [int]$auditSummary.canonical_decisions -ne 56 -or
+        [int]$auditSummary.filled_post_pair_cap -ne 7 -or
+        [Math]::Abs([double]$auditSummary.net_r - 8.5) -gt 0.000000001 -or
+        [bool]$auditSummary.deterministic_rerun -ne $true -or
+        [bool]$auditSummary.core_tests_passed -ne $true -or
+        [int]$auditSummary.prefix_violation_count -ne 0 -or
+        [int]$auditSummary.coverage_missing_sessions -ne 0 -or
+        [int]$auditSummary.coverage_invalid_sessions -ne 0 -or
+        [int]$auditSummary.coverage_valid_sessions -ne [int]$auditSummary.coverage_evaluated_sessions) {
+        throw "Signed reliability audit attestation failed a release gate."
+    }
+
     if ($RequireProvenance) {
         if ([string]::IsNullOrWhiteSpace([string]$manifest.release_id) -or
             [string]$manifest.git_commit -notmatch '^[A-Fa-f0-9]{40}$' -or
@@ -174,7 +251,8 @@ function Assert-SignedReleaseArchive {
         }
         Assert-ManifestTestGate -Manifest $manifest -Prefix "pytest"
         Assert-ManifestTestGate -Manifest $manifest -Prefix "artifact_pytest"
-        Assert-ReleaseArtifactTestFiles -Manifest $manifest
+        $artifactRoot = if ($SourceRoot) { $SourceRoot } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..")) }
+        Assert-ReleaseArtifactTestFiles -Manifest $manifest -Root $artifactRoot
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
             $path = [string]$f.path
@@ -225,9 +303,11 @@ function Assert-ReleaseSourceIntegrity {
         throw "SourceRoot directory does not exist: $resolvedSource"
     }
 
-    $sourceDirs = @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")
+    $sourceDirs = @("backtest", "deploy", "docs", "forward_shadow", "live_forward", "scripts")
     $sourceFiles = @("pyproject.toml", "README.md")
-    $sourceFiles += "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json"
+    # The reliability report is a fresh build attestation, not a source file;
+    # its hashes and readiness are validated from the signed release manifest.
+    $generatedAttestationPrefix = "outputs/reports/engine_reliability_audit_2025_feb_mar/"
 
     if ($Profile -eq "super1") {
         $sourceDirs += @(
@@ -278,6 +358,9 @@ function Assert-ReleaseSourceIntegrity {
     }
 
     foreach ($rel in $ArchiveFilesMap.Keys) {
+        if ($rel.StartsWith($generatedAttestationPrefix, [StringComparison]::Ordinal)) {
+            continue
+        }
         if ($rel -match '^wheelhouse' -or $rel -match '^requirements-.*\.lock$') {
             continue
         }

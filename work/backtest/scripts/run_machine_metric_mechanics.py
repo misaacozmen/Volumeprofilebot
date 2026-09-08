@@ -7,6 +7,7 @@ import sys
 import time
 
 import pandas as pd
+from backtest.market_calendar import signed_market_dates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,7 +115,7 @@ def run_spx_anchored_development() -> pd.DataFrame:
         )
         for key, source in comparison.SYMBOLS.items()
     ]
-    dates = [value.date() for value in pd.bdate_range(DEVELOPMENT_START, DEVELOPMENT_END)]
+    dates = signed_market_dates(DEVELOPMENT_START, DEVELOPMENT_END)
     started = time.perf_counter()
     result = run_canonical_pair_pipeline(legs, dates, state_config=ManualStateConfig())
     result.decisions.to_csv(path, index=False)

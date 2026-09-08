@@ -61,6 +61,7 @@ def test_lease_binds_identity_and_order_window(tmp_path: Path, monkeypatch: pyte
         "candidate_sha256": "c" * 64,
         "harness_sha256": "d" * 64,
         "runner_sid": guard._current_user_sid() if guard.os.name == "nt" else "",
+        "authorized_operator_sid": "S-1-5-19",
         "machine_binding": guard.machine_binding(),
         "expected_account_login": config["account_login"],
         "expected_server": config["expected_server"],
@@ -349,6 +350,28 @@ def test_corrupt_order_database_fails_closed(tmp_path: Path) -> None:
         client._initialize_order_db(tmp_path)
 
 
+def test_terminal_intent_cannot_transition_back_to_executable_state(tmp_path: Path) -> None:
+    client = object.__new__(xm.XmMt5DemoOrderClient)
+    client.magic = 1
+    client._adopt_order_intent(
+        tmp_path,
+        "terminal-order",
+        "comment",
+        "FILTER_BLOCKED",
+        {"event": "FILTER_BLOCKED", "order_id": "terminal-order"},
+    )
+    with pytest.raises(xm.core.CriticalLiveError, match="illegal terminal order transition"):
+        client._transition_order_intent(
+            tmp_path,
+            "terminal-order",
+            "INTENT",
+            {"event": "ILLEGAL_REOPEN", "order_id": "terminal-order"},
+        )
+    assert client._intent_state(tmp_path, "terminal-order")["status"] == "FILTER_BLOCKED"
+    assert (tmp_path / "fatal_latch.json").is_file()
+    assert (tmp_path / "runtime" / "no_send.sentinel.json").is_file()
+
+
 def _lease_template(config: dict[str, object], now) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -367,6 +390,7 @@ def _lease_template(config: dict[str, object], now) -> dict[str, object]:
         "candidate_sha256": "c" * 64,
         "harness_sha256": "d" * 64,
         "runner_sid": guard._current_user_sid() if guard.os.name == "nt" else "",
+        "authorized_operator_sid": "S-1-5-19",
         "machine_binding": guard.machine_binding(),
         "expected_account_login": config["account_login"],
         "expected_server": config["expected_server"],

@@ -7,6 +7,7 @@ import sys
 import time
 
 import pandas as pd
+from backtest.market_calendar import signed_market_dates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +79,7 @@ def main() -> None:
             "runtime_seconds": 0.0,
         }
     ]
-    dates = [value.date() for value in pd.bdate_range(START, END)]
+    dates = signed_market_dates(START, END)
     state = ManualStateConfig()
     for changed_leg in ("nq", "spx"):
         configs = dict(baseline_configs)

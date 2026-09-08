@@ -9,6 +9,7 @@ import sys
 import time
 
 import pandas as pd
+from backtest.market_calendar import signed_market_dates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +59,7 @@ def run_variant(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     variant_dir = report_dir / name
     variant_dir.mkdir(parents=True, exist_ok=True)
-    dates = [value.date() for value in pd.bdate_range(start, end)]
+    dates = signed_market_dates(start, end)
     legs = [
         EngineLeg(key, full_history.period_frame(loaded[source], start, end), configs[key])
         for key, source in comparison.SYMBOLS.items()

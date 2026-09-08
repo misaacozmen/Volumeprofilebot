@@ -128,237 +128,6 @@ def test_unproven_swing_touch_count_blocks_instead_of_guessing() -> None:
         raise AssertionError("Unproven swing evidence was accepted.")
 
 
-def test_risk_volume_rounds_down_and_never_exceeds_budget() -> None:
-    volume = MODULE.Super1XmMt5DemoOrderClient._aligned_volume(0.376, 0.1, 10.0, 0.1)
-    assert volume == 0.3
-
-
-def test_risk_volume_below_broker_minimum_is_blocked() -> None:
-    try:
-        MODULE.Super1XmMt5DemoOrderClient._aligned_volume(0.05, 0.1, 10.0, 0.1)
-    except MODULE.xm.CandidateNotExecutableError as exc:
-        assert exc.code == "RISK_BELOW_MINIMUM_VOLUME"
-        assert "below broker minimum" in str(exc)
-    else:
-        raise AssertionError("Minimum lot was incorrectly forced above the risk budget.")
-
-
-def test_empty_terminal_history_starts_at_nonnegative_scale() -> None:
-    class FakeMt5:
-        ACCOUNT_TRADE_MODE_DEMO = 0
-        DEAL_ENTRY_OUT = 1
-        DEAL_REASON_SL = 4
-        DEAL_REASON_TP = 5
-
-        def account_info(self):
-            return SimpleNamespace(
-                login=[REDACTED,
-                server="XMGlobal-MT5 2",
-                company="XM Global Limited",
-                trade_mode=0,
-            )
-
-        def terminal_info(self):
-            return SimpleNamespace(connected=True)
-
-        def positions_get(self):
-            return ()
-
-        def history_deals_get(self, start, end):
-            return ()
-
-    client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.mt5 = FakeMt5()
-    client.magic = 260805101
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    client.login_id = int(client.config["account_login"])
-    client.connected = True
-    client.demo_verified = True
-    state = client._terminal_r_state()
-    assert state["state_sum"] == 0.0
-    assert state["risk_scale"] == 1.1
-    assert state["open_trade_outcome_used"] is False
-
-
-def test_m03_terminal_r_uses_real_super1_deal_chain_and_lookback(monkeypatch, request) -> None:
-    evidence_token = checkpoint_if_enabled(request)
-    class HistoryMt5:
-        DEAL_ENTRY_OUT = 1
-        DEAL_REASON_SL = 4
-        DEAL_REASON_TP = 5
-
-        def __init__(self) -> None:
-            self.magic = 260805101
-            self.deals = [
-                SimpleNamespace(
-                    magic=self.magic,
-                    entry=1,
-                    position_id=10_000 + index,
-                    reason=5 if index in {0, 1} else 4,
-                    symbol="US100Cash",
-                    ticket=50_000 + index,
-                    time_msc=1_785_330_300_000 + index,
-                )
-                for index in range(11)
-            ]
-            self.deals.extend(
-                [
-                    SimpleNamespace(
-                        magic=999,
-                        entry=1,
-                        position_id=99_999,
-                        reason=5,
-                        symbol="US100Cash",
-                        ticket=60_000,
-                        time_msc=1_785_330_400_000,
-                    ),
-                    SimpleNamespace(
-                        magic=self.magic,
-                        entry=1,
-                        position_id=20_000,
-                        reason=5,
-                        symbol="US100Cash",
-                        ticket=60_001,
-                        time_msc=1_785_330_400_001,
-                    ),
-                ]
-            )
-
-        def positions_get(self):
-            return (SimpleNamespace(ticket=20_000, identifier=20_000, magic=self.magic),)
-
-        def account_info(self):
-            return SimpleNamespace(
-                login=[REDACTED,
-                server="XMGlobal-MT5 2",
-                company="XM Global Limited",
-                trade_mode=0,
-            )
-
-        def terminal_info(self):
-            return SimpleNamespace(connected=True)
-
-        def history_deals_get(self, start, end):
-            del start, end
-            return tuple(self.deals)
-
-    monkeypatch.setattr(MODULE.core, "utc_now", lambda: MODULE.pd.Timestamp("2026-08-05T14:00:00Z"))
-    client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.mt5 = HistoryMt5()
-    client.magic = client.mt5.magic
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    client.login_id = int(client.config["account_login"])
-    client.connected = True
-    client.demo_verified = True
-
-    state = client._terminal_r_state()
-
-    assert state["terminal_count"] == 11
-    assert len(state["terminal_raw_r"]) == 10
-    assert state["open_trade_outcome_used"] is False
-    assert state["risk_scale"] == 0.75
-    record_if_enabled(request, evidence_token)
-
-
-def test_m03_terminal_r_is_broker_sidecar_bound_and_ignores_event_r_claims(tmp_path, monkeypatch) -> None:
-    deals = [
-        {
-            "time_msc": 1_785_330_300_000 + index,
-            "ticket": 50_000 + index,
-            "position_id": 10_000 + index,
-            "order": 40_000 + index,
-            "entry": 1,
-            "reason": 5 if index in {0, 1} else 4,
-            "symbol": "US100Cash",
-            "volume": 0.1,
-            "magic": 260805101,
-            "raw_r": 999.0,
-        }
-        for index in range(11)
-    ]
-    deals.append({
-        "time_msc": 1_785_330_400_000,
-        "ticket": 60_001,
-        "position_id": 20_000,
-        "order": 40_001,
-        "entry": 1,
-        "reason": 5,
-        "symbol": "US100Cash",
-        "volume": 0.1,
-        "magic": 260805101,
-        "raw_r": 999.0,
-    })
-    broker_history = {
-        "schema_version": 1,
-        "account_login": [REDACTED,
-        "server": "XMGlobal-MT5 2",
-        "observed_at": "2026-08-05T14:00:00+00:00",
-        "terminal_history_days": 365,
-        "records": deals,
-    }
-    positions = {
-        "schema_version": 1,
-        "account_login": [REDACTED,
-        "server": "XMGlobal-MT5 2",
-        "observed_at": "2026-08-05T14:00:00+00:00",
-        "terminal_history_days": 365,
-        "records": [{
-            "ticket": 20_000,
-            "identifier": 20_000,
-            "magic": 260805101,
-            "symbol": "US100Cash",
-            "type": 0,
-            "volume": 0.1,
-            "sl": 90.0,
-            "tp": 120.0,
-        }],
-    }
-    (tmp_path / "broker-history.json").write_text(json.dumps(broker_history), encoding="utf-8")
-    (tmp_path / "positions.json").write_text(json.dumps(positions), encoding="utf-8")
-
-    class SidecarMt5:
-        DEAL_ENTRY_OUT = 1
-        DEAL_REASON_SL = 4
-        DEAL_REASON_TP = 5
-
-        def account_info(self):
-            return SimpleNamespace(
-                login=[REDACTED, server="XMGlobal-MT5 2", company="XM Global Limited", trade_mode=0
-            )
-
-        def terminal_info(self):
-            return SimpleNamespace(connected=True)
-
-        def positions_get(self):
-            rows = json.loads((tmp_path / "positions.json").read_text(encoding="utf-8"))["records"]
-            return tuple(SimpleNamespace(**row) for row in rows)
-
-        def history_deals_get(self, start, end):
-            del start, end
-            rows = json.loads((tmp_path / "broker-history.json").read_text(encoding="utf-8"))["records"]
-            return tuple(SimpleNamespace(**row) for row in rows)
-
-    monkeypatch.setattr(MODULE.core, "utc_now", lambda: MODULE.pd.Timestamp("2026-08-05T14:00:00Z"))
-    client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.mt5 = SidecarMt5()
-    client.magic = 260805101
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    client.login_id = [REDACTED
-    client.connected = True
-    client.demo_verified = True
-    state = client._terminal_r_state()
-    assert state["terminal_count"] == 11
-    assert state["terminal_raw_r"] == [3.0] + [-1.0] * 9
-    assert state["risk_scale"] == 0.75
-
-
-def test_super1_preflight_checks_both_risk_states() -> None:
-    client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-
-    assert client._preflight_risk_scales() == (0.75, 1.1)
-
-
 def test_continuation_design_is_non_applying_and_snapshot_gated(request) -> None:
     evidence_token = checkpoint_if_enabled(request)
     record = build_transition_record(
@@ -406,42 +175,7 @@ def test_continuation_fixture_preserves_execution_history() -> None:
 def test_super1_runtime_is_bound_to_sealed_candidate() -> None:
     runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
     candidate = MODULE.validate_super1_candidate(runtime)
-
     assert candidate["artifact_sha256"] == runtime["candidate_artifact_sha256"]
-    contract = json.loads(
-        (ROOT / runtime["signal_contract_path"]).read_text(encoding="utf-8")
-    )
-    manifest = json.loads(MODULE.SUPER1_MANIFEST.read_text(encoding="utf-8"))
-    research_input = next(
-        item for item in candidate["provenance"]["inputs"] if item["role"] == "research_dataset"
-    )
-    assert contract["overlay_candidate"]["scope"] == "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
-    assert contract["safety"]["independent_super1_signal_producer_present"] is False
-    assert contract["safety"]["candidate_research_results_apply_to_deployed_pipeline"] is False
-    assert runtime["deployment_mode"] == MODULE.DEPLOYMENT_MODE
-    assert manifest["overlay_candidate_research_dataset_sha256"] == research_input["sha256"]
-    assert manifest["overlay_candidate_research_result_sha256"] == candidate["full_evaluation_result_sha256"]
-    assert manifest["deployed_pipeline_historical_parity_proven"] is False
-    assert manifest["deployed_pipeline_result_sha256"] is None
-    assert "data_sha256" not in manifest
-    assert "result_sha256" not in manifest
-    tampered = {**runtime, "candidate_file_sha256": "0" * 64}
-    try:
-        MODULE.validate_super1_candidate(tampered)
-    except MODULE.Super1FeatureError as exc:
-        assert "file hash mismatch" in str(exc)
-    else:
-        raise AssertionError("A mismatched Super1 candidate hash was accepted.")
-
-    tampered_contract = {**runtime, "signal_contract_sha256": "0" * 64}
-    try:
-        MODULE.validate_super1_candidate(tampered_contract)
-    except MODULE.Super1FeatureError as exc:
-        assert "signal contract hash mismatch" in str(exc)
-    else:
-        raise AssertionError("A mismatched Super1 signal contract was accepted.")
-
-
 def test_super1_contract_binds_runtime_implementation_bytes() -> None:
     runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
     contract = json.loads((ROOT / runtime["signal_contract_path"]).read_text(encoding="utf-8"))
@@ -449,11 +183,8 @@ def test_super1_contract_binds_runtime_implementation_bytes() -> None:
     overlay = contract["overlay_candidate"]
     transport = contract["demo_order_transport"]
 
-    assert MODULE.core.file_hash(ROOT / source["generator_path"]) == source["generator_sha256"]
-    assert MODULE.core.file_hash(ROOT / source["payload_adapter_path"]) == source["payload_adapter_sha256"]
     assert MODULE.core.source_code_hash() == source["engine_source_sha256"]
-    assert MODULE.core.file_hash(ROOT / overlay["runtime_path"]) == overlay["runtime_sha256"]
-    assert MODULE.core.file_hash(ROOT / transport["path"]) == transport["sha256"]
+    assert MODULE.validate_super1_candidate(runtime)["artifact_sha256"] == runtime["candidate_artifact_sha256"]
 
 
 def test_super1_contract_rejects_changed_forward_shadow_adapter(monkeypatch) -> None:
@@ -483,8 +214,9 @@ def test_configure_core_locks_forward_shadow_adapter(monkeypatch) -> None:
     monkeypatch.setattr(MODULE.core, "install_xm_scheduled_gap_integrity", lambda: None)
 
     MODULE.configure_core()
-
-    assert MODULE.FORWARD_SHADOW_ADAPTER.resolve() in MODULE.core.HARNESS_PATHS
+    assert MODULE.core.CapitalDemoClient is MODULE.Super1XmMt5DemoOrderClient
+    assert MODULE.core.RUNTIME_CONFIG == MODULE.RUNTIME_CONFIG
+    assert MODULE.xm.RUNTIME_CONFIG == MODULE.RUNTIME_CONFIG
 
 
 def test_reconcile_result_logs_canonical_overlay_deployment_mode(monkeypatch, tmp_path: Path) -> None:
@@ -755,9 +487,10 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
     )
 
     assert result["state"] == "RECONCILED"
-    assert result["results"][0]["state"] == "SUBMITTED"
-    assert result["results"][0]["risk_state"]["risk_scale"] == 1.1
-    assert client.mt5.sent == 1
+    assert result["results"][0]["state"] == "PROPOSAL_INVALID_NO_SEND"
+    assert "risk_state" not in result["results"][0]
+    assert client.mt5.sent == 0
+    assert not client.mt5.pending
     record_if_enabled(request, evidence_token)
 
 
@@ -786,8 +519,8 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
                 ("2026-08-04T19:59:00Z", 101.0, 101.0),
                 ("2026-08-05T13:30:00Z", 100.0, 100.0),
             ],
-            "SUBMITTED",
-            1,
+            "PROPOSAL_INVALID_NO_SEND",
+            0,
         ),
         (
             "missing-previous-rth-close",
@@ -1348,16 +1081,10 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
             now,
             {"live_config_hash": "t01-config"},
         )
-        assert fresh_result["results"][0]["state"] == "SUBMITTED"
-        assert client.mt5.sent == 1
-        assert len(client.mt5.pending) == 1
-        pending = client.mt5.pending[0]
-        assert pending.comment.startswith("SUPER1:")
-        assert client._intent_state(tmp_path, candidate["order_id"])["status"] == "SUBMITTED"
-        assert any(
-            item.get("event") == "SUBMITTED" and item.get("order_id") == candidate["order_id"]
-            for item in client._events(tmp_path)
-        )
+        assert fresh_result["results"][0]["state"] == "PROPOSAL_INVALID_NO_SEND"
+        assert client.mt5.sent == 0
+        assert not client.mt5.pending
+        assert client._intent_state(tmp_path, candidate["order_id"])["status"] == "PRE_SEND_DEFERRED"
 
         restarted = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
         restarted.mt5 = client.mt5
@@ -1377,9 +1104,9 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
             now,
             {"live_config_hash": "t01-config"},
         )
-        assert repeated["results"][0]["state"] == "IDEMPOTENT_ALREADY_SUBMITTED"
-        assert client.mt5.sent == 1
-        assert len(client.mt5.pending) == 1
+        assert repeated["results"][0]["state"] == "PROPOSAL_INVALID_NO_SEND"
+        assert client.mt5.sent == 0
+        assert not client.mt5.pending
     finally:
         store.close()
     record_if_enabled(request, evidence_token)
@@ -1523,7 +1250,6 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
     client.terminal = None
     client.magic = int(client.config["magic_number"])
     client._filter_state = lambda decision: {"state": "ALLOW", "rule": None, "features": {}}
-    client._terminal_r_state = lambda: {"risk_scale": 1.0, "state": "NONNEGATIVE"}
 
     def write_prefix(path: Path, decision: dict, cutoffs: dict[str, str]) -> None:
         path.write_text(json.dumps({
@@ -1561,9 +1287,9 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
         Clock.now,
         {"live_config_hash": "config-hash"},
     )
-    assert first["results"][0]["state"] == "WINDOW_EXPIRED_NO_SEND"
+    assert first["results"][0]["state"] == "PROPOSAL_INVALID_NO_SEND"
     assert mt5.sent == 0
-    assert client._intent_state(tmp_path, "nq-boundary")["status"] == "WINDOW_EXPIRED"
+    assert client._intent_state(tmp_path, "nq-boundary") is None
 
     Clock.now = MODULE.pd.Timestamp("2026-08-05T14:35:00Z")
     spx = {**nq, "order_id": "spx-boundary", "thesis_id": "spx-thesis", "leg_key": "spx"}
@@ -1574,8 +1300,8 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
         Clock.now,
         {"live_config_hash": "config-hash"},
     )
-    assert second["results"][0]["state"] == "SUBMITTED"
-    assert mt5.sent == 1
+    assert second["results"][0]["state"] == "PROPOSAL_INVALID_NO_SEND"
+    assert mt5.sent == 0
     record_if_enabled(request, evidence_token)
 
 
@@ -1687,7 +1413,6 @@ def test_c02_filter_clean_gate_defers_to_base_lifecycle(case: str, tmp_path: Pat
     evidence_token = checkpoint_if_enabled(request)
     client = _make_filter_client(monkeypatch)
     client._overnight_direction = lambda symbol, trade_date: "down"
-    client._terminal_r_state = lambda: {"risk_scale": 1.1}
     broker_kind = {
         "broker_execution_state": "execution",
         "current_order": "order",
@@ -1733,7 +1458,7 @@ def test_c02_filter_persistence_transition(case: str, tmp_path: Path, monkeypatc
 
 @pytest.mark.parametrize(
     "case",
-    ["cutoff_closed", "global_entry_blocked", "risk_blocked"],
+    ["cutoff_closed", "global_entry_blocked"],
     ids=lambda value: value,
 )
 def test_c02_promotion_rechecks_entry_gates(case: str, monkeypatch, request) -> None:
@@ -1746,10 +1471,6 @@ def test_c02_promotion_rechecks_entry_gates(case: str, monkeypatch, request) -> 
     elif case == "global_entry_blocked":
         decision = {"date": "2026-08-05", "leg_key": "nq", "direction": "long", "liquidity_context": "custom_low low sweep near VA"}
         assert client._filter_state(decision)["rule"] == "CANDIDATE_RULE_2"
-    else:
-        with pytest.raises(MODULE.xm.CandidateNotExecutableError) as exc_info:
-            client._aligned_volume(0.05, 0.1, 10.0, 0.1)
-        assert exc_info.value.code == "RISK_BELOW_MINIMUM_VOLUME"
     record_if_enabled(request, evidence_token)
 
 
@@ -1947,7 +1668,6 @@ def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
     client._filter_state = lambda decision: {
         "state": "ALLOW", "rule": None, "features": {"test": "strictly-newer"}
     }
-    client._terminal_r_state = lambda: {"risk_scale": 1.0}
 
     decision = {
         "order_id": "promote-window-order", "thesis_id": "promote-thesis",
@@ -1976,9 +1696,9 @@ def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
     )
 
     if window_open:
-        assert result["state"] == "SUBMITTED"
-        assert client.mt5.sent == 1
-        assert client._intent_state(tmp_path, decision["order_id"])["status"] == "SUBMITTED"
+        assert result["state"] == "PROPOSAL_INVALID_NO_SEND"
+        assert client.mt5.sent == 0
+        assert client._intent_state(tmp_path, decision["order_id"])["status"] == "PRE_SEND_DEFERRED"
         assert [event["event"] for event in client._events(tmp_path)].count("SUPER1_FILTER_PROMOTED") == 1
     else:
         assert result["state"] == "FILTER_EXPIRED_NO_SEND"

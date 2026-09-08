@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "forward-shadow": {
+      "files": [
+        "backtest/__init__.py", "backtest/cli.py", "backtest/signals.py", "backtest/numeric_contracts.py", "backtest/evaluation_window.py", "backtest/risk_xray.py", "backtest/market_calendar.py",
+        "backtest/live/__init__.py", "backtest/live/contracts.py", "backtest/live/risk_guard.py", "backtest/live/execution.py", "backtest/live/order_state.py", "backtest/live/audit_ledger.py", "backtest/live/halt.py", "backtest/live/retry.py", "backtest/live/instruments.py", "backtest/live/settings.py", "backtest/live/approval.py", "backtest/live/strategy_health.py", "backtest/live/production_flow.py", "backtest/live/broker_facts.py",
+        "deploy/artifact_test_files.json", "deploy/release_payload_allowlist.json", "deploy/release_integrity.ps1", "deploy/watchdog_windows.ps1", "deploy/run_forward_shadow_windows.ps1", "deploy/check_forward_flat_windows.ps1", "deploy/forward-shadow.service", "deploy/rollover_forward_shadow_campaign_windows.ps1", "deploy/upgrade_forward_shadow_windows.ps1",
+        "docs/LIVE_OPERATIONS_TR.md", "forward_shadow/baseline_lock.json", "forward_shadow/frozen_config.json", "live_forward/capital_demo_config.json", "live_forward/xm_mt5_demo_config.json", "live_forward/calendars/us_equity_rth_2022_2026_v2.json",
+        "scripts/check_mt5_flat.py", "scripts/run_capital_forward.py", "scripts/run_forward_shadow.py", "scripts/run_xm_mt5_forward.py", "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json", "pyproject.toml", "README.md", "requirements-windows.lock"
+      ]
+    },
+    "super1": {
+      "files": [
+        "backtest/__init__.py", "backtest/cli.py", "backtest/signals.py", "backtest/numeric_contracts.py", "backtest/evaluation_window.py", "backtest/risk_xray.py", "backtest/market_calendar.py",
+        "backtest/live/__init__.py", "backtest/live/contracts.py", "backtest/live/risk_guard.py", "backtest/live/execution.py", "backtest/live/order_state.py", "backtest/live/audit_ledger.py", "backtest/live/halt.py", "backtest/live/retry.py", "backtest/live/instruments.py", "backtest/live/settings.py", "backtest/live/approval.py", "backtest/live/strategy_health.py", "backtest/live/production_flow.py", "backtest/live/broker_facts.py", "backtest/candidate_validation.py",
+        "deploy/artifact_test_files.json", "deploy/release_payload_allowlist.json", "deploy/release_integrity.ps1", "deploy/watchdog_windows.ps1", "deploy/bootstrap_super1_fresh_windows.ps1", "deploy/check_super1_flat_windows.ps1", "deploy/finalize_super1_fresh_windows.ps1", "deploy/install_super1_windows.ps1", "deploy/super1_install_transaction.ps1", "deploy/install_super1_watchdog_windows.ps1", "deploy/recover_super1_isolated_user.ps1", "deploy/rollover_super1_campaign_windows.ps1", "deploy/run_super1_windows.ps1", "deploy/run_super1_demo_smoke_windows.ps1", "deploy/resume_super1_fresh_windows.ps1", "deploy/stage_signed_upgrader_windows.ps1", "deploy/super1_secure_task.ps1", "deploy/super1_runtime_contract.ps1", "deploy/super1_binding_proof.ps1", "deploy/stop_super1_local_windows.ps1", "deploy/start_super1_local_windows.ps1", "deploy/test_super1_local_readiness.ps1", "deploy/upgrade_super1_signed_app_windows.ps1",
+        "docs/LIVE_OPERATIONS_TR.md", "live_forward/super1_xm_mt5_demo_config_v2.json", "live_forward/instrument_registry_v2.json", "live_forward/calendars/us_equity_rth_2022_2026_v2.json", "research_candidates/super1/super1_unsigned_candidate_v2.json", "research_candidates/super1/super1_signal_contract.json", "scripts/run_super1_xm_mt5_forward.py", "scripts/super1_runtime_guard.py", "scripts/super1_lease_cli.py", "scripts/super1_order_approval.py", "outputs/reports/engine_reliability_audit_fresh_20260908_final5/run_manifest.json", "pyproject.toml", "README.md", "requirements-windows.lock"
+      ]
+    }
+  }
+}

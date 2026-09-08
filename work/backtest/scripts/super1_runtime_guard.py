@@ -35,6 +35,7 @@ LEASE_FIELDS = {
     "candidate_sha256",
     "harness_sha256",
     "runner_sid",
+    "authorized_operator_sid",
     "machine_binding",
     "expected_account_login",
     "expected_server",
@@ -131,7 +132,7 @@ def _current_user_sid() -> str:
 
 
 def machine_binding() -> str:
-    name = os.environ.get("COMPUTERNAME", "").strip() or platform.node()
+    name = platform.node().strip()
     if not name:
         raise Super1RuntimeError("Machine binding is unavailable.")
     return name.upper()
@@ -142,7 +143,7 @@ def load_runtime_config(app_root: Path) -> tuple[dict[str, Any], Path, str]:
     config = _read_json_object(path)
     required = {
         "schema_version", "environment", "account_mode", "account_login", "expected_server",
-        "expected_company", "magic_number", "execution", "manual_required", "rth_session_calendar",
+        "expected_company", "magic_number", "execution", "manual_required", "live_order_approval_required", "authorized_operator_sid", "rth_session_calendar",
         "terminal_path", "target", "isolation_required", "demo_order_execution_enabled",
         "real_money_live_enabled", "real_money_execution_allowed", "daily_manual_start_required",
         "unattended_execution_allowed",
@@ -154,6 +155,7 @@ def load_runtime_config(app_root: Path) -> tuple[dict[str, Any], Path, str]:
         or config.get("account_mode") != "DEMO_ORDER"
         or config.get("execution") != "MT5_DEMO_ORDERS"
         or config.get("manual_required") is not False
+        or config.get("live_order_approval_required") is not True
         or config.get("terminal_path") != r"C:\Super1\mt5\terminal64.exe"
         or config.get("target") != "LOCAL_WINDOWS_PC"
         or config.get("isolation_required") is not True
@@ -167,9 +169,15 @@ def load_runtime_config(app_root: Path) -> tuple[dict[str, Any], Path, str]:
         or not str(config.get("expected_server") or "")
         or not str(config.get("expected_company") or "")
         or not isinstance(config.get("magic_number"), int)
+        or not re.fullmatch(r"S-\d-(?:\d+-)+\d+", str(config.get("authorized_operator_sid") or ""))
     ):
         raise Super1RuntimeError("Signed Super1 runtime config failed the demo-only identity gate.")
     return config, path, file_sha256(path)
+
+
+def current_process_sid() -> str:
+    """Return the SID proven by the current Windows process token."""
+    return _current_user_sid()
 
 
 def load_runtime_manifest(app_root: Path) -> tuple[dict[str, Any], Path, str]:
@@ -245,6 +253,8 @@ def _validate_lease_payload(
     manifest_sha256: str | None,
     *,
     for_order: bool,
+    principal_sid: str | None,
+    principal_role: str,
     now: datetime,
     expected_bindings: dict[str, str] | None,
 ) -> dict[str, Any]:
@@ -298,10 +308,19 @@ def _validate_lease_payload(
     runner_sid = str(lease.get("runner_sid") or "")
     if not re.fullmatch(r"S-\d-(?:\d+-)+\d+", runner_sid):
         raise Super1RuntimeError("Session lease Runner SID is invalid.")
-    if os.name == "nt" and runner_sid != _current_user_sid():
-        raise Super1RuntimeError("Session lease is bound to another Runner SID.")
     if for_order and now < order_not_before:
         raise Super1RuntimeError("Session lease is not yet order-enabled.")
+    operator_sid = str(lease.get("authorized_operator_sid") or "")
+    if not re.fullmatch(r"S-\d-(?:\d+-)+\d+", operator_sid) or operator_sid == runner_sid:
+        raise Super1RuntimeError("Session lease authorized operator SID is missing or equals Runner SID.")
+    if principal_role == "runner":
+        if os.name == "nt" and runner_sid != _current_user_sid():
+            raise Super1RuntimeError("Session lease is bound to another Runner SID.")
+    elif principal_role == "operator":
+        if principal_sid != operator_sid:
+            raise Super1RuntimeError("Current interactive SID is not the authorized operator SID.")
+    else:
+        raise Super1RuntimeError("Unknown runtime principal role.")
     if manifest_sha256 is not None and str(lease.get("app_manifest_sha256")) != manifest_sha256:
         raise Super1RuntimeError("Session lease release manifest binding differs.")
     if expected_bindings:
@@ -324,6 +343,8 @@ def load_lease(
     manifest_sha256: str | None = None,
     *,
     for_order: bool = True,
+    principal_sid: str | None = None,
+    principal_role: str = "runner",
     expected_bindings: dict[str, str] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -335,6 +356,8 @@ def load_lease(
         config,
         manifest_sha256,
         for_order=for_order,
+        principal_sid=principal_sid,
+        principal_role=principal_role,
         now=utc_now() if now is None else now,
         expected_bindings=expected_bindings,
     )

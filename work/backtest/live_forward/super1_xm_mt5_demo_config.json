@@ -12,6 +12,8 @@
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "pair_cap_r": -1.0,
   "manual_required": false,
+  "live_order_approval_required": true,
+  "authorized_operator_sid": "S-1-5-19",
   "terminal_path": "C:\\Super1\\mt5\\terminal64.exe",
   "portable": false,
   "expected_company": "XM Global Limited",
@@ -29,7 +31,7 @@
   "candidate_file_sha256": "ea86920354d9c3a92b2961b30834d32a006b245a7c093f41929efa7556e6a6ee",
   "candidate_artifact_sha256": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
-  "signal_contract_sha256": "52d778853de238c974d660f01f4cf83cc2fd373f636b0d4ef2e600c3443e9b5b",
+  "signal_contract_sha256": "c168b59b2bb425ea6acead4bcf559f4952da08afbb213edc85a21d6e086b772c",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2026.json",
     "sha256": "9aeeece3ec255fc0392cdc74baeef4de9751384bf4f67d906199aa16139cf830",
@@ -37,6 +39,25 @@
   },
   "deviation_points": 20,
   "base_risk_percent": 1.0,
+  "risk_limits": {
+    "daily_loss_cap_r": -1.0,
+    "max_total_stop_risk_percent": 2.2,
+    "max_margin_fraction": 0.25,
+    "max_leverage": 5.0,
+    "max_pair_exposure_percent": 100.0,
+    "max_concentration_percent": 100.0
+  },
+  "strategy_health_baseline": {
+    "candidate_hash": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
+    "closed_trades": 100,
+    "valid_sessions": 100,
+    "years": [2022, 2023, 2024],
+    "rolling_net_r_p05": 0.0,
+    "drawdown_p95": 1.0,
+    "drawdown_p99": 2.0,
+    "seed": 7,
+    "locked": true
+  },
   "risk_rule": {
     "lookback": 10,
     "negative_scale": 0.75,

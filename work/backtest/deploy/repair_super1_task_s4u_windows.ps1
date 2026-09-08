@@ -3,6 +3,7 @@ param()
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+throw "LEGACY_DISABLED_USE_SIGNED_V16_RUNBOOK"
 . (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
 $Contract = Assert-Super1RuntimeContract
 

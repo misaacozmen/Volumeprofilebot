@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "instruments": [
+    {
+      "instrument_id": "TEST_US100",
+      "asset_class": "index",
+      "broker": "MT5",
+      "expected_server": "XMGlobal-MT5 2",
+      "broker_symbol": "US100Cash",
+      "timezone": "America/New_York",
+      "base_currency": "USD",
+      "profit_currency": "USD",
+      "margin_currency": "USD",
+      "digits": 2,
+      "point": 0.01,
+      "tick_size": 0.01,
+      "contract_size": 1.0,
+      "volume_min": 0.1,
+      "volume_max": 100.0,
+      "volume_step": 0.1,
+      "pip_size": 0.01,
+      "cost_unit": "price",
+      "trade_calc_mode": 0
+    }
+  ]
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, replace
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,8 @@ from .calibration import analyze_examples
 from .config import SYMBOL_CONFIGS
 from .data_inspector import infer_symbol_timeframe, inspect_paths, print_reports, write_reports_csv
 from .data_loader import load_ohlcv
+from .evaluation_window import EvaluationWindow, EvaluationWindowError, classify_sessions, coverage_report
+from .risk_xray import build_risk_xray, write_risk_xray
 from .strategy import monthly_stats, run_backtest, summarize_trades, trades_to_frame, weekday_stats
 
 
@@ -60,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--allowed-weekdays",
         help="Comma-separated NY weekdays to trade, e.g. Monday,Wednesday,Friday",
+    )
+    run_parser.add_argument("--evaluation-start", help="Inclusive New York session date, YYYY-MM-DD")
+    run_parser.add_argument("--evaluation-end", help="Inclusive New York session date, YYYY-MM-DD")
+    run_parser.add_argument("--warmup-bars", type=int, default=0, help="Bars supplied for warmup before evaluation")
+    run_parser.add_argument(
+        "--allow-incomplete-evaluation",
+        action="store_true",
+        help="Research-only override; mark reports NON_PROMOTABLE when source coverage is incomplete",
     )
 
     calibrate_parser = subparsers.add_parser("calibrate", help="Analyze manual calibration examples")
@@ -118,14 +129,39 @@ def main() -> None:
                 f"config={config.symbol} {config.timeframe}"
             )
 
-        result = run_backtest(market_data.frame, config)
+        evaluation_window = None
+        run_frame = market_data.frame
+        if args.evaluation_start or args.evaluation_end or args.warmup_bars:
+            if not args.evaluation_start or not args.evaluation_end:
+                raise SystemExit("--evaluation-start ve --evaluation-end birlikte verilmeli")
+            if args.warmup_bars < 0:
+                raise SystemExit("--warmup-bars negatif olamaz")
+            try:
+                session_dates = pd.to_datetime(market_data.frame["time"], utc=True, format="mixed").dt.tz_convert(args.timezone).dt.date
+                evaluation_window = EvaluationWindow(session_dates.min(), args.evaluation_start, args.evaluation_end, args.warmup_bars)
+                run_frame, _ = evaluation_window.split_frame(market_data.frame)
+            except (EvaluationWindowError, ValueError) as exc:
+                raise SystemExit(str(exc)) from exc
+
+        result = run_backtest(run_frame, config)
+        selected_trades = result.trades
+        if evaluation_window is not None:
+            selected_trades = [trade for trade in result.trades if evaluation_window.includes_session(trade.date)]
+            if len(selected_trades) != len(result.trades):
+                # Warmup can affect indicator context but is never reportable.
+                result.trades[:] = selected_trades
+        selected_lifecycles = [
+            lifecycle
+            for lifecycle in result.lifecycles
+            if evaluation_window is None or evaluation_window.includes_session(lifecycle.date)
+        ]
         output_dir = args.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        trades = trades_to_frame(result.trades)
-        summary = summarize_trades(result.trades)
-        monthly = monthly_stats(result.trades)
-        weekdays = weekday_stats(result.trades)
+        trades = trades_to_frame(selected_trades)
+        summary = summarize_trades(selected_trades)
+        monthly = monthly_stats(selected_trades)
+        weekdays = weekday_stats(selected_trades)
         parameters = pd.DataFrame([asdict(config)])
         skipped = pd.DataFrame({"date": sorted(str(day) for day in result.skipped_dates)})
         gaps = pd.DataFrame([event.__dict__ for event in result.gap_events])
@@ -141,6 +177,68 @@ def main() -> None:
         parameters.to_csv(output_dir / "parameters.csv", index=False)
         skipped.to_csv(output_dir / "skipped_dates.csv", index=False)
         gaps.to_csv(output_dir / "backtest_gap_events.csv", index=False)
+
+        if evaluation_window is not None:
+            source_dates = set(pd.to_datetime(run_frame["time"], utc=True, format="mixed").dt.tz_convert(args.timezone).dt.date)
+            evaluated_dates = set(trades["date"]) if not trades.empty else set()
+            planned_closed = {session for session in evaluation_window.evaluation_dates if session.weekday() >= 5}
+            classification = classify_sessions(
+                evaluation_window.evaluation_dates,
+                source_dates=source_dates,
+                planned_closed=planned_closed,
+            )
+            evaluated_dates = {
+                session for session, state in classification.items() if state == "VALID"
+            }
+            incomplete = any(
+                state in {"INVALID_DATA", "MISSING_SOURCE"}
+                for state in classification.values()
+            ) or not any(state == "VALID" for state in classification.values())
+            coverage = coverage_report(
+                classification,
+                evaluated=evaluated_dates,
+                non_promotable=incomplete,
+            )
+            if incomplete and not args.allow_incomplete_evaluation:
+                raise SystemExit(
+                    "Evaluation coverage incomplete (INVALID_DATA/MISSING_SOURCE); "
+                    "use --allow-incomplete-evaluation only for research."
+                )
+            (output_dir / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        **evaluation_window.manifest_fields(
+                            first_eligible_decision_time=min(
+                                (
+                                    timestamp
+                                    for timestamp, session in zip(
+                                        pd.to_datetime(run_frame["time"], utc=True, format="mixed"),
+                                        pd.to_datetime(run_frame["time"], utc=True, format="mixed")
+                                        .dt.tz_convert(args.timezone)
+                                        .dt.date,
+                                    )
+                                    if evaluation_window.includes_session(session)
+                                ),
+                                default=None,
+                            ),
+                            evaluated_sessions=len(evaluated_dates),
+                        ),
+                        "coverage": coverage,
+                        "promotable": not incomplete,
+                        "status": "NON_PROMOTABLE" if incomplete else "PROMOTABLE",
+                    },
+                    sort_keys=True,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        closed = {"win", "loss", "loss_same_bar", "breakeven", "reduced_loss"}
+        xray = build_risk_xray(
+            trades[trades["result"].isin(closed)] if not trades.empty else trades,
+            eligible_dates=None if evaluation_window is None else evaluation_window.evaluation_dates,
+            funnel={"proposed": len(selected_lifecycles), "risk_approved": len(selected_trades), "staged": len(selected_trades), "filled": len(selected_trades), "rejected": 0, "expired": 0},
+        )
+        write_risk_xray(xray, output_dir)
 
         print(f"Loaded {len(market_data.frame)} candles: {market_data.symbol} {market_data.timeframe}")
         print(f"Skipped dates: {len(result.skipped_dates)}")

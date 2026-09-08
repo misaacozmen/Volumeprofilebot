@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import pandas as pd
@@ -17,23 +21,28 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import run_engine_path_comparison_2025_feb_mar as comparison
 import run_main_candidate_filter_tests as filters
 from backtest.engine_pipeline import EngineLeg, run_canonical_pair_pipeline
+from backtest.evaluation_window import classify_sessions, coverage_report
+from backtest.market_calendar import signed_market_dates
 from backtest.manual_state import ManualStateConfig, build_independent_htf_frame
+from backtest.risk_xray import build_risk_xray, write_risk_xray
 from backtest.state_audit import pipeline_records, prefix_invariance_violations
 
 
 REPORT_DIR = ROOT / "outputs" / "reports" / "engine_reliability_audit_2025_feb_mar"
 
 
-def main() -> None:
+def main(report_dir: Path | None = None) -> bool:
     started = time.perf_counter()
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    for path in REPORT_DIR.iterdir():
-        if path.is_file():
-            path.unlink()
+    target_report_dir = (report_dir or REPORT_DIR).resolve()
+    target_report_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f".{target_report_dir.name}.", dir=target_report_dir.parent))
+    baseline = target_report_dir / "phase0_canonical_baseline.json"
+    if baseline.is_file():
+        shutil.copy2(baseline, staging_dir / baseline.name)
 
     loaded = filters.load_data()
     configs = comparison.build_active_configs(loaded)
-    dates = [item.date() for item in pd.bdate_range(comparison.START_DATE, comparison.END_DATE)]
+    dates = signed_market_dates(comparison.START_DATE, comparison.END_DATE)
     legs = [
         EngineLeg(
             key,
@@ -48,14 +57,49 @@ def main() -> None:
     second = run_canonical_pair_pipeline(legs, dates, state_config=state_config)
     deterministic = first.manifest["result_hash"] == second.manifest["result_hash"]
 
-    first.decisions.to_csv(REPORT_DIR / "canonical_decisions.csv", index=False)
-    first.filled_after_pair_cap.to_csv(REPORT_DIR / "filled_after_causal_pair_cap.csv", index=False)
-    first.suppressed_by_pair_cap.to_csv(REPORT_DIR / "suppressed_by_causal_pair_cap.csv", index=False)
-    (REPORT_DIR / "run_manifest.json").write_text(
-        json.dumps(first.manifest, indent=2, sort_keys=True, default=str),
-        encoding="utf-8",
+    first.decisions.to_csv(staging_dir / "canonical_decisions.csv", index=False)
+    first.filled_after_pair_cap.to_csv(staging_dir / "filled_after_causal_pair_cap.csv", index=False)
+    first.suppressed_by_pair_cap.to_csv(staging_dir / "suppressed_by_causal_pair_cap.csv", index=False)
+    source_sets = [
+        set(
+            pd.to_datetime(leg.frame["time"], utc=True, format="mixed")
+            .dt.tz_convert("America/New_York")
+            .dt.date
+        )
+        for leg in legs
+    ]
+    source_dates = set.intersection(*source_sets) if source_sets else set()
+    valid_sets = [
+        {pd.Timestamp(day.trade_date).date() for day in result.days if day.data_state == "VALID"}
+        for result in first.leg_results.values()
+    ]
+    invalid_dates = {
+        pd.Timestamp(day.trade_date).date()
+        for result in first.leg_results.values()
+        for day in result.days
+        if day.data_state == "INVALID"
+    }
+    coverage = coverage_report(
+        classify_sessions(dates, source_dates=source_dates, invalid_data=invalid_dates),
+        evaluated=(set.intersection(*valid_sets) if valid_sets else set()) & set(dates),
     )
-
+    write_risk_xray(
+        build_risk_xray(
+            first.filled_after_pair_cap,
+            eligible_dates=dates,
+            coverage=coverage,
+            provenance_hashes=first.manifest.get("data_hashes", {}),
+            funnel={
+                "proposed": len(first.decisions),
+                "risk_approved": None,
+                "staged": None,
+                "filled": len(first.filled_after_pair_cap),
+                "rejected": int((first.decisions.get("final_decision", pd.Series(dtype=str)) == "SKIP").sum()),
+                "expired": 0,
+            },
+        ),
+        staging_dir,
+    )
     data_rows: list[dict[str, object]] = []
     pipeline_rows: list[dict[str, object]] = []
     prefix_rows: list[dict[str, object]] = []
@@ -118,18 +162,18 @@ def main() -> None:
     data_quality = pd.DataFrame(data_rows)
     pipeline = pd.DataFrame(pipeline_rows)
     prefix = pd.DataFrame(prefix_rows)
-    data_quality.to_csv(REPORT_DIR / "data_quality_by_day.csv", index=False)
-    pipeline.to_csv(REPORT_DIR / "pipeline_trace.csv", index=False)
-    prefix.to_csv(REPORT_DIR / "prefix_violations.csv", index=False)
+    data_quality.to_csv(staging_dir / "data_quality_by_day.csv", index=False)
+    pipeline.to_csv(staging_dir / "pipeline_trace.csv", index=False)
+    prefix.to_csv(staging_dir / "prefix_violations.csv", index=False)
 
     tests = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "run_core_tests.py")],
+        [sys.executable, "-m", "pytest", "-q"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
-    (REPORT_DIR / "core_test_output.txt").write_text(
+    (staging_dir / "core_test_output.txt").write_text(
         tests.stdout + tests.stderr,
         encoding="utf-8",
     )
@@ -141,7 +185,24 @@ def main() -> None:
     )
     invalid_days = int((data_quality["data_state"] == "INVALID").sum())
     prefix_violation_count = len(prefix)
-    forward_shadow_ready = tests.returncode == 0 and deterministic and prefix_violation_count == 0
+    forward_shadow_ready = (
+        tests.returncode == 0
+        and deterministic
+        and prefix_violation_count == 0
+        and invalid_days == 0
+        and int(coverage.get("missing_sessions", 0) or 0) == 0
+        and int(coverage.get("invalid_sessions", 0) or 0) == 0
+        and int(coverage.get("valid_sessions", 0) or 0) == int(coverage.get("evaluated_sessions", 0) or 0)
+    )
+    (staging_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {**first.manifest, "coverage": coverage, "forward_shadow_ready": forward_shadow_ready},
+            indent=2,
+            sort_keys=True,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
     summary = pd.DataFrame(
         [
             {
@@ -153,16 +214,32 @@ def main() -> None:
                 "canonical_decisions": len(first.decisions),
                 "filled_pre_pair_cap": int((first.decisions["order_state"] == "FILLED").sum()),
                 "filled_post_pair_cap": len(first.filled_after_pair_cap),
+                "net_r": float(first.filled_after_pair_cap["r_multiple"].sum()) if not first.filled_after_pair_cap.empty else 0.0,
                 "pair_cap_suppressed": len(first.suppressed_by_pair_cap),
                 "intrabar_ambiguities_labeled": ambiguity_count,
                 "forward_shadow_ready": forward_shadow_ready,
             }
         ]
     )
-    summary.to_csv(REPORT_DIR / "summary.csv", index=False)
-    write_report(summary.iloc[0].to_dict(), first.manifest, tests.stdout.strip(), time.perf_counter() - started)
+    summary.to_csv(staging_dir / "summary.csv", index=False)
+    write_report(summary.iloc[0].to_dict(), first.manifest, tests.stdout.strip(), time.perf_counter() - started, report_dir=staging_dir)
     print(summary.to_string(index=False))
-    print(f"Wrote: {REPORT_DIR}")
+    backup_dir = target_report_dir.parent / f".{target_report_dir.name}.previous"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    try:
+        if target_report_dir.exists():
+            os.replace(target_report_dir, backup_dir)
+        os.replace(staging_dir, target_report_dir)
+    except Exception:
+        if not target_report_dir.exists() and backup_dir.exists():
+            os.replace(backup_dir, target_report_dir)
+        raise
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+    print(f"Wrote: {target_report_dir}")
+    return bool(summary["forward_shadow_ready"].iloc[0])
 
 
 def write_report(
@@ -170,6 +247,8 @@ def write_report(
     manifest: dict[str, object],
     test_output: str,
     runtime_seconds: float,
+    *,
+    report_dir: Path,
 ) -> None:
     ready = bool(summary["forward_shadow_ready"])
     lines = [
@@ -216,8 +295,16 @@ def write_report(
         "Forward shadow testte kurallar dondurulmalı; yalnız veri/karar trace'i toplanmalı. "
         "TP/SL sonuçları motor mantığını geriye dönük değiştirmek için kullanılmamalıdır.",
     ]
-    (REPORT_DIR / "report_tr.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (report_dir / "report_tr.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run the clean canonical engine reliability audit.")
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        help="Write the fresh attestation to this directory; never reuse an existing report.",
+    )
+    arguments = parser.parse_args()
+    if not main(arguments.report_dir):
+        raise SystemExit("engine reliability audit is not ready for release")

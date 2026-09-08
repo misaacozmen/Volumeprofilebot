@@ -229,7 +229,25 @@ if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([str
 $Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
 $MainTask = [string]$RuntimeContract.main_task
 $WatchdogTask = [string]$RuntimeContract.watchdog_task
-$ExpectedIntegrityScriptSha256 = "4d5ef23880c864f58d5b5e43d9b01ac6a33b73c173b1665bc1912e2c22b1d21a"
+$AuditEventLog = "Application"
+$AuditEventSource = "Super1AuditAnchor"
+$ExpectedIntegrityScriptSha256 = "fb4dea8e15aa13309f268dcaa54c211630862999d3516bf584a54d59d7a8e960"
+
+function Ensure-Super1AuditEventSource {
+    $sourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\$AuditEventLog\$AuditEventSource"
+    $otherSources = @(Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog" -Recurse -ErrorAction Stop | Where-Object {
+        $_.PSChildName -ceq $AuditEventSource -and $_.PSPath -cne "Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\EventLog\$AuditEventLog\$AuditEventSource"
+    })
+    if ($otherSources.Count -gt 0) {
+        throw "Super1 audit source is registered under an unexpected Windows Event Log."
+    }
+    if (-not (Test-Path -LiteralPath $sourceKey)) {
+        New-EventLog -LogName $AuditEventLog -Source $AuditEventSource
+    }
+    if (-not (Test-Path -LiteralPath $sourceKey)) {
+        throw "Installer could not register the Super1 audit Event Log source."
+    }
+}
 
 function Test-PathWithin {
     param(
@@ -1843,6 +1861,7 @@ try {
     )) {
         throw "Run this script from an elevated PowerShell."
     }
+    Ensure-Super1AuditEventSource
     $callerSid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if ($callerSid -notmatch '^S-\d-(?:\d+-)+\d+$') {
         throw "Could not resolve the elevated upgrade caller SID."

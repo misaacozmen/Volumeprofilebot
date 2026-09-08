@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -159,6 +160,38 @@ def test_smoke_production_has_no_test_bypass_and_requires_confirm_demo() -> None
     assert "Demo smoke requires -ConfirmDemo." not in real_output
 
 
+def test_watchdog_outbox_rewrites_full_array_and_delivers_one_item_per_invocation() -> None:
+    path = DEPLOY / "watchdog_windows.ps1"
+    completed = powershell_harness(
+        r'''
+$root = Join-Path $env:TEMP ("otobt-outbox-" + [Guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Path $root | Out-Null
+$status = Join-Path $root "watchdog_status.json"; $credential = Join-Path $root "watchdog_telegram.dat"; [IO.File]::WriteAllText($credential, "test")
+try {
+  . $env:OTOBT_HARNESS_ARG0 -MainTaskName "unused" -HealthPath $status -ProcessPattern "unused" -StatusPath $status -LibraryOnly
+  $sent = [Collections.Generic.List[string]]::new()
+  function Send-TelegramText([string]$Message) { [void]$sent.Add($Message); return [pscustomobject]@{ ok = $true; result = [pscustomobject]@{ message_id = $sent.Count } } }
+  $now = [DateTimeOffset]::UtcNow.ToString("o")
+  $items = @(
+    [pscustomobject]@{ key="event-a"; event_id="event-a"; dedupe_key="event-a"; state="PENDING"; message="A"; queued_at_utc=$now; attempt_count=0; attempted_at_utc=""; last_attempt_utc=""; next_attempt_utc=$now; telegram_message_id=0 },
+    [pscustomobject]@{ key="event-b"; event_id="event-b"; dedupe_key="event-b"; state="PENDING"; message="B"; queued_at_utc=$now; attempt_count=0; attempted_at_utc=""; last_attempt_utc=""; next_attempt_utc=$now; telegram_message_id=0 }
+  )
+  Write-TelegramOutbox -Entries $items
+  Invoke-TelegramOutboxDelivery | Out-Null
+  $afterOne = @(Read-TelegramOutbox)
+  if ($sent.Count -ne 1 -or $afterOne.Count -ne 2 -or $afterOne[0].state -ne "ACKED" -or $afterOne[1].state -ne "PENDING" -or $afterOne[0].event_id -ne "event-a") { throw "first delivery did not preserve the full array" }
+  Invoke-TelegramOutboxDelivery | Out-Null
+  $afterTwo = @(Read-TelegramOutbox)
+  if ($sent.Count -ne 2 -or $afterTwo.Count -ne 2 -or @($afterTwo | Where-Object state -ne "ACKED").Count -ne 0 -or $afterTwo[1].event_id -ne "event-b") { throw "second delivery did not deliver exactly the remaining item" }
+  $afterTwo[0].state = "IN_FLIGHT"; $afterTwo[0].telegram_message_id = 0; Write-TelegramOutbox -Entries $afterTwo; $script:deliveredTelegramKeys.Clear()
+  Invoke-TelegramOutboxDelivery | Out-Null
+  if ($sent.Count -ne 3) { throw "IN_FLIGHT recovery was not at-least-once" }
+} finally { if (Test-Path $root) { Remove-Item $root -Recurse -Force } }
+''',
+        str(path),
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+
 def test_smoke_binds_launcher_scalar_and_result_hash_to_producer() -> None:
     nodes = ast("run_super1_demo_smoke_windows.ps1")
     text = "\n".join(item["text"] for item in nodes["facts"] if item["kind"] == "command")
@@ -204,7 +237,7 @@ def test_builder_and_integrity_use_v16_baselines() -> None:
     builder_text = "\n".join(item["text"] for item in builder["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in builder["facts"] if item["kind"] == "assignment")
     integrity_text = "\n".join(item["text"] for item in integrity["facts"] if item["kind"] == "command") + "\n" + "\n".join(item["right_text"] for item in integrity["facts"] if item["kind"] == "assignment") + "\n" + "\n".join(item["condition_text"] for item in integrity["facts"] if item["kind"] == "if")
     assert f"-{RELEASE_GENERATION}" in builder_text
-    assert f"test_{RELEASE_GENERATION}_deployment_contract.py" in builder_text
+    assert "artifact_test_files.json" in builder_source
     assert "$passedCount" in builder_source and "$artifactPassedCount" in builder_source
     assert "Assert-ManifestTestGate" in integrity_source
     assert '"${Prefix}_nodeid_sha256"' in integrity_source
@@ -239,23 +272,26 @@ def test_smoke_preserves_transaction_on_failure() -> None:
 def test_release_integrity_requires_provenance_and_normalized_manifest_paths() -> None:
     path = DEPLOY / "release_integrity.ps1"
     verifier = next(item for item in facts(path, "function") if item["name"] == "Assert-SignedReleaseArchive")
+    canonical_reader = next(item for item in facts(path, "function") if item["name"] == "Get-CanonicalArtifactTestFiles")
     artifact_validator = next(item for item in facts(path, "function") if item["name"] == "Assert-ReleaseArtifactTestFiles")
     assert "RequireProvenance" in verifier["extent_text"]
     assert "files" in {item["member"] for item in facts(path, "member")}
-    assert "test_v16_deployment_contract.py" in artifact_validator["extent_text"]
+    assert "Get-CanonicalArtifactTestFiles" in artifact_validator["extent_text"]
     assert any(item["name"] == "Assert-ReleaseArtifactTestFiles" and item["scope"] == "function:Assert-SignedReleaseArchive" for item in facts(path, "command"))
-    correct = "@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}"
+    canonical = json.loads((DEPLOY / "artifact_test_files.json").read_text(encoding="utf-8"))["artifact_test_files"]
+    correct = "@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in canonical) + ")}"
     cases = [
         (correct, 0),
         ("@{}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_check_mt5_flat.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','extra.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py','test_v16_deployment_contract.py')}", 1),
-        ("@{artifact_test_files=@('test_deployment_security.py','test_xm_mt5_forward.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','TEST_V16_DEPLOYMENT_CONTRACT.PY')}", 1),
-        ("@{artifact_test_files=@('test_xm_mt5_forward.py','test_deployment_security.py','test_super1_xm_forward.py','test_super1_runtime_hardening.py','test_check_mt5_flat.py','test_v16_deployment_contract.py')}", 1),
+        ("@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in canonical[:-1]) + ")}", 1),
+        ("@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in canonical) + ",'extra.py')}", 1),
+        ("@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in canonical[:-1]) + ",'test_audit_ledger.py')}", 1),
+        ("@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in canonical[:-1]) + ",'TEST_V16_DEPLOYMENT_CONTRACT.PY')}", 1),
+        ("@{artifact_test_files=@(" + ",".join("'" + item + "'" for item in reversed(canonical)) + ")}", 1),
     ]
-    script = "function Assert-ReleaseArtifactTestFiles" + artifact_validator["extent_text"].split("function Assert-ReleaseArtifactTestFiles", 1)[1] + "\n"
-    script += "function Invoke-ArtifactCase([object]$m){try{Assert-ReleaseArtifactTestFiles -Manifest $m; return 0}catch{return 1}}\n"
+    script = canonical_reader["extent_text"] + "\n"
+    script += "function Assert-ReleaseArtifactTestFiles" + artifact_validator["extent_text"].split("function Assert-ReleaseArtifactTestFiles", 1)[1] + "\n"
+    script += f"$root = '{DEPLOY.parent.as_posix()}'; function Invoke-ArtifactCase([object]$m){{try{{Assert-ReleaseArtifactTestFiles -Manifest $m -Root $root; return 0}}catch{{return 1}}}}\n"
     script += "$results=@();\n" + "\n".join(f"$results += Invoke-ArtifactCase ([pscustomobject]{value})" for value, _ in cases) + "\n$results -join ','"
     result = powershell_harness(script)
     assert result.returncode == 0, result.stderr

@@ -128,6 +128,7 @@ def test_super1_repair_does_not_reset_password_behind_dpapi_blob() -> None:
 
 def test_release_builder_keeps_private_key_outside_workspace() -> None:
     source = text("build_signed_windows_release.ps1")
+    allowlist = json.loads((ROOT / "deploy" / "release_payload_allowlist.json").read_text(encoding="utf-8"))
     assert "LOCALAPPDATA" in source
     assert "release-private-key.dpapi" in source
     assert "requirements-windows.lock" in source
@@ -158,11 +159,12 @@ def test_release_builder_keeps_private_key_outside_workspace() -> None:
         "scripts/run_super1_xm_mt5_forward.py",
         "scripts/run_xm_mt5_forward.py",
     ):
-        assert required_runtime in source
+        assert any(required_runtime in profile["files"] for profile in allowlist["profiles"].values())
 
 
 def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None:
     source = text("build_signed_windows_release.ps1")
+    allowlist = json.loads((ROOT / "deploy" / "release_payload_allowlist.json").read_text(encoding="utf-8"))
     candidate = json.loads(
         (
             ROOT
@@ -172,9 +174,10 @@ def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None
         ).read_text(encoding="utf-8")
     )
 
-    assert "$candidatePayload.provenance.inputs" in source
-    assert "$requiredPayloadFiles += $Super1ProvenanceFiles" in source
-    assert "Super1 provenance input is missing" in source
+    assert "legacy order/data/broker files" in source
+    super1_files = allowlist["profiles"]["super1"]["files"]
+    assert "research_candidates/super1/super1_unsigned_candidate_v2.json" in super1_files
+    assert "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json" not in super1_files
     assert any(item["path"].startswith("outputs/reports/") for item in candidate["provenance"]["inputs"])
 
 
@@ -746,7 +749,9 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert "pytest_nodeid_sha256" in source
     assert "artifact_pytest_nodeid_sha256" in source
     assert 'tests\\v08_helpers.py' in source
-    assert "deploy/stage_signed_upgrader_windows.ps1" in source
+    assert "deploy/stage_signed_upgrader_windows.ps1" in json.dumps(
+        json.loads((ROOT / "deploy" / "release_payload_allowlist.json").read_text(encoding="utf-8"))
+    )
     for key in (
         "release_id",
         "created_at_utc",
@@ -769,6 +774,19 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
         "files = $manifestFiles",
     ):
         assert key in source
+
+
+def test_release_builder_requires_fresh_attestation_and_separate_artifact_hashes() -> None:
+    source = text("build_signed_windows_release.ps1")
+
+    assert "--report-dir $FreshAuditRoot" in source
+    assert "Fresh engine reliability audit failed" in source
+    assert "engine_package_sha256 =" in source
+    assert "release_archive_sha256 =" in source
+    assert "calendar_artifact_sha256 =" in source
+    assert "input_dataset_sha256 =" in source
+    assert "reliability_audit_ready" in source
+    assert "phase0_canonical_baseline.json" not in source
 
 
 def test_release_integrity_validates_entries_and_rejects_credentials_and_source_mismatch() -> None:

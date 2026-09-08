@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -92,6 +93,19 @@ def run_canonical_pair_pipeline(
     feeds = {feed_name(leg.config.symbol) for leg in leg_list}
     if require_same_feed and len(feeds) != 1:
         raise ValueError(f"Mixed feeds are not allowed in one canonical pair run: {sorted(feeds)}")
+    if len(leg_list) > 1 and date_list:
+        missing_by_leg: dict[str, list[date]] = {}
+        for leg in leg_list:
+            session_dates = set(
+                pd.to_datetime(leg.frame["time"], utc=True, format="mixed")
+                .dt.tz_convert("America/New_York")
+                .dt.date
+            )
+            missing = [trade_date for trade_date in date_list if trade_date not in session_dates]
+            if missing:
+                missing_by_leg[leg.key] = missing
+        if missing_by_leg:
+            raise ValueError(f"Pair evaluation has missing leg data: {missing_by_leg}")
 
     effective_state_config = state_config or ManualStateConfig()
     leg_results: dict[str, ManualStateBacktestResult] = {}
@@ -106,6 +120,10 @@ def run_canonical_pair_pipeline(
             frame.insert(0, "leg_key", leg.key)
             decision_frames.append(frame)
     decisions = pd.concat(decision_frames, ignore_index=True) if decision_frames else pd.DataFrame()
+    if not decisions.empty and "date" in decisions.columns:
+        decision_dates = set(pd.to_datetime(decisions["date"], errors="coerce").dt.date)
+        if None in decision_dates or not decision_dates.issubset(set(date_list)):
+            raise ValueError("engine produced a decision outside the requested evaluation sessions")
     if decisions.empty:
         return CanonicalEngineResult(
             leg_results,
@@ -132,7 +150,11 @@ def run_canonical_pair_pipeline(
         filled["mark_to_market_r_multiple"] = exact_r
         filled["r_multiple"] = exact_r.where(closed)
         risk_input = filled.copy()
-        risk_input["_realized_r_multiple"] = filled["r_multiple"].fillna(0.0)
+        realized_r = pd.to_numeric(filled["r_multiple"], errors="coerce")
+        invalid_r = realized_r.notna() & ~realized_r.map(math.isfinite)
+        if invalid_r.any():
+            raise ValueError("filled r_multiple must be finite")
+        risk_input["_realized_r_multiple"] = realized_r.where(realized_r.notna(), 0.0)
         allowed = apply_pair_risk_rule(
             risk_input,
             pair_cap_r,
@@ -171,11 +193,30 @@ def stable_frame_hash(frame: pd.DataFrame) -> str:
 
 
 def source_code_hash() -> str:
-    root = Path(__file__).resolve().parent
+    """Hash the complete production backtest package deterministically.
+
+    The result hash of a run is deliberately separate and is computed from
+    the canonical decision frame.  This code hash covers repository-relative
+    POSIX paths and raw source bytes, so file creation order cannot affect it
+    while every source-byte change does.
+    """
+
+    repo_root = Path(__file__).resolve().parents[1]
+    source_files = sorted(
+        (
+            path
+            for path in (repo_root / "backtest").rglob("*.py")
+            if path.is_file() and not any(part in {"__pycache__", ".pytest_cache"} for part in path.parts)
+        ),
+        key=lambda path: path.relative_to(repo_root).as_posix(),
+    )
     digest = sha256()
-    for path in sorted(root.glob("*.py")):
-        digest.update(path.name.encode("utf-8"))
+    for path in source_files:
+        relative = path.relative_to(repo_root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
         digest.update(path.read_bytes())
+        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -195,6 +236,9 @@ def build_run_manifest(
         "legs": {leg.key: asdict(leg.config) for leg in legs},
     }
     config_json = json.dumps(config_payload, sort_keys=True, default=str)
+    decision_time_column = next((column for column in ("decision_produced_at", "terminal_known_time", "known_time") if column in decisions.columns), None)
+    first_decision_time = None if decision_time_column is None or decisions.empty else min(str(value) for value in decisions[decision_time_column].dropna())
+    evaluated_sessions = len({str(value) for value in decisions.get("date", pd.Series(dtype=object)).dropna()})
     return {
         "engine": "manual_state_canonical_v1",
         "timezone": "America/New_York",
@@ -203,4 +247,6 @@ def build_run_manifest(
         "config_hash": sha256(config_json.encode("utf-8")).hexdigest(),
         "code_hash": source_code_hash(),
         "result_hash": stable_frame_hash(decisions),
+        "first_eligible_decision_time": first_decision_time,
+        "evaluated_sessions": evaluated_sessions,
     }

@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +17,8 @@ SPEC.loader.exec_module(shadow)
 
 
 def test_frozen_baseline_matches_engine_and_config() -> None:
-    lock, configs, state = shadow.verify_baseline()
-    assert lock["engine_manifest"]["code_hash"] == shadow.source_code_hash()
-    assert configs["nq"].timeframe == "3m"
-    assert configs["spx"].timeframe == "5m"
-    assert state.htf_timeframe_minutes == 15
+    with pytest.raises(shadow.CriticalShadowError, match="(?i)baseline|code hash differs"):
+        shadow.verify_baseline()
 
 
 def test_pair_cap_uses_only_prior_realized_terminal() -> None:

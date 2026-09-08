@@ -3,12 +3,29 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 from pathlib import Path
+import re
+import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
+from uuid import uuid4
 
 import pandas as pd
 
+from backtest.live.approval import ApprovalError, ApprovalStore, proposal_hash, wire_request_hash
+from backtest.live.audit_ledger import AUDIT_SCHEMA_VERSION, GENESIS_HASH, AuditLedger, event_hash
+from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
+from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, RiskApprovedOrder
+from backtest.live.execution import Mt5WritePort
+from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
+from backtest.live.risk_guard import RiskGuard
+from backtest.live.halt import HaltController, emergency_flatten_cycle
+from backtest.live.instruments import InstrumentRegistry
+from backtest.live.order_state import OrderStateMachine
+from backtest.live.settings import RuntimeSettings
+from backtest.live.strategy_health import LockedOOSBaseline, StrategyHealth
+from backtest.signals import SignalProposal
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -16,7 +33,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import run_capital_forward as core
 import run_xm_mt5_forward as xm
 from candidate_artifact import ArtifactValidationError, load_artifact
-from super1_terminal_r import calculate_terminal_r
 from super1_runtime_guard import (
     AccountBindingMismatchError,
     Super1RuntimeError,
@@ -37,6 +53,39 @@ DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
 REQUIRED_ENV: tuple[str, ...] = ()
 RTH_CALENDAR_RELATIVE = "live_forward/calendars/us_equity_rth_2026.json"
 RTH_CALENDAR_STATES = {"OPEN", "EARLY_CLOSE", "CLOSED"}
+AUDIT_EVENT_SOURCE = "Super1AuditAnchor"
+AUDIT_EVENT_LOG = "APPLICATION"
+_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def write_event_log_anchor(event_hash: str, event_id: str) -> None:
+    """Write the hash anchor to the installer-registered Windows Event Log source."""
+    if not _SHA256_PATTERN.fullmatch(str(event_hash)) or not str(event_id).strip():
+        raise Super1RuntimeError("audit anchor payload is invalid")
+    if sys.platform != "win32":
+        raise Super1RuntimeError("Windows Event Log audit anchor is unavailable")
+    eventcreate = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "eventcreate.exe"
+    if not eventcreate.is_file():
+        raise Super1RuntimeError("trusted eventcreate.exe is missing")
+    message = f"sequence_anchor event_id={event_id}; event_hash={event_hash.lower()}"
+    result = subprocess.run(
+        [
+            str(eventcreate),
+            "/T", "INFORMATION",
+            "/ID", "1000",
+            "/L", AUDIT_EVENT_LOG,
+            "/SO", AUDIT_EVENT_SOURCE,
+            "/D", message,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise Super1RuntimeError(f"Windows Event Log audit anchor failed: {detail}")
 
 
 class Super1FeatureError(core.CriticalLiveError):
@@ -68,10 +117,96 @@ def _safe_repo_file(relative: object, label: str) -> Path:
     return resolved
 
 
+def _signed_health_baseline(config: dict[str, Any], candidate_hash: str) -> LockedOOSBaseline:
+    raw = config.get("strategy_health_baseline")
+    if not isinstance(raw, dict):
+        raise Super1RuntimeError("signed strategy-health baseline is missing")
+    required = ("candidate_hash", "closed_trades", "valid_sessions", "years", "rolling_net_r_p05", "drawdown_p95", "drawdown_p99", "seed", "locked")
+    if any(key not in raw for key in required):
+        raise Super1RuntimeError("signed strategy-health baseline is incomplete")
+    try:
+        baseline = LockedOOSBaseline(
+            candidate_hash=str(raw["candidate_hash"]),
+            closed_trades=int(raw["closed_trades"]),
+            valid_sessions=int(raw["valid_sessions"]),
+            years=tuple(int(year) for year in raw["years"]),
+            rolling_net_r_p05=float(raw["rolling_net_r_p05"]),
+            drawdown_p95=float(raw["drawdown_p95"]),
+            drawdown_p99=float(raw["drawdown_p99"]),
+            seed=int(raw["seed"]),
+            locked=bool(raw["locked"]),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise Super1RuntimeError("signed strategy-health baseline is malformed") from exc
+    if not baseline.locked or baseline.candidate_hash != candidate_hash:
+        raise Super1RuntimeError("signed strategy-health baseline is not bound to the candidate")
+    return baseline
+
+
+def _signed_risk_limits(config: dict[str, Any]) -> dict[str, float]:
+    raw = config.get("risk_limits")
+    required = ("daily_loss_cap_r", "max_total_stop_risk_percent", "max_margin_fraction", "max_leverage", "max_pair_exposure_percent", "max_concentration_percent")
+    if not isinstance(raw, dict) or any(key not in raw for key in required):
+        raise Super1RuntimeError("signed risk limits are missing or incomplete")
+    try:
+        values = {key: float(raw[key]) for key in required}
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise Super1RuntimeError("signed risk limits are malformed") from exc
+    if not all(math.isfinite(value) for value in values.values()):
+        raise Super1RuntimeError("signed risk limits contain non-finite values")
+    return values
+
+
+def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
+    if reference.get("path") != "live_forward/calendars/us_equity_rth_2022_2026_v2.json" or reference.get("calendar_id") != "US_EQUITY_RTH_2022_2026_V2":
+        raise Super1FeatureError("canonical 2022-2026 RTH calendar binding is invalid")
+    path = _safe_repo_file(reference.get("path"), "canonical RTH calendar")
+    if core.file_hash(path) != str(reference.get("sha256") or "").lower():
+        raise Super1FeatureError("canonical RTH calendar raw hash mismatch")
+    try:
+        calendar = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_pairs)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Super1FeatureError("canonical RTH calendar is unreadable") from exc
+    if not isinstance(calendar, dict) or calendar.get("schema_version") != 2 or calendar.get("calendar_id") != reference["calendar_id"] or calendar.get("timezone") != core.TZ:
+        raise Super1FeatureError("canonical RTH calendar identity is invalid")
+    coverage = calendar.get("coverage")
+    if not isinstance(coverage, dict) or coverage.get("start") != "2022-01-01" or coverage.get("end") != "2026-12-31":
+        raise Super1FeatureError("canonical RTH calendar coverage is invalid")
+    source_records = calendar.get("source_records")
+    if not isinstance(source_records, list) or len(source_records) != 6:
+        raise Super1FeatureError("canonical RTH calendar must contain all official source records")
+    source_ids = [str(item.get("id") or "") for item in source_records if isinstance(item, dict)]
+    expected_ids = [f"NASDAQ_TRADING_CALENDAR_{year}" for year in range(2022, 2027)] + ["NYSE_TRADING_CALENDAR_2022_2026"]
+    if source_ids != expected_ids:
+        raise Super1FeatureError("canonical RTH calendar source records are incomplete or out of order")
+    for source in source_records:
+        if not isinstance(source, dict) or not all(source.get(key) for key in ("raw_path", "raw_sha256", "extraction_sha256", "url")):
+            raise Super1FeatureError("canonical RTH calendar official raw source bytes are not sealed")
+        raw_source = _safe_repo_file(source["raw_path"], "canonical RTH raw source")
+        if core.file_hash(raw_source) != str(source["raw_sha256"]).lower():
+            raise Super1FeatureError("canonical RTH raw source hash mismatch")
+    closed = {str(value) for value in calendar.get("closed_dates", [])}
+    early = {str(value) for value in calendar.get("early_close_dates", [])}
+    start = pd.Timestamp(coverage["start"]).date()
+    end = pd.Timestamp(coverage["end"]).date()
+    sessions: dict[str, dict[str, Any]] = {}
+    for day in pd.date_range(start, end, freq="1D"):
+        key = day.strftime("%Y-%m-%d")
+        if day.weekday() >= 5 or key in closed:
+            sessions[key] = {"date": key, "state": "CLOSED"}
+        elif key in early:
+            sessions[key] = {"date": key, "state": "EARLY_CLOSE", "start": "09:30", "end": "13:00"}
+        else:
+            sessions[key] = {"date": key, "state": "OPEN", "start": "09:30", "end": "16:00"}
+    return {"path": str(path), "sha256": core.file_hash(path), "calendar_id": calendar["calendar_id"], "coverage": coverage, "sessions": sessions, "source_records": source_records}
+
+
 def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
     reference = runtime.get("rth_session_calendar")
     if not isinstance(reference, dict):
         raise Super1FeatureError("Verified RTH calendar reference is missing.")
+    if reference.get("calendar_id") == "US_EQUITY_RTH_2022_2026_V2":
+        return _load_canonical_rth_calendar(runtime, reference)
     if (
         reference.get("path") != RTH_CALENDAR_RELATIVE
         or reference.get("calendar_id") != "US_EQUITY_RTH_2026"
@@ -292,9 +427,10 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or safety.get("deployed_pipeline_historical_parity_proven") is not False
         or safety.get("candidate_research_results_apply_to_deployed_pipeline") is not False
         or "live_enabled" in safety
-        or runtime.get("execution") != "MT5_DEMO_ORDERS"
-        or runtime.get("account_mode") != "DEMO_ORDER"
-        or runtime.get("deployment_mode") != DEPLOYMENT_MODE
+            or runtime.get("execution") != "MT5_DEMO_ORDERS"
+            or runtime.get("account_mode") != "DEMO_ORDER"
+            or runtime.get("live_order_approval_required") is not True
+            or runtime.get("deployment_mode") != DEPLOYMENT_MODE
     ):
         raise Super1FeatureError("Super1 signal contract is invalid or does not match runtime bytes.")
 
@@ -398,8 +534,179 @@ def liquidity_type(record: dict[str, Any], decision: dict[str, Any], config: Any
     return "vah_val_proximity" if near else "other_liquidity"
 
 
+class _Super1ProductionSmokeAdapter:
+    def __init__(self, client: "Super1XmMt5DemoOrderClient", output_root: Path, request: dict[str, object], contract: InstrumentContract):
+        self.client = client
+        self.output_root = output_root
+        self.request = dict(request)
+        self.contract = contract
+        self.entry_writes = 0
+        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+
+    def wire_request_hash(self, _order: RiskApprovedOrder) -> str:
+        return wire_request_hash(self.request)
+
+    def proposal_wire_request_hash(self, _proposal: SignalProposal) -> str:
+        return wire_request_hash(self.request)
+
+    def request_for_order(self, _order: RiskApprovedOrder) -> dict[str, Any]:
+        return dict(self.request)
+
+    def validate_request(self, order: RiskApprovedOrder) -> None:
+        if wire_request_hash(self.request) != order.request_hash:
+            raise core.CriticalLiveError("SMOKE request hash differs from the approved wire request")
+
+    def send(self, order: RiskApprovedOrder) -> Any:
+        if order.volume != self.contract.volume_min:
+            raise core.CriticalLiveError("SMOKE request must use the signed broker minimum volume")
+        if wire_request_hash(self.request) != order.request_hash:
+            raise core.CriticalLiveError("SMOKE request hash differs from the approved wire request")
+        self.entry_writes += 1
+        return self.write_port.send(order.proposal_id)
+
+    def reconcile(self, response: Any, order: RiskApprovedOrder) -> BrokerEvidence:
+        try:
+            retcode = int(getattr(response, "retcode"))
+            ticket = int(getattr(response, "order"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise core.CriticalLiveError("SMOKE broker response is unreadable") from exc
+        accepted = {
+            int(getattr(self.client.mt5, "TRADE_RETCODE_PLACED", 10008)),
+            int(getattr(self.client.mt5, "TRADE_RETCODE_DONE", 10009)),
+        }
+        if retcode not in accepted or ticket <= 0:
+            raise core.CriticalLiveError("SMOKE broker response was not an accepted pending-order acknowledgement")
+        observed = self.client._mt5_collection("orders_get", ticket=ticket)
+        exact = [
+            item for item in observed
+            if int(getattr(item, "ticket", 0) or 0) == ticket
+            and str(getattr(item, "symbol", "")) == self.contract.broker_symbol
+            and str(getattr(item, "comment", "")) == str(self.request.get("comment"))
+        ]
+        if len(exact) != 1:
+            raise core.CriticalLiveError("SMOKE pending-order readback is not exact")
+        return BrokerEvidence(
+            "SEND", retcode, ticket=ticket,
+            deal_id=(int(getattr(response, "deal", 0) or 0) or None),
+            broker_state="READBACK_CONFIRMED",
+            raw={"ticket": ticket, "proposal_id": order.proposal_id},
+        )
+
+
+class _Super1ProductionAdapter:
+    """Build the final MT5 request from a persisted RiskApprovedOrder."""
+
+    def __init__(self, client: "Super1XmMt5DemoOrderClient", output_root: Path, request: dict[str, object], contract: InstrumentContract):
+        self.client = client
+        self.output_root = output_root
+        self.base_request = dict(request)
+        self.contract = contract
+        self.last_request: dict[str, object] | None = None
+        self.entry_writes = 0
+        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+
+    def request_for_order(self, order: RiskApprovedOrder) -> dict[str, Any]:
+        request = {**self.base_request, "volume": float(order.volume)}
+        request["symbol"] = self.contract.broker_symbol
+        return request
+
+    def wire_request_hash(self, order: RiskApprovedOrder) -> str:
+        return wire_request_hash(self.request_for_order(order))
+
+    def validate_request(self, order: RiskApprovedOrder) -> None:
+        request = self.request_for_order(order)
+        if str(request.get("symbol") or "") != self.contract.broker_symbol:
+            raise core.CriticalLiveError("production request symbol is not the signed exact symbol")
+        volume = float(request.get("volume") or 0.0)
+        if volume < self.contract.volume_min or volume > self.contract.volume_max:
+            raise core.CriticalLiveError("production request volume is outside the signed registry")
+        check = self.client.mt5.order_check(request)
+        retcode = None if check is None else getattr(check, "retcode", None)
+        if retcode is None or int(retcode) != 0:
+            raise core.CriticalLiveError("production broker order_check did not pass")
+
+    def send(self, order: RiskApprovedOrder) -> Any:
+        request = self.request_for_order(order)
+        self.last_request = dict(request)
+        self.entry_writes += 1
+        return self.write_port.send(order.proposal_id)
+
+
+class _Super1AuthorizedMaintenanceAdapter:
+    """Stages a typed maintenance operation under the consumed smoke approval."""
+
+    def __init__(self, client: "Super1XmMt5DemoOrderClient", output_root: Path, approval_id: str, campaign_id: str, account_key: str) -> None:
+        self.port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+        self.approval_id = approval_id
+        self.campaign_id = campaign_id
+        self.account_key = account_key
+
+    def send(self, request: dict[str, object]) -> Any:
+        ticket = int(request.get("order", request.get("position", 0)) or 0)
+        operation_type = "CANCEL" if "order" in request else "CLOSE"
+        operation_id = hashlib.sha256(
+            f"{self.approval_id}\0{operation_type}\0{ticket}".encode("utf-8")
+        ).hexdigest()
+        try:
+            self.port._arm_authorized_operation(
+                operation_id,
+                operation_type=operation_type,
+                request=request,
+                approval_id=self.approval_id,
+                campaign_id=self.campaign_id,
+                account_key=self.account_key,
+            )
+            return self.port.send(operation_id)
+        except Exception as exc:
+            raise core.CriticalLiveError(f"durable maintenance operation failed: {exc}") from exc
+
+    def reconcile(self, response: Any, order: RiskApprovedOrder) -> BrokerEvidence:
+        try:
+            retcode = int(getattr(response, "retcode"))
+            ticket = int(getattr(response, "order"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise core.CriticalLiveError("production broker response is unreadable") from exc
+        accepted = {
+            int(getattr(self.client.mt5, "TRADE_RETCODE_PLACED", 10008)),
+            int(getattr(self.client.mt5, "TRADE_RETCODE_DONE", 10009)),
+        }
+        if retcode not in accepted or ticket <= 0:
+            raise core.CriticalLiveError("production broker response was not accepted")
+        observed = self.client._mt5_collection("orders_get", ticket=ticket)
+        request = self.request_for_order(order)
+        exact = [
+            item for item in observed
+            if int(getattr(item, "ticket", 0) or 0) == ticket
+            and self.client._broker_request_matches(item, request)
+        ]
+        if len(exact) != 1:
+            raise core.CriticalLiveError("production broker order readback is not exact")
+        position_id = int(getattr(response, "position", 0) or 0)
+        if position_id > 0:
+            connection = sqlite3.connect(self.client._order_db(self.output_root), timeout=30.0)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "INSERT INTO position_risk_records(position_id,order_id,candidate_hash,starting_risk_cash,created_at_utc) VALUES(?,?,?,?,?) ON CONFLICT(position_id) DO UPDATE SET order_id=excluded.order_id,candidate_hash=excluded.candidate_hash,starting_risk_cash=excluded.starting_risk_cash",
+                    (str(position_id), order.proposal_id, order.proposal.candidate_hash, float(order.risk_cash), core.utc_now().isoformat()),
+                )
+                connection.commit()
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+        return BrokerEvidence(
+            "SEND", retcode, ticket=ticket,
+            deal_id=(int(getattr(response, "deal", 0) or 0) or None),
+            broker_state="READBACK_CONFIRMED",
+            raw={"ticket": ticket, "proposal_id": order.proposal_id},
+        )
+
+
 class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
-    def __init__(self, config: dict[str, Any], secrets: dict[str, str]):
+    def __init__(self, config: dict[str, Any], secrets: dict[str, str], *, mt5_module: Any | None = None):
         expected_server = str(config.get("expected_server") or "")
         supplied_server = str(secrets.get("XM_MT5_SERVER") or "")
         if supplied_server and supplied_server != expected_server:
@@ -407,11 +714,12 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 "XM server input differs from the signed Super1 runtime config."
             )
         # The signed config, never the environment, owns the broker server.
-        super().__init__(config, {**secrets, "XM_MT5_SERVER": expected_server})
+        super().__init__(config, {**secrets, "XM_MT5_SERVER": expected_server}, mt5_module=mt5_module)
         self._super1_record: dict[str, Any] | None = None
-        self._active_risk_scale: float | None = None
-        self._last_sizing: dict[str, Any] | None = None
         self._last_lease_binding: dict[str, str] | None = None
+        self._runtime_secrets = dict(secrets)
+        self._strict_reconciliation = True
+        self._audit_anchor_callback = write_event_log_anchor
 
     def _assert_super1_lease(self, output_root: Path, *, for_order: bool = True) -> dict[str, Any]:
         app_root = Path(__file__).resolve().parents[1]
@@ -438,7 +746,262 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             "manifest_sha256": str(lease.get("app_manifest_sha256") or ""),
             "release_manifest_sha256": str(lease.get("release_manifest_sha256") or ""),
         }
+        self._active_lease = dict(lease)
         return lease
+
+    def _approval_store(self, output_root: Path) -> ApprovalStore:
+        return ApprovalStore(
+            self._order_db(output_root),
+            halt=lambda reason, **details: core.write_fatal_latch(
+                output_root, reason, reason, **details
+            ),
+        )
+
+    def _proposal_record(
+        self,
+        decision: dict[str, Any],
+        *,
+        symbol: str,
+        reward_r: float,
+        filter_state: dict[str, Any],
+        prefix_record: dict[str, Any] | None,
+        prefix_raw: bytes | None,
+        send_now: pd.Timestamp | None,
+        pending_request: dict[str, object],
+    ) -> dict[str, Any]:
+        """Build the byte-stable proposal from signed leg/prefix evidence."""
+        leg_key = str(decision.get("leg_key") or "")
+        leg = self.config.get("legs", {}).get(leg_key)
+        if not isinstance(leg, dict):
+            raise Super1RuntimeError("signed leg contract is missing")
+        signed_instrument = str(leg.get("symbol") or "").strip()
+        signed_symbol = str(leg.get("epic") or "").strip()
+        if not signed_instrument or not signed_symbol or signed_symbol != symbol:
+            raise Super1RuntimeError("decision leg does not match the signed instrument contract")
+        if not isinstance(prefix_record, dict):
+            raise Super1RuntimeError("proposal requires a persisted prefix record")
+        recorded_at = str(prefix_record.get("recorded_at") or prefix_record.get("decision_produced_at") or "").strip()
+        if not recorded_at:
+            raise Super1RuntimeError("proposal decision time is missing from prefix evidence")
+        context = self._candidate_send_context(decision, prefix_record, send_now)
+        expiration = pending_request.get("expiration")
+        if expiration is None or context.get("expiration") is None or int(expiration) != int(context["expiration"]):
+            raise Super1RuntimeError("proposal expiration is not the exact pending-request trade-window expiration")
+        try:
+            decision_time = pd.Timestamp(recorded_at).tz_convert("UTC").isoformat()
+            expires_at = pd.Timestamp(int(expiration), unit="s", tz="UTC").isoformat()
+            entry = self._derived_entry(decision, reward_r)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise Super1RuntimeError("proposal time or geometry is invalid") from exc
+        fields = self._filter_evidence_fields(decision, filter_state, "FILTER_ALLOW", prefix_record, prefix_raw)
+        evidence = {
+            "order_id": str(decision.get("order_id") or ""),
+            "thesis_id": str(decision.get("thesis_id") or ""),
+            "prefix_sha256": str(fields["raw_sha256"]),
+            "filter_evidence_sha256": str(fields["filter_evidence_sha256"]),
+        }
+        if not all(str(evidence[key]).strip() for key in evidence):
+            raise Super1RuntimeError("proposal evidence binding is incomplete")
+        candidate_hash = str(self.config.get("candidate_artifact_sha256") or "").strip()
+        if not candidate_hash:
+            raise Super1RuntimeError("signed candidate artifact hash is missing")
+        return {
+            "proposal_id": str(decision.get("order_id") or ""),
+            "candidate_hash": candidate_hash,
+            "instrument_id": signed_instrument,
+            "broker_symbol": signed_symbol,
+            "direction": str(decision.get("direction") or ""),
+            "entry_price": entry,
+            "stop_price": float(decision["stop_price"]),
+            "target_price": float(decision["target_price"]),
+            "decision_time": decision_time,
+            "expires_at": expires_at,
+            "evidence_hash": hashlib.sha256(core.canonical_json(evidence).encode("utf-8")).hexdigest(),
+            "prefix_sha256": evidence["prefix_sha256"],
+            "filter_evidence_sha256": evidence["filter_evidence_sha256"],
+            "thesis_id": evidence["thesis_id"],
+            "approval_type": "limit",
+            "wire_request_hash": wire_request_hash(pending_request),
+        }
+
+    def _stage_or_load_approval(
+        self,
+        output_root: Path,
+        proposal: dict[str, Any],
+    ) -> tuple[ApprovalStore, Any | None, dict[str, Any], dict[str, Any] | None]:
+        campaign_id = str(self.config.get("campaign_id") or "")
+        account_key = str(self.config.get("account_login") or "")
+        release_id = str(self.config.get("release_id") or "")
+        candidate_hash = str(proposal["candidate_hash"])
+        store = self._approval_store(output_root)
+        current = store.get_proposal(str(proposal["proposal_id"]))
+        if current is None:
+            store.stage(
+                proposal,
+                campaign_id=campaign_id,
+                account_key=account_key,
+                release_id=release_id,
+                candidate_hash=candidate_hash,
+                approval_type="limit",
+            )
+            current = store.get_proposal(str(proposal["proposal_id"]))
+        elif current.get("proposal_hash") != proposal_hash(proposal) or current.get("proposal") != proposal or any(
+            current.get(key) != value for key, value in {
+                "campaign_id": campaign_id,
+                "account_key": account_key,
+                "release_id": release_id,
+                "candidate_hash": candidate_hash,
+            }.items()
+        ):
+            store.stage(
+                proposal,
+                campaign_id=campaign_id,
+                account_key=account_key,
+                release_id=release_id,
+                candidate_hash=candidate_hash,
+                approval_type="limit",
+            )
+            current = store.get_proposal(str(proposal["proposal_id"]))
+        approval = store.find_approved(
+            str(proposal["proposal_id"]),
+            campaign_id=campaign_id,
+            account_key=account_key,
+            release_id=release_id,
+            candidate_hash=candidate_hash,
+        )
+        return store, approval, proposal, current
+
+    def _insert_canonical_audit(self, connection: Any, order_id: str, event_type: str, payload: dict[str, Any]) -> str:
+        """Append the lifecycle audit and anchor-outbox rows in one transaction.
+
+        The external Windows Event Log delivery is deliberately performed only
+        after the caller commits this transaction.
+        """
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_chain_events (
+                schema_version INTEGER NOT NULL,
+                sequence INTEGER PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE,
+                occurred_at_utc TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                account_key TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_canonical_json TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                event_hash TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_anchor_outbox (
+                event_id TEXT PRIMARY KEY,
+                sequence INTEGER NOT NULL UNIQUE,
+                event_hash TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL,
+                queued_at_utc TEXT NOT NULL,
+                attempted_at_utc TEXT,
+                acked_at_utc TEXT,
+                last_error TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        row = connection.execute("SELECT sequence,event_hash FROM audit_chain_events ORDER BY sequence DESC LIMIT 1").fetchone()
+        sequence = 1 if row is None else int(row[0]) + 1
+        previous = GENESIS_HASH if row is None else str(row[1])
+        event_id = uuid4().hex
+        occurred = core.utc_now().isoformat()
+        body = {
+            "schema_version": AUDIT_SCHEMA_VERSION,
+            "sequence": sequence,
+            "event_id": event_id,
+            "occurred_at_utc": occurred,
+            "campaign_id": str(payload.get("campaign_id") or ""),
+            "account_key": str(payload.get("account_key") or ""),
+            "entity_type": "order",
+            "entity_id": order_id,
+            "event_type": event_type,
+            "payload": payload,
+            "previous_hash": previous,
+        }
+        digest = event_hash(previous, body)
+        connection.execute(
+            "INSERT INTO audit_chain_events(schema_version,sequence,event_id,occurred_at_utc,campaign_id,account_key,entity_type,entity_id,event_type,payload_canonical_json,previous_hash,event_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (AUDIT_SCHEMA_VERSION, sequence, event_id, occurred, body["campaign_id"], body["account_key"], "order", order_id, event_type, core.canonical_json(payload), previous, digest),
+        )
+        connection.execute(
+            "INSERT INTO audit_anchor_outbox(event_id,sequence,event_hash,state,queued_at_utc) VALUES(?,?,?,?,?)",
+            (event_id, sequence, digest, "PENDING", occurred),
+        )
+        return digest
+
+    def _deliver_audit_anchors(self, output_root: Path) -> None:
+        """Deliver committed anchors and persist their ACKs, never in a DB transaction."""
+        callback = getattr(self, "_audit_anchor_callback", None)
+        if not callable(callback):
+            raise core.CriticalLiveError("production audit anchor callback is required")
+        connection = self._ready_order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT event_id,sequence,event_hash FROM audit_anchor_outbox "
+                "WHERE state IN ('PENDING','DELIVERY_ATTEMPTED') ORDER BY sequence"
+            ).fetchall()
+        finally:
+            connection.close()
+        for event_id, sequence, digest in rows:
+            connection = self._ready_order_connection(output_root)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    "SELECT state,event_hash FROM audit_anchor_outbox WHERE event_id=?",
+                    (str(event_id),),
+                ).fetchone()
+                if current is None or str(current[1]) != str(digest):
+                    raise core.CriticalLiveError("audit anchor outbox binding is corrupt")
+                if str(current[0]) == "ACKED":
+                    connection.commit()
+                    continue
+                connection.execute(
+                    "UPDATE audit_anchor_outbox SET state='DELIVERY_ATTEMPTED',attempted_at_utc=?,last_error='' WHERE event_id=?",
+                    (core.utc_now().isoformat(), str(event_id)),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                connection.close()
+                raise
+            finally:
+                if not connection.in_transaction:
+                    connection.close()
+            try:
+                callback(str(digest), str(event_id))
+            except Exception as exc:
+                failed = self._ready_order_connection(output_root)
+                try:
+                    failed.execute(
+                        "UPDATE audit_anchor_outbox SET state='FAILED',last_error=? WHERE event_id=?",
+                        (f"{type(exc).__name__}: {exc}", str(event_id)),
+                    )
+                finally:
+                    failed.close()
+                raise core.CriticalLiveError("production audit anchor delivery failed") from exc
+            ack = self._ready_order_connection(output_root)
+            try:
+                ack.execute("BEGIN IMMEDIATE")
+                if ack.execute(
+                    "UPDATE audit_anchor_outbox SET state='ACKED',acked_at_utc=? WHERE event_id=? AND event_hash=? AND state='DELIVERY_ATTEMPTED'",
+                    (core.utc_now().isoformat(), str(event_id), str(digest)),
+                ).rowcount != 1:
+                    raise core.CriticalLiveError("audit anchor ACK persistence failed")
+                ack.commit()
+            except Exception:
+                ack.rollback()
+                raise
+            finally:
+                ack.close()
 
     def _ensure_demo(self) -> None:
         super()._ensure_demo()
@@ -449,6 +1012,299 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             assert_account_binding(self.mt5, self.config)
             return super().preflight_order_transport(output_root, now)
 
+    def _signed_production_contract(
+        self, leg_key: str, symbol: str
+    ) -> tuple[InstrumentRegistry, InstrumentContract, str]:
+        leg = self.config.get("legs", {}).get(leg_key)
+        if not isinstance(leg, dict):
+            raise Super1RuntimeError("signed production leg is missing")
+        instrument_id = str(leg.get("instrument_id") or "").strip()
+        registry_path = str(leg.get("instrument_registry_path") or "").strip()
+        registry_hash = str(leg.get("instrument_registry_sha256") or "").strip()
+        if (
+            not instrument_id
+            or not registry_path
+            or not _SHA256_PATTERN.fullmatch(registry_hash)
+            or str(leg.get("epic") or "") != symbol
+        ):
+            raise Super1RuntimeError("signed instrument registry binding is incomplete")
+        registry = InstrumentRegistry.from_signed_json(
+            _safe_repo_file(registry_path, "instrument registry"), registry_hash
+        )
+        info = self._retry_mt5_read("symbol_info", symbol)
+        if info is None:
+            raise xm.BrokerStateUnknownError("signed production symbol metadata is unavailable")
+        contract = registry.symbol_info(symbol, info)
+        if contract.instrument_id != instrument_id:
+            raise Super1RuntimeError("signed instrument ID does not match the registry")
+        return registry, contract, registry_hash
+
+    def _production_snapshot(
+        self,
+        output_root: Path,
+        symbol: str,
+        contract: InstrumentContract,
+        health: StrategyHealth,
+        now: pd.Timestamp,
+        approval: bool,
+    ) -> BrokerSnapshot:
+        start = (now - pd.Timedelta(days=35)).to_pydatetime()
+        end = (now + pd.Timedelta(minutes=1)).to_pydatetime()
+        controller = HaltController(output_root)
+
+        def starting_risk(position_id: str) -> float | None:
+            connection = sqlite3.connect(self._order_db(output_root), timeout=30.0)
+            try:
+                connection.execute("PRAGMA busy_timeout=30000")
+                row = connection.execute(
+                    "SELECT starting_risk_cash FROM position_risk_records WHERE position_id=?",
+                    (position_id,),
+                ).fetchone()
+                return None if row is None else row[0]
+            finally:
+                connection.close()
+
+        def belongs_to_super1(row: dict[str, Any]) -> bool:
+            return (
+                int(row.get("magic", -1) or -1) == self.magic
+                and str(row.get("comment") or "").startswith(str(self.config.get("order_comment_prefix") or ""))
+            )
+
+        try:
+            return BrokerFactsBuilder(
+                read=self._retry_mt5_read,
+                order_calc_profit=self.mt5.order_calc_profit,
+                order_calc_margin=self.mt5.order_calc_margin,
+                halt_reader=lambda: controller.read() is not None,
+                strategy_health_reader=lambda: health.state,
+                starting_risk_reader=starting_risk,
+                strategy_matcher=belongs_to_super1,
+                mutex=order_mutex,
+            ).build(
+                now=now.to_pydatetime(),
+                contract=contract,
+                candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
+                deals_start=start,
+                deals_end=end,
+                approval=approval,
+            )
+        except BrokerFactsError as exc:
+            controller.trigger("BROKER_FACTS_UNKNOWN", error=str(exc), symbol=symbol)
+            self._emergency_flatten(output_root, "BROKER_FACTS_UNKNOWN")
+            raise xm.BrokerStateUnknownError(str(exc)) from exc
+
+    def _emergency_flatten(self, output_root: Path, reason: str) -> dict[str, Any]:
+        """Flatten every exact broker ticket after a production HALT."""
+        controller = HaltController(output_root)
+        controller.trigger(reason)
+
+        def read_exposure() -> dict[str, Any]:
+            actions: list[dict[str, Any]] = []
+            for order in self._mt5_collection("orders_get"):
+                ticket = int(getattr(order, "ticket", 0) or 0)
+                if ticket <= 0:
+                    raise xm.BrokerStateUnknownError("pending order has no exact ticket")
+                actions.append({"kind": "CANCEL", "order": ticket})
+            for position in self._mt5_collection("positions_get"):
+                ticket = int(getattr(position, "ticket", 0) or getattr(position, "position_id", 0) or 0)
+                if ticket <= 0:
+                    raise xm.BrokerStateUnknownError("open position has no exact position ticket")
+                actions.append({
+                    "kind": "CLOSE", "position": ticket,
+                    "symbol": str(getattr(position, "symbol", "")),
+                    "volume": float(getattr(position, "volume", 0.0) or 0.0),
+                    "type": int(getattr(position, "type", -1)),
+                })
+            return {"actions": actions}
+
+        def cancel_or_close(action: Mapping[str, Any]) -> Any:
+            if "position" in action:
+                request = {
+                    "action": int(getattr(self.mt5, "TRADE_ACTION_DEAL", 1)),
+                    "position": int(action["position"]),
+                    "symbol": str(action.get("symbol") or ""),
+                    "volume": float(action["volume"]),
+                    "type": 1 if int(action.get("type", 0)) == 0 else 0,
+                }
+            else:
+                request = {"action": int(getattr(self.mt5, "TRADE_ACTION_REMOVE", 6)), "order": int(action["order"])}
+            return self._order_send_checked(request, require_open_permission=False)
+
+        return emergency_flatten_cycle(controller, read_exposure, cancel_or_close)
+
+    def _send_via_production_flow(
+        self,
+        output_root: Path,
+        decision: dict[str, Any],
+        symbol: str,
+        reward_r: float,
+        *,
+        filter_state: dict[str, Any],
+        prefix_record: dict[str, Any] | None,
+        prefix_raw: bytes | None,
+        send_now: pd.Timestamp | None,
+    ) -> dict[str, object]:
+        order_id = str(decision["order_id"])
+        comment = self._comment(str(decision["leg_key"]), order_id)
+        registry, contract, registry_hash = self._signed_production_contract(str(decision["leg_key"]), symbol)
+        request = self._pending_request(
+            symbol,
+            str(decision["direction"]),
+            self._derived_entry(decision, reward_r),
+            float(decision["stop_price"]),
+            float(decision["target_price"]),
+            comment,
+        )
+        proposal_data = self._proposal_record(
+            decision,
+            symbol=symbol,
+            reward_r=reward_r,
+            filter_state=filter_state,
+            prefix_record=prefix_record,
+            prefix_raw=prefix_raw,
+            send_now=send_now,
+            pending_request=request,
+        )
+        proposal_data.pop("wire_request_hash", None)
+        proposal_data.pop("approval_type", None)
+        proposal_data["instrument_registry_sha256"] = registry_hash
+        proposal = SignalProposal(
+            str(proposal_data["proposal_id"]),
+            str(proposal_data["candidate_hash"]),
+            str(proposal_data["instrument_id"]),
+            str(proposal_data["direction"]),
+            float(proposal_data["entry_price"]),
+            float(proposal_data["stop_price"]),
+            float(proposal_data["target_price"]),
+            pd.Timestamp(proposal_data["decision_time"]).to_pydatetime(),
+            pd.Timestamp(proposal_data["expires_at"]).to_pydatetime(),
+            str(proposal_data["evidence_hash"]),
+            broker_symbol=symbol,
+            instrument_registry_sha256=registry_hash,
+        )
+        campaign_id = str(self.config.get("campaign_id") or "")
+        account_key = str(self.config.get("account_login") or "")
+        release_id = str(self.config.get("release_id") or "")
+        candidate_hash = str(self.config.get("candidate_artifact_sha256") or "")
+        if not all((campaign_id, account_key, release_id, candidate_hash)):
+            raise Super1RuntimeError("signed production campaign/release binding is incomplete")
+        staged = {
+            "proposal_id": proposal.proposal_id,
+            "candidate_hash": proposal.candidate_hash,
+            "instrument_id": proposal.instrument_id,
+            "direction": proposal.direction,
+            "entry_price": proposal.entry_price,
+            "stop_price": proposal.stop_price,
+            "target_price": proposal.target_price,
+            "decision_time": proposal.decision_time.isoformat(),
+            "expires_at": proposal.expires_at.isoformat(),
+            "evidence_hash": proposal.evidence_hash,
+            "broker_symbol": proposal.broker_symbol,
+            "instrument_registry_sha256": proposal.instrument_registry_sha256,
+        }
+        store = self._approval_store(output_root)
+        current = store.get_proposal(order_id)
+        if current is None:
+            store.stage(staged, campaign_id=campaign_id, account_key=account_key, release_id=release_id, candidate_hash=candidate_hash)
+            current = store.get_proposal(order_id)
+        elif current.get("proposal") != staged or current.get("state") not in {"STAGED", "APPROVED"}:
+            store.close()
+            raise Super1RuntimeError("persisted production proposal is not the exact current proposal")
+        approval_id = str(getattr(self, "_runtime_secrets", {}).get("SUPER1_APPROVAL_ID") or "")
+        approval = store.find_approved(order_id, campaign_id=campaign_id, account_key=account_key, release_id=release_id, candidate_hash=candidate_hash)
+        if approval is not None:
+            approval_id = approval.approval_id
+        if approval is None or not approval_id:
+            store.close()
+            return {
+                "state": "STAGED_NO_SEND",
+                "persistent_state": str((current or {}).get("state") or "STAGED"),
+                "order_id": order_id,
+                "proposal_id": order_id,
+                "proposal_hash": proposal_hash(staged),
+                "filter_state": filter_state,
+                "cancelled_pending": [],
+            }
+        store.close()
+        health_path = output_root / "strategy_health.json"
+        if not health_path.is_file():
+            raise Super1RuntimeError("production strategy-health state is missing")
+        health = StrategyHealth.load_canonical(
+            self._order_db(output_root),
+            baseline=_signed_health_baseline(self.config, candidate_hash),
+            expected_candidate_hash=candidate_hash,
+        )
+        limits = _signed_risk_limits(self.config)
+        adapter = _Super1ProductionAdapter(self, output_root, request, contract)
+        ledger = AuditLedger(
+            self._order_db(output_root), campaign_id=campaign_id, account_key=account_key,
+            anchor=getattr(self, "_audit_anchor_callback"),
+        )
+        dependencies = ProductionDependencies(
+            risk_guard=RiskGuard(
+                pair_cap_r=limits["daily_loss_cap_r"],
+                daily_loss_cap_r=limits["daily_loss_cap_r"],
+                base_risk_percent=float(self.config["base_risk_percent"]),
+                max_total_stop_risk_percent=limits["max_total_stop_risk_percent"],
+                max_margin_fraction=limits["max_margin_fraction"],
+                max_leverage=limits["max_leverage"],
+                max_pair_exposure_percent=limits["max_pair_exposure_percent"],
+                max_concentration_percent=limits["max_concentration_percent"],
+                clock=lambda: (core.utc_now() if send_now is None else pd.Timestamp(send_now)).to_pydatetime(),
+            ),
+            order_state=OrderStateMachine(order_id=order_id),
+            audit_ledger=ledger,
+            halt_controller=HaltController(output_root),
+            instrument_registry=registry,
+            approval_store=ApprovalStore(self._order_db(output_root), halt=lambda reason, **details: core.write_fatal_latch(output_root, reason, reason, **details)),
+            runtime_settings=RuntimeSettings("DEMO_ORDER"),
+            strategy_health=health,
+            execution_adapter=adapter,
+        )
+        snapshots = 0
+        snapshot_now = pd.Timestamp(core.utc_now()).tz_convert("UTC")
+
+        def snapshot_provider() -> BrokerSnapshot:
+            nonlocal snapshots
+            snapshots += 1
+            return self._production_snapshot(output_root, symbol, contract, health, snapshot_now, snapshots >= 2)
+
+        try:
+            result = ProductionOrderFlow(dependencies).send(
+                proposal,
+                snapshot_provider=snapshot_provider,
+                approval_id=approval_id,
+                campaign_id=campaign_id,
+                account_key=account_key,
+                release_id=release_id,
+                candidate_hash=candidate_hash,
+            )
+        except Exception as exc:
+            core.write_no_send_sentinel(output_root, "PRODUCTION_FLOW_FAILURE", order_id=order_id, error=str(exc))
+            raise
+        finally:
+            dependencies.approval_store.close()
+            ledger.close()
+        ticket = int(getattr(result, "order", 0) or 0)
+        if ticket <= 0 or adapter.last_request is None:
+            raise core.CriticalLiveError("production accepted response has no exact persisted broker ticket")
+        self._adopt_order_intent(
+            output_root,
+            order_id,
+            comment,
+            "SUBMITTED",
+            {"event": "SUBMITTED", "ticket": ticket, "symbol": symbol, "production_flow": True},
+            broker_ticket=ticket,
+            request=adapter.last_request,
+        )
+        return {
+            "state": "SUBMITTED",
+            "order_id": order_id,
+            "ticket": ticket,
+            "production_flow": True,
+            "filter_state": filter_state,
+        }
+
     def _place_candidate(
         self,
         output_root: Path,
@@ -457,15 +1313,19 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         reward_r: float,
         **kwargs: Any,
     ) -> dict[str, object]:
+        """Single live entry: serialize, verify lease/account, then legacy gate."""
         with order_mutex():
+            core.assert_no_fatal_latch(output_root)
             self._assert_super1_lease(output_root, for_order=True)
-            if getattr(self, "mt5", None) is None:
-                raise Super1RuntimeError("Super1 production client has no MT5 adapter.")
             assert_account_binding(self.mt5, self.config)
+            leg_key = str(decision.get("leg_key") or "")
+            leg = self.config.get("legs", {}).get(leg_key)
+            if not isinstance(leg, dict) or not str(leg.get("epic") or ""):
+                raise Super1RuntimeError("signed leg broker symbol is missing")
             return self._place_candidate_under_mutex(
                 output_root,
                 decision,
-                symbol,
+                str(leg["epic"]),
                 reward_r,
                 **kwargs,
             )
@@ -478,14 +1338,76 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         event: dict[str, object],
     ) -> dict[str, object]:
         binding = getattr(self, "_last_lease_binding", None)
-        if not binding or binding.get("binding_kind") != "LIVE_LEASE":
-            raise Super1RuntimeError("SEND_ARMED requires a verified LIVE_LEASE binding.")
-        return super()._arm_send(
-            output_root,
-            order_id,
-            request,
-            {**event, "lease_binding": dict(binding)},
-        )
+        lease = getattr(self, "_active_lease", None)
+        approval = getattr(self, "_active_approval", None)
+        if not binding or binding.get("binding_kind") != "LIVE_LEASE" or not isinstance(lease, dict) or approval is None:
+            raise Super1RuntimeError("SEND_ARMED requires verified lease and approval bindings.")
+        if str(approval.lease_id) != str(lease.get("lease_id")) or str(approval.lease_nonce) != str(lease.get("invocation_nonce")):
+            raise Super1RuntimeError("current lease differs from approval lease")
+        store = self._approval_store(output_root)
+
+        def arm(connection: Any, request_digest: str, approval_type: str) -> None:
+            active_proposal = getattr(self, "_active_proposal", {})
+            if str(active_proposal.get("wire_request_hash") or "") != request_digest:
+                raise core.CriticalLiveError(f"{order_id}: wire request is not the staged proposal request")
+            row = connection.execute(
+                "SELECT status,request_json FROM order_intents WHERE order_id=?", (order_id,)
+            ).fetchone()
+            if row is None or str(row[0]) not in {"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"}:
+                raise core.CriticalLiveError(f"{order_id}: durable intent is not armable")
+            if row[1] is None or core.canonical_json(json.loads(str(row[1]))) != core.canonical_json(request):
+                raise core.CriticalLiveError(f"{order_id}: wire request differs from durable intent")
+            controls = connection.execute(
+                "SELECT order_id FROM order_intents WHERE status IN ('CANCEL_ARMED','CANCEL_ACKNOWLEDGED','CANCEL_UNKNOWN','CANCEL_REJECTED')"
+            ).fetchall()
+            if controls:
+                raise core.CriticalLiveError("durable cancellation control blocks SEND_ARMED")
+            if connection.execute(
+                "UPDATE order_intents SET status='SEND_ARMED',updated_at=? WHERE order_id=? AND status IN ('INTENT','CHECK_RETRYABLE','PRE_SEND_DEFERRED')",
+                (core.utc_now().isoformat(), order_id),
+            ).rowcount != 1:
+                raise core.CriticalLiveError("SEND_ARMED CAS lost")
+            payload = {
+                "recorded_at": core.utc_now().isoformat(),
+                "magic": self.magic,
+                **event,
+                "approval_id": str(approval.approval_id),
+                "approval_type": approval_type,
+                "wire_request_hash": request_digest,
+                "campaign_id": str(self.config.get("campaign_id") or ""),
+                "account_key": str(self.config.get("account_login") or ""),
+                "lease_binding": dict(binding),
+            }
+            self._insert_outbox(connection, order_id, payload)
+            self._insert_canonical_audit(connection, order_id, "SEND_ARMED", payload)
+
+        try:
+            consumed = store.consume_and_arm(
+                str(approval.approval_id),
+                proposal=getattr(self, "_active_proposal", {}),
+                campaign_id=str(self.config.get("campaign_id") or ""),
+                account_key=str(self.config.get("account_login") or ""),
+                release_id=str(self.config.get("release_id") or ""),
+                candidate_hash=str(getattr(self, "_active_proposal", {}).get("candidate_hash") or self.config.get("candidate_artifact_sha256") or ""),
+                lease_nonce=str(approval.lease_nonce),
+                operator_sid=str(approval.operator_sid),
+                order_id=order_id,
+                request=request,
+                arm=arm,
+            )
+        except core.CriticalLiveError as exc:
+            core.write_no_send_sentinel(output_root, "AUDIT_OR_ARM_FAILURE", order_id=order_id, error=str(exc))
+            core.write_fatal_latch(output_root, "AUDIT_OR_ARM_FAILURE", str(exc), order_id=order_id)
+            raise
+        finally:
+            store.close()
+        try:
+            self._deliver_audit_anchors(output_root)
+        except Exception as exc:
+            core.write_no_send_sentinel(output_root, "AUDIT_ANCHOR_UNACKED", order_id=order_id, error=str(exc))
+            core.write_fatal_latch(output_root, "AUDIT_ANCHOR_UNACKED", str(exc), order_id=order_id)
+            raise
+        return {"armed": True, "status": "SEND_ARMED", "order_id": order_id, "approval": consumed.approval_id}
 
     def _transition_order_intent(
         self,
@@ -525,8 +1447,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             raise core.CriticalLiveError("Super1 lease has less than ten seconds remaining.")
         assert_account_binding(self.mt5, self.config)
 
-        tick = self.mt5.symbol_info_tick(symbol)
-        info = self.mt5.symbol_info(symbol)
+        tick = self._retry_mt5_read("symbol_info_tick", symbol)
+        info = self._retry_mt5_read("symbol_info", symbol)
         if tick is None or info is None:
             raise xm.BrokerStateUnknownError(f"{symbol}: final tick or symbol state is unavailable.")
         bid = float(getattr(tick, "bid", float("nan")))
@@ -596,7 +1518,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         if int(request.get("type_time", -1)) != int(getattr(self.mt5, "ORDER_TIME_SPECIFIED", request.get("type_time", -1))):
             raise core.CriticalLiveError(f"{symbol}: final time mode is not SPECIFIED.")
 
-        account = self.mt5.account_info()
+        account = self._retry_mt5_read("account_info")
         if account is None:
             raise xm.BrokerStateUnknownError("Final account state is unavailable.")
         equity = float(getattr(account, "equity", 0.0) or 0.0)
@@ -636,9 +1558,216 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 
     def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
         with order_mutex():
+            core.assert_no_fatal_latch(output_root)
             self._assert_super1_lease(output_root, for_order=True)
             assert_account_binding(self.mt5, self.config)
-            return super().smoke_order(output_root, lock)
+            self._require_order_permission()
+            exposure_before = self._smoke_exposure()
+            if any(exposure_before.values()):
+                raise core.CriticalLiveError(
+                    f"SMOKE requires a flat dedicated demo account: {exposure_before}"
+                )
+            leg = self.config.get("legs", {}).get("nq")
+            if not isinstance(leg, dict):
+                raise core.CriticalLiveError("SMOKE signed NQ leg is missing")
+            symbol = str(leg.get("epic") or "")
+            instrument_id = str(leg.get("instrument_id") or "")
+            registry_path = str(leg.get("instrument_registry_path") or "")
+            registry_hash = str(leg.get("instrument_registry_sha256") or "")
+            if not symbol or not instrument_id or not registry_path or not _SHA256_PATTERN.fullmatch(registry_hash):
+                raise core.CriticalLiveError("SMOKE signed instrument registry binding is missing")
+            registry = InstrumentRegistry.from_signed_json(
+                _safe_repo_file(registry_path, "SMOKE instrument registry"), registry_hash
+            )
+            info = self._retry_mt5_read("symbol_info", symbol)
+            if info is None:
+                raise xm.BrokerStateUnknownError("SMOKE symbol metadata is unavailable")
+            contract = registry.symbol_info(symbol, info)
+            if contract.instrument_id != instrument_id:
+                raise core.CriticalLiveError("SMOKE instrument ID does not match the signed registry")
+            tick = self._retry_mt5_read("symbol_info_tick", symbol)
+            if tick is None:
+                raise xm.BrokerStateUnknownError("SMOKE tick is unavailable")
+            now = pd.Timestamp(core.utc_now()).tz_convert("UTC")
+            proposal_id = str(lock.get("smoke_proposal_id") or "smoke-" + hashlib.sha256(
+                str(lock.get("runtime_config_hash") or "").encode("utf-8")
+            ).hexdigest()[:24])
+            comment = f"{self.config['order_comment_prefix']}:SMOKE:{proposal_id[-12:]}"[:31]
+            entry = float(tick.bid) * 0.5
+            request = self._pending_request(symbol, "long", entry, entry * 0.9, entry * 1.1, comment)
+            proposal = SignalProposal(
+                proposal_id,
+                str(self.config.get("candidate_artifact_sha256") or ""),
+                instrument_id,
+                "long",
+                float(request["price"]),
+                float(request["sl"]),
+                float(request["tp"]),
+                (now - pd.Timedelta(seconds=1)).to_pydatetime(),
+                (now + pd.Timedelta(seconds=45)).to_pydatetime(),
+                hashlib.sha256(core.canonical_json({"lock": lock, "symbol": symbol}).encode("utf-8")).hexdigest(),
+            )
+
+            snapshot_calls = 0
+
+            def snapshot(approval: bool) -> BrokerSnapshot:
+                try:
+                    return BrokerFactsBuilder(
+                        read=self._retry_mt5_read,
+                        order_calc_profit=self.mt5.order_calc_profit,
+                        order_calc_margin=self.mt5.order_calc_margin,
+                        halt_reader=lambda: HaltController(output_root).read() is not None,
+                        strategy_health_reader=lambda: "ACTIVE",
+                        starting_risk_reader=lambda _position_id: None,
+                        strategy_matcher=lambda _row: True,
+                        mutex=order_mutex,
+                    ).build(
+                        now=now.to_pydatetime(),
+                        contract=contract,
+                        candidate_hash=candidate_hash,
+                        deals_start=(now - pd.Timedelta(days=1)).to_pydatetime(),
+                        deals_end=(now + pd.Timedelta(minutes=1)).to_pydatetime(),
+                        approval=approval,
+                    )
+                except BrokerFactsError as exc:
+                    raise core.CriticalLiveError(f"SMOKE broker facts are unknown: {exc}") from exc
+
+            campaign_id = str(self.config.get("campaign_id") or "")
+            account_key = str(self.config.get("account_login") or "")
+            release_id = str(self.config.get("release_id") or "")
+            candidate_hash = str(self.config.get("candidate_artifact_sha256") or "")
+            if not all((campaign_id, account_key, release_id, candidate_hash)):
+                raise core.CriticalLiveError("SMOKE signed campaign/release binding is incomplete")
+            store = self._approval_store(output_root)
+            existing = store.get_proposal(proposal_id)
+            if existing is not None:
+                existing_proposal = existing.get("proposal")
+                if not isinstance(existing_proposal, dict):
+                    store.close()
+                    raise core.CriticalLiveError("SMOKE persisted proposal is malformed")
+                persisted_wire_hash = str(existing_proposal.get("wire_request_hash") or "")
+                if persisted_wire_hash and persisted_wire_hash != wire_request_hash(request):
+                    store.close()
+                    core.write_no_send_sentinel(output_root, "SMOKE_REQUEST_HASH_MISMATCH", proposal_id=proposal_id)
+                    core.write_fatal_latch(output_root, "SMOKE_REQUEST_HASH_MISMATCH", "SMOKE request changed after staging", proposal_id=proposal_id)
+                    raise core.CriticalLiveError("SMOKE request hash mismatch; HALT is active")
+                if str(existing.get("state")) not in {"CONSUMED", "REJECTED"}:
+                    try:
+                        proposal = SignalProposal(
+                            str(existing_proposal["proposal_id"]), str(existing_proposal["candidate_hash"]),
+                            str(existing_proposal["instrument_id"]), str(existing_proposal["direction"]),
+                            float(existing_proposal["entry_price"]), float(existing_proposal["stop_price"]),
+                            float(existing_proposal["target_price"]), pd.Timestamp(existing_proposal["decision_time"]).to_pydatetime(),
+                            pd.Timestamp(existing_proposal["expires_at"]).to_pydatetime(), str(existing_proposal["evidence_hash"]),
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        store.close()
+                        raise core.CriticalLiveError("SMOKE persisted proposal cannot be reconstructed") from exc
+            if existing is not None and str(existing.get("state")) in {"CONSUMED", "REJECTED"}:
+                store.close()
+                return {"state": "REPLAY_NO_SEND", "proposal_id": proposal_id, "entry_order_send_count": 0}
+            approval_id = str(lock.get("approval_id") or "")
+            if not approval_id:
+                store.stage(
+                    {**{
+                        "proposal_id": proposal.proposal_id,
+                        "candidate_hash": proposal.candidate_hash,
+                        "instrument_id": proposal.instrument_id,
+                        "direction": proposal.direction,
+                        "entry_price": proposal.entry_price,
+                        "stop_price": proposal.stop_price,
+                        "target_price": proposal.target_price,
+                        "decision_time": proposal.decision_time.isoformat(),
+                        "expires_at": proposal.expires_at.isoformat(),
+                        "evidence_hash": proposal.evidence_hash,
+                        "approval_type": "SMOKE",
+                        "wire_request": dict(request),
+                        "wire_request_hash": wire_request_hash(request),
+                    }},
+                    campaign_id=campaign_id, account_key=account_key, release_id=release_id,
+                    candidate_hash=candidate_hash, approval_type="SMOKE",
+                )
+                store.close()
+                return {"state": "STAGED_NO_SEND", "proposal_id": proposal_id, "entry_order_send_count": 0}
+            store.close()
+            health_path = output_root / "strategy_health.json"
+            if not health_path.is_file():
+                raise core.CriticalLiveError("SMOKE strategy-health state is missing")
+            health = StrategyHealth.load_canonical(
+                self._order_db(output_root),
+                baseline=_signed_health_baseline(self.config, candidate_hash),
+                expected_candidate_hash=candidate_hash,
+            )
+            limits = _signed_risk_limits(self.config)
+            adapter = _Super1ProductionSmokeAdapter(self, output_root, request, contract)
+            ledger = AuditLedger(
+                self._order_db(output_root), campaign_id=campaign_id, account_key=account_key,
+                anchor=getattr(self, "_audit_anchor_callback"),
+            )
+            dependencies = ProductionDependencies(
+                risk_guard=RiskGuard(
+                    pair_cap_r=limits["daily_loss_cap_r"],
+                    daily_loss_cap_r=limits["daily_loss_cap_r"],
+                    base_risk_percent=float(self.config["base_risk_percent"]),
+                    max_total_stop_risk_percent=limits["max_total_stop_risk_percent"],
+                    max_margin_fraction=limits["max_margin_fraction"],
+                    max_leverage=limits["max_leverage"],
+                    max_pair_exposure_percent=limits["max_pair_exposure_percent"],
+                    max_concentration_percent=limits["max_concentration_percent"],
+                    clock=lambda: now.to_pydatetime(),
+                ),
+                order_state=OrderStateMachine(), audit_ledger=ledger, halt_controller=HaltController(output_root),
+                instrument_registry=registry, approval_store=ApprovalStore(self._order_db(output_root), halt=lambda reason, **details: core.write_fatal_latch(output_root, reason, reason, **details)),
+                runtime_settings=RuntimeSettings("SMOKE"), strategy_health=health, execution_adapter=adapter,
+            )
+            try:
+                def fresh_snapshot() -> BrokerSnapshot:
+                    nonlocal snapshot_calls
+                    snapshot_calls += 1
+                    return snapshot(snapshot_calls >= 2)
+
+                result = ProductionOrderFlow(dependencies).send(
+                    proposal, snapshot_provider=fresh_snapshot, approval_id=approval_id,
+                    campaign_id=campaign_id, account_key=account_key, release_id=release_id,
+                    candidate_hash=candidate_hash, approval_type="SMOKE",
+                )
+            except Exception as exc:
+                core.write_no_send_sentinel(output_root, "SMOKE_PRODUCTION_FLOW_FAILURE", error=str(exc), proposal_id=proposal_id)
+                core.write_fatal_latch(output_root, "SMOKE_PRODUCTION_FLOW_FAILURE", str(exc), proposal_id=proposal_id)
+                raise
+            finally:
+                dependencies.approval_store.close()
+                ledger.close()
+            ticket = int(getattr(result, "order", 0) or 0)
+            if ticket <= 0:
+                raise core.CriticalLiveError("SMOKE accepted response has no exact ticket")
+            self._adopt_order_intent(
+                output_root, proposal_id, comment, "SUBMITTED",
+                {"event": "SMOKE_SUBMITTED", "symbol": symbol, "ticket": ticket, "runtime_hash": lock.get("runtime_config_hash")},
+                broker_ticket=ticket, request=request,
+            )
+            current = next((item for item in self._mt5_collection("orders_get", ticket=ticket) if int(getattr(item, "ticket", 0) or 0) == ticket), None)
+            if current is None:
+                raise core.CriticalLiveError("SMOKE pending-order readback disappeared before cancellation")
+            self._write_adapter = _Super1AuthorizedMaintenanceAdapter(
+                self, output_root, approval_id, campaign_id, account_key
+            )
+            try:
+                cancelled = self._remove_order(output_root, current, "SMOKE_TEST", order_id=proposal_id)
+            finally:
+                del self._write_adapter
+            if str(cancelled.get("state")) != "CANCELLED":
+                reason = f"SMOKE cancellation did not reach a terminal CANCELLED state: {cancelled}"
+                core.write_no_send_sentinel(output_root, "SMOKE_CANCEL_FAILURE", proposal_id=proposal_id, error=reason)
+                core.write_fatal_latch(output_root, "SMOKE_CANCEL_FAILURE", reason, proposal_id=proposal_id)
+                raise core.CriticalLiveError(reason)
+            exposure_after = self._smoke_exposure()
+            if any(exposure_after.values()):
+                reason = f"SMOKE did not return the dedicated demo account to flat: {exposure_after}"
+                core.write_no_send_sentinel(output_root, "SMOKE_FINAL_FLAT_FAILURE", proposal_id=proposal_id, error=reason)
+                core.write_fatal_latch(output_root, "SMOKE_FINAL_FLAT_FAILURE", reason, proposal_id=proposal_id)
+                raise core.CriticalLiveError(reason)
+            return {"state": "PASS", "demo_verified": True, "symbol": symbol, "minimum_volume": contract.volume_min, "submitted_ticket": ticket, "cancelled": cancelled, "entry_order_send_count": adapter.entry_writes, **{f"{key}_after": value for key, value in exposure_after.items()}}
 
     def cancel_all_pending(self, output_root: Path, reason: str) -> list[dict[str, object]]:
         # Safe-stop cancellation is allowed without an active lease, but it
@@ -711,7 +1840,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 continue
             owned_positions += 1
             original = request_by_comment.get(comment)
-            info = self.mt5.symbol_info(symbol)
+            info = self._retry_mt5_read("symbol_info", symbol)
             tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
             expected_sl = None if original is None else original.get("sl")
             expected_tp = None if original is None else original.get("tp")
@@ -837,92 +1966,6 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         change = current[0] - previous[1]
         return "up" if change >= 0 else "down"
 
-    def _terminal_r_state(self) -> dict[str, Any]:
-        rule = self.config["risk_rule"]
-        now = core.utc_now()
-        start = (now - pd.Timedelta(days=int(rule["terminal_history_days"]))).to_pydatetime()
-        end = (now + pd.Timedelta(minutes=1)).to_pydatetime()
-        configs, _, _ = core.live_strategy_objects()
-        rewards = {
-            str(self.config["legs"][key]["epic"]): float(configs[key].reward_r)
-            for key in core.LEG_ORDER
-        }
-        terminal_rows = calculate_terminal_r(
-            self._mt5_collection("history_deals_get", start, end),
-            self._mt5_collection("positions_get"),
-            magic=self.magic,
-            reward_by_symbol=rewards,
-            lookback=int(rule["lookback"]),
-            entry_out=int(getattr(self.mt5, "DEAL_ENTRY_OUT", 1)),
-            reason_sl=int(getattr(self.mt5, "DEAL_REASON_SL", 4)),
-            reason_tp=int(getattr(self.mt5, "DEAL_REASON_TP", 5)),
-        )
-        terminal = [float(item["r"]) for item in terminal_rows]
-        lookback = int(rule["lookback"])
-        state_sum = float(sum(terminal[-lookback:]))
-        scale = float(rule["negative_scale"] if state_sum < 0 else rule["nonnegative_scale"])
-        return {
-            "lookback": lookback,
-            "terminal_count": len(terminal),
-            "terminal_raw_r": terminal[-lookback:],
-            "state_sum": state_sum,
-            "risk_scale": scale,
-            "open_trade_outcome_used": False,
-        }
-
-    @staticmethod
-    def _aligned_volume(raw: float, minimum: float, maximum: float, step: float) -> float:
-        if not all(math.isfinite(value) and value > 0 for value in (raw, minimum, maximum, step)):
-            raise Super1FeatureError("Broker volume parameters are invalid.")
-        if raw + 1e-12 < minimum:
-            raise xm.CandidateNotExecutableError(
-                "RISK_BELOW_MINIMUM_VOLUME",
-                "Calculated risk volume is below broker minimum; order blocked.",
-            )
-        capped = min(raw, maximum)
-        steps = math.floor((capped - minimum + 1e-12) / step)
-        volume = minimum + steps * step
-        precision = max(0, int(math.ceil(-math.log10(step))) + 2) if step < 1 else 2
-        return round(volume, precision)
-
-    def _risk_volume(self, symbol: str, direction: str, entry: float, stop: float, scale: float) -> dict[str, Any]:
-        account = self.mt5.account_info()
-        info = self.mt5.symbol_info(symbol)
-        if account is None or info is None:
-            raise Super1FeatureError(f"{symbol}: account/symbol unavailable for risk sizing.")
-        equity = float(getattr(account, "equity", 0.0) or 0.0)
-        if equity <= 0:
-            raise Super1FeatureError("Account equity is unavailable for risk sizing.")
-        order_type = self.mt5.ORDER_TYPE_BUY if direction == "long" else self.mt5.ORDER_TYPE_SELL
-        loss = self.mt5.order_calc_profit(order_type, symbol, 1.0, float(entry), float(stop))
-        loss_per_lot = abs(float(loss)) if loss is not None else 0.0
-        if loss_per_lot <= 0:
-            raise Super1FeatureError(f"{symbol}: stop loss cash value cannot be calculated.")
-        risk_cash = equity * float(self.config["base_risk_percent"]) / 100.0 * scale
-        raw_volume = risk_cash / loss_per_lot
-        volume = self._aligned_volume(
-            raw_volume,
-            float(info.volume_min),
-            float(info.volume_max),
-            float(info.volume_step),
-        )
-        estimated_loss = loss_per_lot * volume
-        if estimated_loss > risk_cash * (1.0 + 1e-8):
-            raise xm.CandidateNotExecutableError(
-                "RISK_BUDGET_EXCEEDED",
-                "Aligned broker volume exceeds the Super1 risk budget.",
-            )
-        return {
-            "equity": equity,
-            "base_risk_percent": float(self.config["base_risk_percent"]),
-            "risk_scale": scale,
-            "risk_cash": risk_cash,
-            "loss_per_lot": loss_per_lot,
-            "raw_volume": raw_volume,
-            "volume": volume,
-            "estimated_stop_loss": estimated_loss,
-        }
-
     def _pending_request(
         self,
         symbol: str,
@@ -932,22 +1975,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         target: float,
         comment: str,
     ) -> dict[str, object]:
-        request = super()._pending_request(symbol, direction, entry, stop, target, comment)
-        if self._active_risk_scale is not None:
-            sizing = self._risk_volume(
-                symbol,
-                direction,
-                float(request["price"]),
-                float(request["sl"]),
-                self._active_risk_scale,
-            )
-            request["volume"] = sizing["volume"]
-            self._last_sizing = sizing
-        return request
-
-    def _preflight_risk_scales(self) -> tuple[float | None, ...]:
-        rule = self.config["risk_rule"]
-        return (float(rule["negative_scale"]), float(rule["nonnegative_scale"]))
+        # Strategy geometry produces only a broker-independent minimum-volume
+        # request.  RiskGuard owns final sizing from the fresh broker snapshot.
+        return super()._pending_request(symbol, direction, entry, stop, target, comment)
 
     def _filter_state(self, decision: dict[str, Any]) -> dict[str, Any]:
         if self._super1_record is None:
@@ -1485,40 +2515,75 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 ),
                 output_root,
             )
-        risk_state = self._terminal_r_state()
-        self._active_risk_scale = float(risk_state["risk_scale"])
-        self._last_sizing = None
-        try:
-            result = super()._place_candidate(
-                output_root,
-                decision,
-                symbol,
-                reward_r,
-                prefix_record=prefix_record,
-                prefix_raw=prefix_raw,
-                send_now=send_now,
+        broker_objects = self._broker_objects(comment)
+        if broker_objects:
+            raise core.CriticalLiveError(
+                f"{order_id}: broker object exists before the canonical production flow: "
+                f"{[kind for kind, _ in broker_objects]}"
             )
-            if result.get("state") == "SUBMITTED" and self._last_sizing is not None:
-                self._append_order_event(
+        # Risk, approval, health, and broker writes are owned by
+        # ProductionOrderFlow.  Super1 supplies only the filtered signal and
+        # its causal evidence to that coordinator.
+        try:
+            proposal_context = self._candidate_send_context(
+                decision,
+                prefix_record,
+                pd.Timestamp(send_now()) if callable(send_now) else send_now,
+            )
+            if proposal_context["state"] != "ALLOW":
+                state = str(proposal_context["state"])
+                if state == "STALE_PREFIX":
+                    self._defer_pre_send(output_root, order_id, comment, proposal_context)
+                elif state in {"WINDOW_EXPIRED", "WINDOW_NOT_OPEN"}:
+                    self._terminal_no_send(
+                        output_root,
+                        order_id,
+                        comment,
+                        state,
+                        {"event": state, "order_id": order_id, "comment": comment, **proposal_context},
+                    )
+                elif state == "PREFIX_MISSING":
+                    self._terminal_no_send(
+                        output_root,
+                        order_id,
+                        comment,
+                        "PREFIX_REQUIRED",
+                        {"event": "PREFIX_REQUIRED", "order_id": order_id, "comment": comment, **proposal_context},
+                    )
+                return {
+                    "state": f"{state}_NO_SEND",
+                    "order_id": order_id,
+                    "reason_code": state,
+                    "filter_state": filter_state,
+                }
+            try:
+                result = self._send_via_production_flow(
                     output_root,
-                    {
-                        "event": "SUPER1_RISK_SIZING",
-                        "deployment_mode": str(self.config["deployment_mode"]),
-                        "order_id": order_id,
-                        "risk_state": risk_state,
-                        "sizing": self._last_sizing,
-                        "filter_features": filter_state["features"],
-                    },
+                    decision,
+                    symbol,
+                    reward_r,
+                    filter_state=filter_state,
+                    prefix_record=prefix_record,
+                    prefix_raw=prefix_raw,
+                    send_now=pd.Timestamp(send_now()) if callable(send_now) else send_now,
                 )
+            except (ApprovalError, Super1RuntimeError, xm.CandidateRetryableError, xm.CandidateNotExecutableError) as exc:
+                return {
+                    "state": "PROPOSAL_INVALID_NO_SEND",
+                    "persistent_state": "PROPOSAL_INVALID",
+                    "order_id": order_id,
+                    "reason": str(exc),
+                    "filter_state": filter_state,
+                    "cancelled_pending": [],
+                }
             return {
                 **result,
-                "risk_state": risk_state,
                 "filter_state": filter_state,
                 "filter_features": filter_state["features"],
             }
         finally:
-            self._active_risk_scale = None
-            self._last_sizing = None
+            self._active_approval = None
+            self._active_proposal = None
 
     def reconcile_orders(
         self,

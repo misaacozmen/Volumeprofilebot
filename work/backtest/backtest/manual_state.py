@@ -1591,11 +1591,6 @@ def run_manual_state_day(
     execution_frame = time_slice_from(frame, trade_start)
     day_result = ManualStateDayResult(str(trade_date), None, None)
     day_result.effective_config = effective
-    if state_config.enforce_symbol_config_envelope and not allowed_trade_date(trade_date, config.allowed_weekdays):
-        day_result.data_state = DataState.VALID.value
-        append_pipeline(day_result, "ELIGIBILITY", PipelineStatus.BLOCKED, "WEEKDAY_NOT_ALLOWED")
-        return day_result
-    append_pipeline(day_result, "ELIGIBILITY", PipelineStatus.PASSED, "DATE_ALLOWED")
     integrity = assess_manual_state_day(frame, trade_date, config.timeframe, profile_start, trade_end)
     day_result.data_state = DataState.VALID.value if integrity.valid else DataState.INVALID.value
     day_result.data_reasons = tuple(issue.code for issue in integrity.issues)
@@ -1610,6 +1605,10 @@ def run_manual_state_day(
             return day_result
     else:
         append_pipeline(day_result, "DATA", PipelineStatus.PASSED, "OHLCV_AND_REQUIRED_WINDOWS_VALID")
+    if state_config.enforce_symbol_config_envelope and not allowed_trade_date(trade_date, config.allowed_weekdays):
+        append_pipeline(day_result, "ELIGIBILITY", PipelineStatus.BLOCKED, "WEEKDAY_NOT_ALLOWED")
+        return day_result
+    append_pipeline(day_result, "ELIGIBILITY", PipelineStatus.PASSED, "DATE_ALLOWED")
     if profile_frame.empty or trade_frame.empty:
         append_pipeline(day_result, "PROFILE", PipelineStatus.BLOCKED, "EMPTY_PROFILE_OR_TRADE_WINDOW")
         return day_result

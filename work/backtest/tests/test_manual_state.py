@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,9 +34,19 @@ from backtest.manual_state import (
     next_context_change_index,
     pending_order_terminal,
     select_controlling_array,
+    run_manual_state_day,
 )
 from backtest.config import SymbolConfig
 from backtest.strategy import HtfArray, LiquidityLevel, SweepEvent, find_fvg_or_ifvg
+
+
+def test_data_integrity_is_checked_even_when_weekday_is_not_trade_eligible() -> None:
+    frame = pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+    frame["time"] = pd.to_datetime(frame["time"], utc=True)
+    config = SymbolConfig("TEST", "3m", 1.0, 0.0, 0.0, allowed_weekdays="fri")
+    result = run_manual_state_day(frame, config, date(2025, 1, 6), ManualStateConfig())
+    assert result.data_state == "INVALID"
+    assert "EMPTY_DAY_WINDOW" in result.data_reasons
 
 
 def bar(clock: str, open_: float, high: float, low: float, close: float) -> SimpleNamespace:

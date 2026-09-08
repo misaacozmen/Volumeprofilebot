@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
+from backtest.market_calendar import signed_market_dates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,7 +45,7 @@ def main() -> None:
     reset_report_dir()
     loaded = filters.load_data()
     configs = build_active_configs(loaded)
-    business_dates = [item.date() for item in pd.bdate_range(START_DATE, END_DATE)]
+    business_dates = signed_market_dates(START_DATE, END_DATE)
 
     old_trades: list[pd.DataFrame] = []
     old_lifecycles: list[pd.DataFrame] = []
@@ -473,7 +474,7 @@ def build_summary(old_trades, old_lifecycles, raw, control, capped, business_dat
 
 def build_day_comparison(capped, diagnostics, eligibility, old_lifecycles) -> pd.DataFrame:
     grid = pd.MultiIndex.from_product(
-        [[value[0] for value in SYMBOLS.values()], pd.bdate_range(START_DATE, END_DATE).strftime("%Y-%m-%d")],
+        [[value[0] for value in SYMBOLS.values()], [item.strftime("%Y-%m-%d") for item in signed_market_dates(START_DATE, END_DATE)]],
         names=["symbol", "date"],
     ).to_frame(index=False)
     for engine, frame in capped.items():

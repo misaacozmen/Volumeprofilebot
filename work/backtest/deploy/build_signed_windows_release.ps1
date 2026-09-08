@@ -3,8 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("forward-shadow", "super1")]
     [string]$Profile,
-    [Parameter(Mandatory = $true)]
     [string]$OutputArchive,
+    [switch]$ValidateOnly,
     [string]$Python = "python",
     [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA "OtoBacktest\release-private-key.dpapi"),
     [string]$ReleaseId
@@ -18,13 +18,72 @@ Add-Type -AssemblyName System.IO.Compression
 
 $SourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $RepoRoot = (& git -C $SourceRoot rev-parse --show-toplevel).Trim()
-$Archive = [IO.Path]::GetFullPath($OutputArchive)
-$OutputRoot = Split-Path -Parent $Archive
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("otobt-release-" + [Guid]::NewGuid().ToString("N"))
+$effectiveArchive = if ($OutputArchive) { $OutputArchive } elseif ($ValidateOnly) { Join-Path $TempRoot "validate-only.zip" } else { throw "OutputArchive is required unless ValidateOnly is set." }
+$Archive = [IO.Path]::GetFullPath($effectiveArchive)
+$OutputRoot = Split-Path -Parent $Archive
 $Stage = Join-Path $TempRoot "payload"
 $Wheelhouse = Join-Path $Stage "wheelhouse"
 $LinuxWheelhouse = Join-Path $Stage "wheelhouse-linux"
 $Super1ProvenanceFiles = @()
+
+function Get-CanonicalArtifactTestFiles {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $manifestPath = Join-Path $Root "deploy\artifact_test_files.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Canonical artifact-test manifest is missing: $manifestPath"
+    }
+    $payload = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ([int]$payload.schema_version -ne 1) {
+        throw "Unsupported artifact-test manifest schema."
+    }
+    $files = @($payload.artifact_test_files | ForEach-Object { [string]$_ })
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($file in $files) {
+        if ($file -notmatch '^test_[A-Za-z0-9_]+\.py$' -or -not $seen.Add($file)) {
+            throw "Artifact-test list contains an invalid or duplicate entry: $file"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $Root (Join-Path "tests" $file)) -PathType Leaf)) {
+            throw "Artifact-test file is missing: $file"
+        }
+    }
+    $sorted = @($files | Sort-Object -CaseSensitive -Culture en-US)
+    if ($files.Count -eq 0 -or (($files -join "`n") -cne ($sorted -join "`n"))) {
+        throw "Artifact-test list must be canonical case-sensitive sorted order."
+    }
+    return $files
+}
+
+function Get-ReleasePayloadAllowlist {
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$SelectedProfile)
+    $path = Join-Path $Root "deploy\release_payload_allowlist.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Release payload allowlist is missing: $path" }
+    $payload = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ([int]$payload.schema_version -ne 1 -or $null -eq $payload.profiles.$SelectedProfile) { throw "Release payload allowlist profile is missing: $SelectedProfile" }
+    $files = @($payload.profiles.$SelectedProfile.files | ForEach-Object { [string]$_ })
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($file in $files) {
+        if ([IO.Path]::IsPathRooted($file) -or $file.Contains("..") -or -not $seen.Add($file)) { throw "Release payload allowlist contains an unsafe or duplicate path: $file" }
+    }
+    if ($files.Count -eq 0) { throw "Release payload allowlist cannot be empty." }
+    return @($files | Sort-Object -CaseSensitive -Culture en-US)
+}
+
+function Get-Utf8Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        )).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $sha.Dispose() }
+}
+
+function Test-TrueValue {
+    param([Parameter(Mandatory = $true)][object]$Value)
+    return [string]$Value -eq "True"
+}
 
 function Get-CollectionNodeIds {
     param([Parameter(Mandatory = $true)][object[]]$Output)
@@ -97,22 +156,19 @@ function Assert-JunitMatchesInventory {
     }
 }
 
-if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
-    throw "DPAPI release signing key is missing: $PrivateKeyPath"
-}
-
 # 1. Git dirty check
 $gitStatus = (& git -C $RepoRoot status --porcelain -- $SourceRoot)
 $repoGitStatus = (& git -C $RepoRoot status --porcelain)
-if ($gitStatus -or $repoGitStatus) {
+if (($gitStatus -or $repoGitStatus) -and -not $ValidateOnly) {
     $dirtyDetails = @($gitStatus) + @($repoGitStatus | Where-Object { $_ -notin $gitStatus })
     throw "Git working tree is dirty; refusing release build: $($dirtyDetails -join '; ')"
 }
+$initialRepoGitStatus = @($repoGitStatus)
 $gitCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $gitCommit) {
     throw "Could not determine git commit."
 }
-$gitDirty = $false
+$gitDirty = [bool]($gitStatus -or $repoGitStatus)
 
 # 2. CPython 3.11 check
 $pyCheck = (& $Python -c "import sys, platform; print(f'{sys.version_info.major}.{sys.version_info.minor}|{platform.python_implementation()}|{sys.version}')")
@@ -129,6 +185,19 @@ $pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash
 
 # 3. Pre-build test suite execution
 [void][IO.Directory]::CreateDirectory($TempRoot)
+$compileRoot = Join-Path $TempRoot "compile-root"
+New-Item -ItemType Directory -Force -Path $compileRoot | Out-Null
+Copy-Item -LiteralPath (Join-Path $SourceRoot "backtest") -Destination (Join-Path $compileRoot "backtest") -Recurse
+Copy-Item -LiteralPath (Join-Path $SourceRoot "scripts") -Destination (Join-Path $compileRoot "scripts") -Recurse
+$compileOutput = & $Python -B -m compileall -q $compileRoot 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "Release build aborted: compileall failed: $($compileOutput -join ' ')"
+}
+$psAstCommand = "from pathlib import Path; import sys; sys.path.insert(0, r'$SourceRoot\\tests'); from powershell_contract import powershell_ast; paths=sorted(Path(r'$SourceRoot\\deploy').glob('*.ps1')); results=[powershell_ast(path) for path in paths]; bad=[(str(path), result.get('errors', [])) for path, result in zip(paths, results) if result.get('errors')]; assert not bad, bad"
+$psAstOutput = & $Python -E -B -c $psAstCommand 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "Release build aborted: PowerShell AST validation failed: $($psAstOutput -join ' ')"
+}
 $fullCollectPath = Join-Path $TempRoot "full.collect.txt"
 $fullJunitPath = Join-Path $TempRoot "full.junit.xml"
 $pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"
@@ -154,9 +223,97 @@ $pytestPassedCount = [int]$fullGate.pass_count
 $pytestSkippedCount = [int]$fullGate.skipped_count
 $pytestNodeIdSha256 = [string]$fullGate.nodeid_sha256
 $postTestGitStatus = (& git -C $RepoRoot status --porcelain)
-if ($postTestGitStatus) {
+if ((@($postTestGitStatus | Sort-Object) -join "`n") -cne (@($initialRepoGitStatus | Sort-Object) -join "`n")) {
     throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
 }
+if ($Profile -eq "super1") {
+    $runtimeValidationCommand = "import json,sys; from pathlib import Path; sys.path.insert(0, r'$SourceRoot\\scripts'); import run_super1_xm_mt5_forward as super1; runtime=json.loads((Path(r'$SourceRoot') / 'live_forward' / 'super1_xm_mt5_demo_config.json').read_text(encoding='utf-8')); super1.validate_super1_candidate(runtime)"
+    $runtimeValidationOutput = & $Python -E -B -c $runtimeValidationCommand 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Super1 runtime/candidate validation failed: $($runtimeValidationOutput -join ' ')"
+    }
+}
+
+# 4. Fresh reliability attestation. A release must never reuse the checked-in
+# report: run the audit in the build temp root and require every gate.
+$FreshAuditRoot = Join-Path $TempRoot "fresh-reliability-audit"
+$freshAuditOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_engine_reliability_audit.py") --report-dir $FreshAuditRoot 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "Fresh engine reliability audit failed: $($freshAuditOutput -join ' ')"
+}
+$freshAuditManifestPath = Join-Path $FreshAuditRoot "run_manifest.json"
+$freshAuditSummaryPath = Join-Path $FreshAuditRoot "summary.csv"
+if (-not (Test-Path -LiteralPath $freshAuditManifestPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $freshAuditSummaryPath -PathType Leaf)) {
+    throw "Fresh engine reliability audit did not publish its manifest and summary."
+}
+$freshAuditManifest = Get-Content -LiteralPath $freshAuditManifestPath -Raw | ConvertFrom-Json
+$freshAuditSummary = @(Import-Csv -LiteralPath $freshAuditSummaryPath)
+if ($freshAuditSummary.Count -ne 1) {
+    throw "Fresh engine reliability audit summary is not exactly one row."
+}
+$freshRow = $freshAuditSummary[0]
+$freshHashFields = @([string]$freshAuditManifest.code_hash, [string]$freshAuditManifest.config_hash, [string]$freshAuditManifest.result_hash)
+if ($freshHashFields | Where-Object { $_ -notmatch '^[A-Fa-f0-9]{64}$' }) {
+    throw "Fresh engine reliability audit manifest hashes are incomplete."
+}
+if ($null -eq $freshAuditManifest.data_hashes -or @($freshAuditManifest.data_hashes.PSObject.Properties).Count -eq 0) {
+    throw "Fresh engine reliability audit has no input dataset hashes."
+}
+$expectedCanonicalResultHash = "b55a980e89bf31f31047558b804a183a95d359a1865dd095388eed93cc0682f2"
+if ([string]$freshAuditManifest.result_hash -ne $expectedCanonicalResultHash) {
+    throw "Fresh engine reliability result hash differs from the canonical expected result."
+}
+$coverage = $freshAuditManifest.coverage
+$coverageConsistent = $null -ne $coverage -and
+    [int]$coverage.missing_sessions -eq 0 -and
+    [int]$coverage.invalid_sessions -eq 0 -and
+    [int]$coverage.valid_sessions -eq [int]$coverage.evaluated_sessions
+if (-not (Test-TrueValue $freshRow.core_tests_passed) -or
+    -not (Test-TrueValue $freshRow.deterministic_rerun) -or
+    [int]$freshRow.prefix_violation_count -ne 0 -or
+    [int]$freshRow.invalid_data_days_blocked -ne 0 -or
+    [int]$freshRow.canonical_decisions -ne 56 -or
+    [int]$freshRow.filled_post_pair_cap -ne 7 -or
+    [Math]::Abs([double]$freshRow.net_r - 8.5) -gt 0.000000001 -or
+    -not $coverageConsistent -or
+    [bool]$freshAuditManifest.forward_shadow_ready -ne (Test-TrueValue $freshRow.forward_shadow_ready) -or
+    -not (Test-TrueValue $freshRow.forward_shadow_ready)) {
+    throw "Fresh engine reliability audit did not pass the 56/7/8.5R, determinism, prefix, core-test, or coverage gates."
+}
+$FreshHistoryRoot = Join-Path $TempRoot "fresh-canonical-full-history"
+$freshHistoryOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_canonical_production_full_history.py") --report-dir $FreshHistoryRoot 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "Fresh canonical full-history gate failed closed: $($freshHistoryOutput -join ' ')"
+}
+$freshHistoryManifestPath = Join-Path $FreshHistoryRoot "run_manifest.json"
+if (-not (Test-Path -LiteralPath $freshHistoryManifestPath -PathType Leaf)) {
+    throw "Fresh canonical full-history gate did not publish a manifest."
+}
+$freshHistoryManifest = Get-Content -LiteralPath $freshHistoryManifestPath -Raw | ConvertFrom-Json
+if ([bool]$freshHistoryManifest.promotable -ne $true -or
+    [int]$freshHistoryManifest.coverage.missing_sessions -ne 0 -or
+    [int]$freshHistoryManifest.coverage.invalid_sessions -ne 0) {
+    throw "Fresh canonical full-history data coverage is incomplete; no release is permitted."
+}
+if ($ValidateOnly) {
+    [ordered]@{
+        validation = "PASSED"
+        profile = $Profile
+        signed = $false
+        archive_created = $false
+        full_test_count = $pytestPassedCount
+        full_test_nodeid_sha256 = $pytestNodeIdSha256
+        fresh_audit_manifest_sha256 = (Get-FileHash -LiteralPath $freshAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        fresh_history_manifest_sha256 = (Get-FileHash -LiteralPath $freshHistoryManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } | ConvertTo-Json
+    if (Test-Path -LiteralPath $TempRoot) {
+        Remove-Item -LiteralPath $TempRoot -Recurse -Force
+    }
+    return
+}
+$inputDatasetSha256 = Get-Utf8Sha256 (($freshAuditManifest.data_hashes | ConvertTo-Json -Compress -Depth 20))
+$freshAuditManifestSha256 = (Get-FileHash -LiteralPath $freshAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 if (-not $ReleaseId) {
@@ -166,15 +323,25 @@ if (-not $ReleaseId) {
 }
 
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
+$allowlistFiles = @(Get-ReleasePayloadAllowlist -Root $SourceRoot -SelectedProfile $Profile)
 
 try {
-    foreach ($directory in @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")) {
-        Copy-Item -LiteralPath (Join-Path $SourceRoot $directory) -Destination (Join-Path $Stage $directory) -Recurse
+    foreach ($relative in $allowlistFiles) {
+        $nativeRelative = $relative.Replace("/", [IO.Path]::DirectorySeparatorChar)
+        $source = Join-Path $SourceRoot $nativeRelative
+        $target = Join-Path $Stage $nativeRelative
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            if ($relative -in @(
+                "requirements-windows.lock",
+                "requirements-linux.lock",
+                "outputs/reports/engine_reliability_audit_fresh_20260908_final5/run_manifest.json"
+            )) { continue }
+            throw "Release allowlist file is missing: $relative"
+        }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
     }
-    foreach ($file in @("pyproject.toml", "README.md")) {
-        Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
-    }
-    $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_super1_runtime_hardening.py", "test_check_mt5_flat.py", "test_v16_deployment_contract.py")
+    $artifactTestFiles = @(Get-CanonicalArtifactTestFiles -Root $SourceRoot)
     $artifactTestRoot = Join-Path $Stage "artifact_tests"
     New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
     foreach ($testFile in $artifactTestFiles) {
@@ -182,44 +349,14 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $SourceRoot "tests\powershell_contract.py") -Destination (Join-Path $artifactTestRoot "powershell_contract.py")
     Copy-Item -LiteralPath (Join-Path $SourceRoot "tests\v08_helpers.py") -Destination (Join-Path $artifactTestRoot "v08_helpers.py")
-    $baselineSource = Join-Path $SourceRoot "outputs\reports\engine_reliability_audit_2025_feb_mar\run_manifest.json"
-    $baselineTarget = Join-Path $Stage "outputs\reports\engine_reliability_audit_2025_feb_mar"
-    New-Item -ItemType Directory -Force -Path $baselineTarget | Out-Null
-    Copy-Item -LiteralPath $baselineSource -Destination (Join-Path $baselineTarget "run_manifest.json")
-    if ($Profile -eq "super1") {
-        foreach ($relative in @(
-            "research_candidates\super1",
-            "research_candidates\v20_strategy_loop"
-        )) {
-            $target = Join-Path $Stage $relative
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            Copy-Item -LiteralPath (Join-Path $SourceRoot $relative) -Destination $target -Recurse
-        }
-        $candidateSource = Join-Path $SourceRoot "research_candidates\v20_strategy_loop\nq_spx_local_fresh_forward_candidate_v1.json"
-        $candidatePayload = Get-Content -LiteralPath $candidateSource -Raw | ConvertFrom-Json
-        $Super1ProvenanceFiles = @(
-            $candidatePayload.provenance.inputs | ForEach-Object { [string]$_.path }
-        )
-        $sourcePrefix = $SourceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-        $stagePrefix = $Stage.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-        foreach ($relative in $Super1ProvenanceFiles) {
-            if (-not $relative -or [IO.Path]::IsPathRooted($relative)) {
-                throw "Super1 provenance path is not repository-relative: $relative"
-            }
-            $nativeRelative = $relative.Replace("/", [IO.Path]::DirectorySeparatorChar)
-            $provenanceSource = [IO.Path]::GetFullPath((Join-Path $SourceRoot $nativeRelative))
-            $provenanceTarget = [IO.Path]::GetFullPath((Join-Path $Stage $nativeRelative))
-            if (-not $provenanceSource.StartsWith($sourcePrefix) -or -not $provenanceTarget.StartsWith($stagePrefix)) {
-                throw "Super1 provenance path escapes release roots: $relative"
-            }
-            if (-not (Test-Path -LiteralPath $provenanceSource -PathType Leaf)) {
-                throw "Super1 provenance input is missing: $relative"
-            }
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $provenanceTarget) | Out-Null
-            Copy-Item -LiteralPath $provenanceSource -Destination $provenanceTarget -Force
-        }
+    $freshReportRelative = if ($Profile -eq "super1") {
+        "outputs/reports/engine_reliability_audit_fresh_20260908_final5"
+    } else {
+        "outputs/reports/engine_reliability_audit_2025_feb_mar"
     }
-
+    $freshReportTarget = Join-Path $Stage ($freshReportRelative.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    New-Item -ItemType Directory -Force -Path $freshReportTarget | Out-Null
+    Copy-Item -LiteralPath $freshAuditManifestPath -Destination (Join-Path $freshReportTarget "run_manifest.json") -Force
     foreach ($cache in @(Get-ChildItem -LiteralPath $Stage -Recurse -Directory -Filter "__pycache__")) {
         $resolved = [IO.Path]::GetFullPath($cache.FullName)
         if (-not $resolved.StartsWith(([IO.Path]::GetFullPath($Stage) + [IO.Path]::DirectorySeparatorChar))) {
@@ -295,7 +432,7 @@ try {
     $artifactPytestPassCount = [int]$artifactGate.pass_count
     $artifactPytestSkippedCount = [int]$artifactGate.skipped_count
     $artifactPytestNodeIdSha256 = [string]$artifactGate.nodeid_sha256
-    $artifactPytestCommand = "$artifactPython -m pytest -q artifact_tests/test_deployment_security.py artifact_tests/test_xm_mt5_forward.py artifact_tests/test_super1_xm_forward.py artifact_tests/test_super1_runtime_hardening.py artifact_tests/test_check_mt5_flat.py artifact_tests/test_v16_deployment_contract.py --junitxml=<artifact-suite>"
+    $artifactPytestCommand = "$artifactPython -m pytest -q $($artifactTestPaths -join ' ') --junitxml=$artifactJunitPath"
     $artifactPytestPassed = ($artifactPytestSkippedCount -eq 0 -and $artifactPytestPassCount -eq $artifactPytestCollectedCount)
     $lockedDependencies = @($lockLines)
     Remove-Item -LiteralPath $artifactTestRoot -Recurse -Force
@@ -320,69 +457,34 @@ try {
         )
     }
 
-    $requiredPayloadFiles = @(
-        "backtest/__init__.py",
-        "deploy/release_integrity.ps1",
-        "deploy/watchdog_windows.ps1",
-        "deploy/run_forward_shadow_windows.ps1",
-        "forward_shadow/baseline_lock.json",
-        "forward_shadow/frozen_config.json",
-        "live_forward/capital_demo_config.json",
-        "live_forward/xm_mt5_demo_config.json",
-        "scripts/check_mt5_flat.py",
-        "scripts/run_capital_forward.py",
-        "scripts/run_forward_shadow.py",
-        "scripts/run_xm_mt5_forward.py",
-        "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json",
-        "pyproject.toml",
-        "README.md",
-        "requirements-windows.lock"
-    )
-    if ($Profile -eq "forward-shadow") {
-        $requiredPayloadFiles += @(
-            "deploy/check_forward_flat_windows.ps1",
-            "deploy/forward-shadow.service",
-            "deploy/rollover_forward_shadow_campaign_windows.ps1",
-            "deploy/upgrade_forward_shadow_windows.ps1",
-            "requirements-linux.lock"
-        )
-    }
-    else {
-        $requiredPayloadFiles += @(
-            "deploy/bootstrap_super1_fresh_windows.ps1",
-            "deploy/check_super1_flat_windows.ps1",
-            "deploy/finalize_super1_fresh_windows.ps1",
-            "deploy/install_super1_windows.ps1",
-            "deploy/super1_install_transaction.ps1",
-            "deploy/install_super1_watchdog_windows.ps1",
-            "deploy/recover_super1_isolated_user.ps1",
-            "deploy/rollover_super1_campaign_windows.ps1",
-            "deploy/run_super1_windows.ps1",
-            "deploy/run_super1_demo_smoke_windows.ps1",
-            "deploy/resume_super1_fresh_windows.ps1",
-            "deploy/stage_signed_upgrader_windows.ps1",
-            "deploy/super1_secure_task.ps1",
-            "deploy/super1_runtime_contract.ps1",
-            "deploy/super1_binding_proof.ps1",
-            "deploy/stop_super1_local_windows.ps1",
-            "deploy/start_super1_local_windows.ps1",
-            "deploy/test_super1_local_readiness.ps1",
-            "deploy/upgrade_super1_signed_app_windows.ps1",
+    $requiredPayloadFiles = @($allowlistFiles)
+    $stageFiles = @(Get-ChildItem -LiteralPath $Stage -Recurse -File | ForEach-Object {
+        $_.FullName.Substring($Stage.Length).TrimStart('\\', '/') -replace '\\', '/'
+    })
+    $unexpectedStageFiles = @($stageFiles | Where-Object { $_ -notin $requiredPayloadFiles -and $_ -notlike 'wheelhouse/*' -and $_ -notlike 'wheelhouse-linux/*' })
+    if ($unexpectedStageFiles.Count -ne 0) { throw "Release staging contains files outside the signed allowlist: $($unexpectedStageFiles -join ', ')" }
+    if ($Profile -eq "super1") {
+        $legacySuper1Files = @(
             "live_forward/super1_xm_mt5_demo_config.json",
-            "research_candidates/super1/super1_manifest.json",
-            "research_candidates/super1/super1_signal_contract.json",
+            "live_forward/xm_mt5_demo_config.json",
             "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
-            "scripts/run_super1_xm_mt5_forward.py",
-            "scripts/super1_runtime_guard.py",
-            "scripts/super1_lease_cli.py",
-            "scripts/discover_super1_xm_account.py"
+            "scripts/download_dukascopy.py",
+            "scripts/discover_xm_mt5_server.py"
         )
-        $requiredPayloadFiles += $Super1ProvenanceFiles
+        $legacyPresent = @($stageFiles | Where-Object { $_ -in $legacySuper1Files })
+        if ($legacyPresent.Count -ne 0) { throw "Super1 release contains legacy order/data/broker files: $($legacyPresent -join ', ')" }
     }
     foreach ($relative in $requiredPayloadFiles) {
         $nativeRelative = $relative.Replace("/", [IO.Path]::DirectorySeparatorChar)
         if (-not (Test-Path -LiteralPath (Join-Path $Stage $nativeRelative) -PathType Leaf)) {
             throw "Release staging is incomplete; required file is missing: $relative"
+        }
+    }
+    if ($Profile -eq "super1") {
+        $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v2.json"
+        $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_promotable_candidate; validate_promotable_candidate(r'$candidatePath', root=r'$Stage')" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unsigned Super1 candidate validation failed: $($candidateValidationOutput -join ' ')"
         }
     }
 
@@ -433,6 +535,15 @@ try {
         $zip.Dispose()
     }
     $archiveHash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $enginePackageDescriptor = @(
+        $manifestFiles |
+            Where-Object { [string]$_.path -match '^(backtest|scripts)/' } |
+            Sort-Object -Property path -CaseSensitive -Culture en-US |
+            ForEach-Object { "$($_.path)=$($_.sha256)" }
+    ) -join "`n"
+    $enginePackageHash = Get-Utf8Sha256 $enginePackageDescriptor
+    $calendarPath = Join-Path $Stage "live_forward\calendars\us_equity_rth_2022_2026_v2.json"
+    $calendarArtifactHash = (Get-FileHash -LiteralPath $calendarPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifestPath = [IO.Path]::ChangeExtension($Archive, ".manifest.json")
     $signaturePath = [IO.Path]::ChangeExtension($Archive, ".manifest.sig")
     if ((Test-Path -LiteralPath $manifestPath) -or (Test-Path -LiteralPath $signaturePath)) {
@@ -444,6 +555,26 @@ try {
         profile = $Profile
         archive_file = [IO.Path]::GetFileName($Archive)
         archive_sha256 = $archiveHash
+        release_archive_sha256 = $archiveHash
+        engine_package_sha256 = $enginePackageHash
+        calendar_artifact_sha256 = $calendarArtifactHash
+        input_dataset_sha256 = $inputDatasetSha256
+        reliability_audit_manifest_sha256 = $freshAuditManifestSha256
+        reliability_audit_ready = $true
+        payload_allowlist_sha256 = (Get-FileHash -LiteralPath (Join-Path $SourceRoot "deploy\release_payload_allowlist.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+        payload_allowlist = $allowlistFiles
+        reliability_audit_summary = [ordered]@{
+            canonical_decisions = [int]$freshRow.canonical_decisions
+            filled_post_pair_cap = [int]$freshRow.filled_post_pair_cap
+            net_r = [double]$freshRow.net_r
+            deterministic_rerun = [bool]$freshRow.deterministic_rerun
+            prefix_violation_count = [int]$freshRow.prefix_violation_count
+            core_tests_passed = [bool]$freshRow.core_tests_passed
+            coverage_missing_sessions = [int]$coverage.missing_sessions
+            coverage_invalid_sessions = [int]$coverage.invalid_sessions
+            coverage_valid_sessions = [int]$coverage.valid_sessions
+            coverage_evaluated_sessions = [int]$coverage.evaluated_sessions
+        }
         created_at_utc = $createdAtUtc
         built_at_utc = $createdAtUtc
         git_commit = $gitCommit
@@ -496,6 +627,9 @@ try {
     $manifestJson = $manifest | ConvertTo-Json -Depth 6
     [IO.File]::WriteAllText($manifestPath, $manifestJson + "`n", (New-Object Text.UTF8Encoding($false)))
 
+    if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
+        throw "DPAPI release signing key is missing after software/data gates: $PrivateKeyPath"
+    }
     $protected = [Convert]::FromBase64String((Get-Content -LiteralPath $PrivateKeyPath -Raw).Trim())
     $privateBytes = [Security.Cryptography.ProtectedData]::Unprotect(
         $protected,
@@ -526,6 +660,7 @@ try {
         manifest = $manifestPath
         signature = $signaturePath
         archive_sha256 = $archiveHash
+        release_archive_sha256 = $archiveHash
     } | ConvertTo-Json
 }
 finally {

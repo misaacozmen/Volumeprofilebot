@@ -8,6 +8,7 @@ import sys
 import time
 
 import pandas as pd
+from backtest.market_calendar import signed_market_dates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,7 @@ def main() -> None:
     for year in range(start.year, end.year + 1):
         year_start = max(start, pd.Timestamp(f"{year}-01-01"))
         year_end = min(end, pd.Timestamp(f"{year}-12-31"))
-        dates = [value.date() for value in pd.bdate_range(year_start, year_end)]
+        dates = signed_market_dates(year_start, year_end)
         legs = [
             EngineLeg(key, full_history.period_frame(loaded[source], year_start, year_end), configs[key])
             for key, source in comparison.SYMBOLS.items()

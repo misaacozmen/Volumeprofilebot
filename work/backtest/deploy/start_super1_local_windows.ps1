@@ -159,7 +159,9 @@ if ([string]$runtime.environment -cne "XM_MT5_DEMO_ORDER" -or
     [string]$runtime.account_mode -cne "DEMO_ORDER" -or
     [string]$runtime.expected_server -eq "" -or
     [string]$runtime.expected_company -eq "" -or
-    [bool]$runtime.manual_required -ne $false) {
+    [bool]$runtime.manual_required -ne $false -or
+    -not [bool]$runtime.live_order_approval_required -or
+    [string]$runtime.authorized_operator_sid -notmatch '^S-\d-(?:\d+-)+\d+$') {
     throw "Super1 signed config is not an exact XM demo config."
 }
 if ([string]$manifest.deployment.target -cne "LOCAL_WINDOWS_PC" -or
@@ -218,6 +220,9 @@ $runnerSid = ([Security.Principal.NTAccount]::new("$env:COMPUTERNAME\$($Contract
 if ([string]$boundRunnerSid -cne [string]$runnerSid) {
     throw "Super1 task runner SID does not match the contract Runner account."
 }
+if ([string]$runtime.authorized_operator_sid -ceq [string]$runnerSid) {
+    throw "Signed authorized operator SID must differ from the Runner SID."
+}
 if (-not (Test-Path -LiteralPath $control -PathType Container)) {
     New-Item -ItemType Directory -Path $control | Out-Null
     & icacls.exe $control /inheritance:r /grant:r "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)" "${runnerSid}:(OI)(CI)(RX)" /Q | Out-Null
@@ -261,6 +266,7 @@ try {
         candidate_sha256 = [string]$runtime.candidate_file_sha256
         harness_sha256 = [string]$lock.harness_hash
         runner_sid = [string]$runnerSid
+        authorized_operator_sid = [string]$runtime.authorized_operator_sid
         machine_binding = $env:COMPUTERNAME.ToUpperInvariant()
         expected_account_login = [int]$runtime.account_login
         expected_server = [string]$runtime.expected_server

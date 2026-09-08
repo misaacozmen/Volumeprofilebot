@@ -10,6 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+throw "LEGACY_DISABLED_USE_SIGNED_V16_RUNBOOK: Signed R8 triple / signed v16 runbook required."
 . (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
 $Contract = Assert-Super1RuntimeContract
 . (Join-Path $PSScriptRoot "super1_install_transaction.ps1")

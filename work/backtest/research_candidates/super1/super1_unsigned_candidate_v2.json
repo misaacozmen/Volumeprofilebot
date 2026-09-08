@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "candidate_id": "SUPER1_UNSIGNED_CANDIDATE_V2",
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "unsigned": true,
+  "base_independent_code_hash": "bb333e7a5790b2b9d18e933707cc8f310d1ba55bff91ff611778c63da2bab42b",
+  "code_hash": "05d6d45c165299c9dbde71edbbe3dd27d837a8502d96ecd85789406b8370adac",
+  "config_path": "live_forward/super1_xm_mt5_demo_config_v2.json",
+  "config_sha256": "28379599eb18a458ca085bffba8f5a4f0bdedb3a50ed9bf725e6e58b6401f79c",
+  "calendar_path": "live_forward/calendars/us_equity_rth_2022_2026_v2.json",
+  "calendar_sha256": "00720155a8ff465cbd679b8fc2f21f50730d0d478e7db0802aa3a86a0e0e2ea0",
+  "data_manifest_path": "outputs/reports/engine_reliability_audit_fresh_20260908_final5/run_manifest.json",
+  "data_manifest_sha256": "c849a4847822ba23fbb32354c2309534c9fac4ecd99f46360955b65733678117",
+  "data_hashes": {
+    "nq": "a2cbee9f3d7032c6d1044be940afa58cb7eb6eaa18e3cf67e7501345b12bbce4",
+    "spx": "8dbdc7e16d0800428d8583ea51eb9a52cd73a5296f6fb335901b171b7daf9f19"
+  },
+  "result_hash": "b55a980e89bf31f31047558b804a183a95d359a1865dd095388eed93cc0682f2",
+  "health_baseline_candidate_hash": "05d6d45c165299c9dbde71edbbe3dd27d837a8502d96ecd85789406b8370adac",
+  "candidate_artifact_sha256": "4905eb9641f865e05b728cc1e09c5add220acd38d10256bbd2accc62fe6617de"
+}
