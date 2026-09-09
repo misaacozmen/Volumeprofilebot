@@ -136,6 +136,22 @@ class ApprovalStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_approvals_proposal_id ON approvals(proposal_id)"
         )
         self.connection.execute("CREATE INDEX IF NOT EXISTS ix_staged_proposals_state ON staged_proposals(state)")
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS approval_state_outbox (
+                event_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, approval_id TEXT NOT NULL,
+                state TEXT NOT NULL, payload_canonical_json TEXT NOT NULL,
+                event_hash TEXT NOT NULL, created_at_utc TEXT NOT NULL,
+                delivery_state TEXT NOT NULL DEFAULT 'PENDING'
+            )"""
+        )
+
+    def _audit_tx(self, *, proposal_id: str, approval_id: str, state: str, at: str, **bindings: Any) -> None:
+        payload = {"proposal_id": proposal_id, "approval_id": approval_id, "state": state, "at_utc": at, **bindings}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+        self.connection.execute(
+            "INSERT INTO approval_state_outbox(event_id,proposal_id,approval_id,state,payload_canonical_json,event_hash,created_at_utc) VALUES(?,?,?,?,?,?,?)",
+            (uuid4().hex, proposal_id, approval_id, state, canonical, hashlib.sha256(canonical.encode()).hexdigest(), at),
+        )
 
     @staticmethod
     def _require_lease(lease: Mapping[str, Any]) -> None:
@@ -175,6 +191,9 @@ class ApprovalStore:
                 (proposal_id, digest, json.dumps(dict(proposal), sort_keys=True, separators=(",", ":"), default=str), campaign_id, account_key, release_id, candidate_hash, approval_type, "STAGED", stamp, stamp),
             ).rowcount
             if inserted == 1:
+                self._audit_tx(proposal_id=proposal_id, approval_id="", state="STAGED", at=stamp,
+                               proposal_hash=digest, campaign_id=campaign_id, account_key=account_key,
+                               release_id=release_id, candidate_hash=candidate_hash)
                 self.connection.commit()
                 return proposal_id
             row = self.connection.execute(
@@ -267,6 +286,16 @@ class ApprovalStore:
         if record.state != "APPROVED":
             return None
         if current.astimezone(timezone.utc) >= datetime.fromisoformat(record.expires_at_utc):
+            stamp = current.astimezone(timezone.utc).isoformat()
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self.connection.execute("UPDATE approvals SET state='EXPIRED' WHERE approval_id=? AND state='APPROVED'", (record.approval_id,)).rowcount == 1:
+                    self.connection.execute("UPDATE staged_proposals SET state='EXPIRED',updated_at_utc=? WHERE proposal_id=? AND state='APPROVED'", (stamp, proposal_id))
+                    self._audit_tx(proposal_id=proposal_id, approval_id=record.approval_id, state="EXPIRED", at=stamp)
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
             return None
         if (record.campaign_id, record.account_key, record.release_id, record.candidate_hash) != (campaign_id, account_key, release_id, candidate_hash):
             raise ApprovalError("approved proposal binding differs from current runtime")
@@ -320,6 +349,10 @@ class ApprovalStore:
                 tuple(getattr(record, field) for field in record.__slots__),
             )
             self.connection.execute("UPDATE staged_proposals SET state='APPROVED',updated_at_utc=? WHERE proposal_id=? AND state='STAGED'", (issued.astimezone(timezone.utc).isoformat(), proposal_id))
+            self._audit_tx(proposal_id=proposal_id, approval_id=record.approval_id, state="APPROVED",
+                           at=issued.astimezone(timezone.utc).isoformat(), proposal_hash=record.proposal_hash,
+                           wire_request_hash=record.wire_request_hash, operator_sid=operator_sid,
+                           lease_id=record.lease_id, lease_nonce=record.lease_nonce)
             self.connection.commit()
             return record
         except Exception:
@@ -339,6 +372,11 @@ class ApprovalStore:
             if row is None or str(row[1]) != "APPROVED":
                 raise ApprovalError("approval is missing, consumed, rejected, or expired")
             if current.astimezone(timezone.utc) >= datetime.fromisoformat(str(row[11])):
+                stamp = current.astimezone(timezone.utc).isoformat()
+                self.connection.execute("UPDATE approvals SET state='EXPIRED' WHERE approval_id=? AND state='APPROVED'", (approval_id,))
+                self.connection.execute("UPDATE staged_proposals SET state='EXPIRED',updated_at_utc=? WHERE proposal_id=? AND state='APPROVED'", (stamp, str(row[7])))
+                self._audit_tx(proposal_id=str(row[7]), approval_id=approval_id, state="EXPIRED", at=stamp)
+                self.connection.commit()
                 raise ApprovalError("approval is expired")
             observed = (str(row[8]), str(row[5]), str(row[6]), str(row[12]), str(row[13]), str(row[3]), str(row[4]), str(row[7]))
             expected = (proposal_hash(proposal), campaign_id, account_key, release_id, candidate_hash, lease_nonce, operator_sid, order_id)
@@ -353,6 +391,8 @@ class ApprovalStore:
                 raise ApprovalError("approval replay rejected")
             if self.connection.execute("UPDATE staged_proposals SET state='CONSUMED',updated_at_utc=? WHERE proposal_id=? AND state='APPROVED'", (current.astimezone(timezone.utc).isoformat(), order_id)).rowcount != 1:
                 raise ApprovalError("proposal lifecycle could not be consumed")
+            self._audit_tx(proposal_id=order_id, approval_id=approval_id, state="CONSUMED",
+                           at=current.astimezone(timezone.utc).isoformat(), wire_request_hash=request_digest)
             arm(self.connection, request_digest, str(row[9]))
             self.connection.commit()
             return self._record((row[0], "CONSUMED", *row[2:]))
@@ -375,6 +415,8 @@ class ApprovalStore:
             if rejected_at.tzinfo is None:
                 rejected_at = rejected_at.replace(tzinfo=timezone.utc)
             self.connection.execute("UPDATE staged_proposals SET state='REJECTED',updated_at_utc=? WHERE proposal_id=? AND state='APPROVED'", (rejected_at.astimezone(timezone.utc).isoformat(), str(row[1])))
+            self._audit_tx(proposal_id=str(row[1]), approval_id=str(row[0]), state="REJECTED",
+                           at=rejected_at.astimezone(timezone.utc).isoformat(), reason=reason)
             self.connection.commit()
         except Exception:
             self.connection.rollback()

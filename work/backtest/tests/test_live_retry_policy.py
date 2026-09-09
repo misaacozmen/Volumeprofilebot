@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from backtest.live.retry import CircuitBreaker, ContractMismatchError, RetryError, RetryPolicy, RetryableReadError, retry_read, write_once
+from datetime import datetime, timezone
+
+from backtest.live.retry import CircuitBreaker, ContractMismatchError, NonRetryableReadError, RetryError, RetryPolicy, RetryableReadError, parse_retry_after, retry_read, write_once
 
 
 def test_read_retries_at_most_five_with_full_jitter_and_no_write_retry() -> None:
@@ -37,3 +39,21 @@ def test_five_failures_open_circuit_and_reopen_after_sixty_seconds() -> None:
         breaker.record_retryable_failure(float(index))
     assert not breaker.send_allowed(10.0)
     assert breaker.send_allowed(70.0)
+
+
+def test_http_date_and_single_auth_refresh_are_deterministic() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert parse_retry_after("Thu, 01 Jan 2026 00:00:30 GMT", now=now) == 30.0
+    calls: list[int] = []
+    refreshes: list[int] = []
+
+    def operation():
+        calls.append(1)
+        if len(calls) <= 2:
+            raise RetryableReadError(status_code=401)
+        return "unexpected"
+
+    with pytest.raises(NonRetryableReadError, match="single allowed refresh"):
+        RetryPolicy(monotonic=lambda: 0.0).read(operation, refresh_session=lambda: refreshes.append(1))
+    assert calls == [1, 1]
+    assert refreshes == [1]

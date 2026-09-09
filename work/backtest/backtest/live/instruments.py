@@ -6,6 +6,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import math
+import re
 from numbers import Real
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -24,6 +25,11 @@ REQUIRED_FIELDS = (
     "pip_size", "cost_unit", "trade_calc_mode",
 )
 NUMERIC_FIELDS = ("point", "tick_size", "contract_size", "volume_min", "volume_max", "volume_step", "pip_size")
+SEMANTIC_FIELDS = (
+    "canonical_underlying", "expected_company", "broker_path_regex",
+    "broker_description_regex", "session_calendar_id",
+    "expected_one_tick_value_at_min_volume", "economic_value_tolerance",
+)
 
 
 def contract_from_mapping(value: Mapping[str, Any]) -> InstrumentContract:
@@ -49,7 +55,18 @@ def contract_from_mapping(value: Mapping[str, Any]) -> InstrumentContract:
     calc_mode = value["trade_calc_mode"]
     if isinstance(calc_mode, bool) or not isinstance(calc_mode, Real) or not math.isfinite(float(calc_mode)) or float(calc_mode) < 0:
         raise InstrumentContractError("instrument contract field is invalid: trade_calc_mode")
-    return InstrumentContract(**{field: normalized.get(field, value[field]) for field in REQUIRED_FIELDS})
+    semantic_present = any(field in value for field in SEMANTIC_FIELDS)
+    if semantic_present:
+        missing_semantic = [field for field in SEMANTIC_FIELDS if field not in value]
+        if missing_semantic:
+            raise InstrumentContractError(f"instrument semantic contract missing fields: {', '.join(missing_semantic)}")
+    kwargs = {field: normalized.get(field, value[field]) for field in REQUIRED_FIELDS}
+    if semantic_present:
+        kwargs.update({field: value[field] for field in SEMANTIC_FIELDS})
+    try:
+        return InstrumentContract(**kwargs)
+    except (TypeError, ValueError) as exc:
+        raise InstrumentContractError("instrument semantic contract is invalid") from exc
 
 
 def validate_symbol_info(requested: str, info: Mapping[str, Any] | object) -> None:
@@ -79,6 +96,33 @@ def validate_metadata(expected: InstrumentContract, metadata: Mapping[str, Any] 
                 raise InstrumentContractError(f"instrument metadata mismatch: {field}")
         elif observed != expected_value:
             raise InstrumentContractError(f"instrument metadata mismatch: {field}")
+    if expected.broker_path_regex:
+        for field, pattern in (("path", expected.broker_path_regex), ("description", expected.broker_description_regex)):
+            observed = metadata.get(field) if isinstance(metadata, Mapping) else getattr(metadata, field, None)
+            if not isinstance(observed, str) or re.fullmatch(pattern, observed) is None:
+                raise InstrumentContractError(f"instrument metadata mismatch: {field}")
+
+
+def validate_economic_semantics(expected: InstrumentContract, order_calc_profit: Any) -> None:
+    """Confirm the signed one-tick BUY/SELL economic fingerprint."""
+    if not expected.canonical_underlying or not callable(order_calc_profit):
+        raise InstrumentContractError("economic semantic probe is unavailable")
+    reference = 1000.0
+    probes = (
+        order_calc_profit(0, expected.broker_symbol, expected.volume_min, reference, reference + expected.tick_size),
+        order_calc_profit(1, expected.broker_symbol, expected.volume_min, reference + expected.tick_size, reference),
+    )
+    target = float(expected.expected_one_tick_value_at_min_volume)
+    tolerance = float(expected.economic_value_tolerance)
+    for value in probes:
+        if isinstance(value, bool):
+            raise InstrumentContractError("economic semantic probe returned invalid value")
+        try:
+            observed = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InstrumentContractError("economic semantic probe returned invalid value") from exc
+        if not math.isfinite(observed) or observed <= 0 or abs(observed - target) > tolerance:
+            raise InstrumentContractError("economic semantic probe mismatch")
 
 
 def map_mt5_symbol_info(info: Mapping[str, Any] | object) -> dict[str, Any]:
@@ -92,6 +136,7 @@ def map_mt5_symbol_info(info: Mapping[str, Any] | object) -> dict[str, Any]:
         "volume_min": "volume_min", "volume_max": "volume_max", "volume_step": "volume_step",
         "currency_base": "base_currency", "currency_profit": "profit_currency",
         "currency_margin": "margin_currency", "trade_calc_mode": "trade_calc_mode",
+        "path": "path", "description": "description",
     }
     result = {target: get(source) for source, target in mapping.items()}
     if any(value is None for value in result.values()):

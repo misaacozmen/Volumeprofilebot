@@ -558,7 +558,7 @@ def _run_probe(
     stdout_path: Path,
     stderr_path: Path,
 ) -> dict[str, object]:
-    env = dict(os.environ)
+    env = environment_snapshot()
     env["PYTEST_ADDOPTS"] = ""
     started = _utc_now()
     result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, check=False)
@@ -882,3 +882,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import environment_snapshot

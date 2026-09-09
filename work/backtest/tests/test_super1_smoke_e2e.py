@@ -67,7 +67,7 @@ class FakeSmokeMt5:
 
     def symbol_info(self, symbol: str) -> SimpleNamespace:
         return SimpleNamespace(
-            name=symbol, description="US100", visible=True, digits=2, point=0.01,
+            name=symbol, description="US100 Cash Index", path=r"Indices\US Indices", visible=True, digits=2, point=0.01,
             trade_tick_size=0.01, trade_contract_size=1.0, volume_min=0.1,
             volume_max=100.0, volume_step=0.1, currency_base="USD",
             currency_profit="USD", currency_margin="USD", trade_calc_mode=0,
@@ -99,6 +99,8 @@ class FakeSmokeMt5:
         return tuple(item for item in self.history if ticket is None or int(item.ticket) == int(ticket))
 
     def order_calc_profit(self, action, symbol, volume, entry, stop) -> float:
+        if abs(abs(float(stop) - float(entry)) - 0.01) < 1e-9 and float(volume) == 0.1:
+            return 0.001
         return -900.0 * float(volume)
 
     def order_calc_margin(self, action, symbol, volume, entry) -> float:
@@ -160,6 +162,18 @@ def smoke_config() -> dict[str, object]:
         "instrument_registry_path": registry_path.relative_to(ROOT).as_posix(),
         "instrument_registry_sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
     })
+    config["legs"]["spx"].setdefault("instrument_id", "TEST_US500")
+    nq_id = str(config["legs"]["nq"]["instrument_id"])
+    spx_id = str(config["legs"]["spx"]["instrument_id"])
+    config["live_risk_policy"] = {
+        "daily_loss_cap_r": -1.0,
+        "max_trades_per_day_by_instrument": {nq_id: 1, spx_id: 2},
+        "max_total_trades_per_day": 3,
+        "max_open_positions_by_instrument": 1,
+        "max_total_open_positions": 2,
+        "entry_cooldown_seconds": 300,
+        "max_position_volume_by_instrument": {nq_id: 10.0, spx_id: 100.0},
+    }
     return config
 
 

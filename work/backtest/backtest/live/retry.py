@@ -7,6 +7,8 @@ import random
 import time
 import math
 from typing import Any, Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 
 class RetryError(RuntimeError):
@@ -14,7 +16,7 @@ class RetryError(RuntimeError):
 
 
 class RetryableReadError(RetryError):
-    def __init__(self, message: str = "retryable read failure", *, status_code: int | None = None, retry_after: float | None = None):
+    def __init__(self, message: str = "retryable read failure", *, status_code: int | None = None, retry_after: object | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.retry_after = retry_after
@@ -83,25 +85,22 @@ class RetryPolicy:
     sleeper: Callable[[float], None] = time.sleep
     rng: Callable[[float, float], float] = random.uniform
     monotonic: Callable[[], float] = time.monotonic
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    audit: Callable[[dict[str, Any]], None] | None = None
 
     def _delay(self, attempt: int, error: RetryableReadError) -> float:
         retry_after = error.retry_after
         if retry_after is not None:
-            try:
-                retry_after = float(retry_after)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise NonRetryableReadError("Retry-After is not numeric") from exc
-            if not math.isfinite(retry_after):
-                raise NonRetryableReadError("Retry-After is not finite")
-            return max(1.0, min(60.0, retry_after))
+            return parse_retry_after(retry_after, now=self.wall_clock())
         cap = min(self.max_delay_seconds, self.base_delay_seconds * (2 ** max(0, attempt - 1)))
         return max(0.0, min(self.max_delay_seconds, float(self.rng(0.0, cap))))
 
-    def read(self, operation: Callable[[], Any]) -> Any:
+    def read(self, operation: Callable[[], Any], *, refresh_session: Callable[[], None] | None = None) -> Any:
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be positive")
         started = self.monotonic()
         last: Exception | None = None
+        refreshed = False
         for attempt in range(1, self.max_attempts + 1):
             now = self.monotonic()
             if self.breaker is not None:
@@ -111,13 +110,23 @@ class RetryPolicy:
             except (NonRetryableReadError, PermissionError) as exc:
                 raise
             except RetryableReadError as exc:
-                if exc.status_code in {401, 403}:
-                    raise NonRetryableReadError("authentication/permission failure is not retryable") from exc
+                if exc.status_code == 401:
+                    if refresh_session is None or refreshed:
+                        raise NonRetryableReadError("authentication failed after the single allowed refresh") from exc
+                    refreshed = True
+                    refresh_session()
+                    if self.audit:
+                        self.audit({"event": "SESSION_REFRESH", "attempt": attempt})
+                    continue
+                if exc.status_code == 403:
+                    raise NonRetryableReadError("permission failure is not retryable") from exc
                 if exc.status_code is not None and not (exc.status_code == 429 or 500 <= exc.status_code <= 599):
                     raise NonRetryableReadError("HTTP status is not retryable") from exc
                 last = exc
                 if self.breaker is not None:
                     self.breaker.record_retryable_failure(now)
+                if self.audit:
+                    self.audit({"event": "READ_RETRY", "attempt": attempt, "status_code": exc.status_code})
                 if attempt >= self.max_attempts:
                     break
                 delay = self._delay(attempt, exc)
@@ -139,6 +148,23 @@ class RetryPolicy:
 
 def retry_read(operation: Callable[[], Any], *, policy: RetryPolicy | None = None) -> Any:
     return (policy or RetryPolicy()).read(operation)
+
+
+def parse_retry_after(value: object, *, now: datetime | None = None) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            parsed = parsedate_to_datetime(str(value))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            current = now or datetime.now(timezone.utc)
+            seconds = (parsed.astimezone(timezone.utc) - current.astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise NonRetryableReadError("Retry-After is invalid") from exc
+    if not math.isfinite(seconds):
+        raise NonRetryableReadError("Retry-After is not finite")
+    return max(0.0, min(60.0, seconds))
 
 
 def write_once(operation: Callable[[], Any]) -> Any:

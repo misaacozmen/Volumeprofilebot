@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 
-from backtest.live.instruments import InstrumentContractError, InstrumentRegistry, validate_metadata
+from backtest.live.instruments import InstrumentContractError, InstrumentRegistry, validate_economic_semantics, validate_metadata
 from backtest.live.contracts import InstrumentContract
 
 
@@ -28,3 +29,19 @@ def test_registry_requires_exact_case_sensitive_symbol_and_metadata() -> None:
         registry.symbol_info("US100Cash", metadata("us100cash"))
     with pytest.raises(InstrumentContractError):
         validate_metadata(contract(), {**metadata(), "digits": 3})
+
+
+def test_semantic_metadata_and_economic_probe_fail_closed() -> None:
+    expected = replace(
+        contract(), canonical_underlying="NASDAQ_100", expected_company="XM Global Limited",
+        broker_path_regex=r"^Indices\\US Indices$", broker_description_regex=r"^US100 Cash Index$",
+        session_calendar_id="US_EQUITY_RTH", expected_one_tick_value_at_min_volume=0.001,
+        economic_value_tolerance=0.0001,
+    )
+    observed = {**metadata(), "path": r"Indices\US Indices", "description": "US100 Cash Index"}
+    validate_metadata(expected, observed)
+    validate_economic_semantics(expected, lambda *args: 0.001)
+    with pytest.raises(InstrumentContractError, match="path"):
+        validate_metadata(expected, {**observed, "path": "Forex"})
+    with pytest.raises(InstrumentContractError, match="economic"):
+        validate_economic_semantics(expected, lambda *args: -0.001)

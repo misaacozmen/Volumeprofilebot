@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+import hashlib
+import json
 import math
 from numbers import Real
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -32,6 +34,13 @@ class InstrumentContract:
     pip_size: float
     cost_unit: str
     trade_calc_mode: int
+    canonical_underlying: str = ""
+    expected_company: str = ""
+    broker_path_regex: str = ""
+    broker_description_regex: str = ""
+    session_calendar_id: str = ""
+    expected_one_tick_value_at_min_volume: float | None = None
+    economic_value_tolerance: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("instrument_id", "asset_class", "broker", "expected_server", "broker_symbol", "timezone", "base_currency", "profit_currency", "margin_currency", "cost_unit"):
@@ -47,6 +56,60 @@ class InstrumentContract:
                 raise ValueError(f"{name} must be finite and positive")
         if self.volume_max < self.volume_min:
             raise ValueError("volume_max must be at least volume_min")
+        semantic = (self.canonical_underlying, self.expected_company, self.broker_path_regex,
+                    self.broker_description_regex, self.session_calendar_id)
+        if any(semantic) and not all(isinstance(value, str) and value.strip() for value in semantic):
+            raise ValueError("semantic instrument fields must be complete")
+        for name in ("expected_one_tick_value_at_min_volume", "economic_value_tolerance"):
+            value = getattr(self, name)
+            if any(semantic) and (isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)) or float(value) <= 0):
+                raise ValueError(f"{name} must be finite and positive")
+
+    @property
+    def contract_hash(self) -> str:
+        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class LiveRiskPolicy:
+    daily_loss_cap_r: float
+    max_trades_per_day_by_instrument: tuple[tuple[str, int], ...]
+    max_total_trades_per_day: int
+    instrument_whitelist: tuple[tuple[str, str], ...]
+    max_open_positions_by_instrument: int
+    max_total_open_positions: int
+    entry_cooldown_seconds: int
+    max_position_volume_by_instrument: tuple[tuple[str, float], ...]
+    max_total_stop_risk_percent: float = 2.2
+    max_margin_fraction: float = 0.25
+    max_leverage: float = 5.0
+    max_pair_exposure_percent: float = 100.0
+    max_concentration_percent: float = 100.0
+
+    def __post_init__(self) -> None:
+        numeric = (self.daily_loss_cap_r, self.max_total_stop_risk_percent, self.max_margin_fraction, self.max_leverage, self.max_pair_exposure_percent, self.max_concentration_percent)
+        if any(isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)) for value in numeric):
+            raise ValueError("live risk policy contains non-finite numeric values")
+        if self.daily_loss_cap_r != -1.0 or self.max_total_trades_per_day != 3 or self.entry_cooldown_seconds != 300:
+            raise ValueError("live risk policy differs from the v3 fixed limits")
+        if self.max_open_positions_by_instrument != 1 or self.max_total_open_positions != 2:
+            raise ValueError("live risk position limits differ from v3")
+        trade_limits = dict(self.max_trades_per_day_by_instrument)
+        whitelist = dict(self.instrument_whitelist)
+        volumes = dict(self.max_position_volume_by_instrument)
+        if set(trade_limits) != set(whitelist) or set(volumes) != set(whitelist) or sorted(trade_limits.values()) != [1, 2]:
+            raise ValueError("live risk instrument limits are incomplete")
+        if any(
+            not key or not symbol or isinstance(trade_limits.get(key), bool) or trade_limits.get(key, 0) <= 0
+            for key, symbol in self.instrument_whitelist
+        ):
+            raise ValueError("live risk whitelist is invalid")
+        if any(isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)) or value <= 0 for value in volumes.values()):
+            raise ValueError("live risk volume limits are invalid")
+
+    @property
+    def policy_hash(self) -> str:
+        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +137,15 @@ class BrokerSnapshot:
     snapshot_hash: str = ""
     order_calc_profit: Callable[..., Any] | None = None
     order_calc_margin: Callable[..., Any] | None = None
+    total_entry_count: int | None = None
+    entry_counts_by_instrument: Mapping[str, int] = field(default_factory=dict)
+    open_position_counts_by_instrument: Mapping[str, int] = field(default_factory=dict)
+    pending_order_counts_by_instrument: Mapping[str, int] = field(default_factory=dict)
+    last_accepted_entry_at: datetime | None = None
+    last_terminal_loss_at: datetime | None = None
+    owned_deal_ids: Sequence[str] = field(default_factory=tuple)
+    policy_hash: str = ""
+    instrument_contract_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +205,7 @@ class RiskApprovedOrder:
     request_hash: str = ""
     persisted: bool = False
     persistence_receipt: str = ""
+    policy_hash: str = ""
 
     @property
     def proposal_id(self) -> str:

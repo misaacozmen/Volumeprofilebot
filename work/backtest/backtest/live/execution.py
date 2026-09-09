@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Mapping
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -50,6 +51,9 @@ class Mt5WritePort:
                 authorization_kind TEXT NOT NULL DEFAULT 'OPERATOR_APPROVAL',
                 authorization_reference TEXT NOT NULL DEFAULT '',
                 client_request_id TEXT NOT NULL DEFAULT '',
+                final_snapshot_hash TEXT NOT NULL DEFAULT '',
+                final_policy_hash TEXT NOT NULL DEFAULT '',
+                final_risk_expires_at TEXT NOT NULL DEFAULT '',
                 updated_at_utc TEXT NOT NULL
             )"""
         )
@@ -60,6 +64,9 @@ class Mt5WritePort:
             ("authorization_kind", "TEXT NOT NULL DEFAULT 'OPERATOR_APPROVAL'"),
             ("authorization_reference", "TEXT NOT NULL DEFAULT ''"),
             ("client_request_id", "TEXT NOT NULL DEFAULT ''"),
+            ("final_snapshot_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("final_policy_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("final_risk_expires_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in columns:
                 connection.execute(f'ALTER TABLE order_state_records ADD COLUMN "{name}" {definition}')
@@ -72,14 +79,18 @@ class Mt5WritePort:
         request: Mapping[str, Any],
         request_hash: str,
         approval_id: str,
+        final_snapshot_hash: str,
+        final_policy_hash: str,
+        final_risk_expires_at: str,
     ) -> None:
         self._ensure_schema(connection)
         request_json = json.dumps(dict(request), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         updated = connection.execute(
             """UPDATE order_state_records
-               SET state='SEND_ARMED', request_hash=?, request_json=?, approval_id=?, updated_at_utc=datetime('now')
+               SET state='SEND_ARMED', request_hash=?, request_json=?, approval_id=?,
+                   final_snapshot_hash=?,final_policy_hash=?,final_risk_expires_at=?,updated_at_utc=datetime('now')
                WHERE order_id=? AND state IN ('SEND_ARMED','OPERATOR_APPROVED','STAGED','RISK_APPROVED','INTENT')""",
-            (request_hash, request_json, approval_id, order_id),
+            (request_hash, request_json, approval_id, final_snapshot_hash, final_policy_hash, final_risk_expires_at, order_id),
         ).rowcount
         if updated != 1:
             raise ExecutionBoundaryError("SEND_ARMED request was not durably persisted")
@@ -92,7 +103,7 @@ class Mt5WritePort:
             connection.execute("BEGIN IMMEDIATE")
             self._ensure_schema(connection)
             row = connection.execute(
-                "SELECT state,request_hash,request_json,approval_id,authorization_kind,authorization_reference,operation_type FROM order_state_records WHERE order_id=?",
+                "SELECT state,request_hash,request_json,approval_id,authorization_kind,authorization_reference,operation_type,final_snapshot_hash,final_policy_hash,final_risk_expires_at FROM order_state_records WHERE order_id=?",
                 (order_id,),
             ).fetchone()
             if row is None or str(row[0]) != "SEND_ARMED":
@@ -114,6 +125,16 @@ class Mt5WritePort:
                 raise ExecutionBoundaryError("consumed approval does not match the durable wire request")
             if str(row[6]) in {"ENTRY", "SMOKE"} and str(approval[1] or "") != request_hash:
                 raise ExecutionBoundaryError("consumed approval does not match the durable wire request")
+            if str(row[6]) in {"ENTRY", "SMOKE"}:
+                if len(str(row[7] or "")) != 64 or len(str(row[8] or "")) != 64:
+                    raise ExecutionBoundaryError("final risk hash binding is incomplete")
+                try:
+                    expiry = datetime.fromisoformat(str(row[9]))
+                except ValueError as exc:
+                    raise ExecutionBoundaryError("final risk expiry is invalid") from exc
+                expiry = expiry if expiry.tzinfo is not None else expiry.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) >= expiry.astimezone(timezone.utc):
+                    raise ExecutionBoundaryError("final risk decision is expired")
             audit = connection.execute(
                 """SELECT e.payload_canonical_json FROM audit_chain_events e
                    JOIN audit_anchor_outbox o ON o.event_id=e.event_id
@@ -129,6 +150,28 @@ class Mt5WritePort:
                 raise ExecutionBoundaryError("SEND_ARMED audit payload is corrupt") from exc
             if not isinstance(audit_payload, dict) or str(audit_payload.get("request_hash") or "") != request_hash:
                 raise ExecutionBoundaryError("SEND_ARMED audit does not bind the exact wire request")
+            if str(row[6]) in {"ENTRY", "SMOKE"}:
+                final_audit = connection.execute(
+                    """SELECT e.payload_canonical_json FROM audit_chain_events e
+                       JOIN audit_anchor_outbox o ON o.event_id=e.event_id
+                       WHERE e.entity_type='order' AND e.entity_id=? AND e.event_type='RISK_APPROVED' AND o.state='ACKED'
+                       ORDER BY e.sequence DESC LIMIT 1""",
+                    (order_id,),
+                ).fetchone()
+                if final_audit is None:
+                    raise ExecutionBoundaryError("final RISK_APPROVED audit ACK is missing")
+                try:
+                    final_payload = json.loads(str(final_audit[0]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ExecutionBoundaryError("final risk audit payload is corrupt") from exc
+                if (
+                    not isinstance(final_payload, dict)
+                    or final_payload.get("request_hash") != request_hash
+                    or final_payload.get("snapshot_hash") != str(row[7])
+                    or final_payload.get("policy_hash") != str(row[8])
+                    or final_payload.get("expires_at") != str(row[9])
+                ):
+                    raise ExecutionBoundaryError("final risk audit binding mismatch")
             unresolved = connection.execute(
                 "SELECT 1 FROM order_state_records WHERE state IN ('WRITE_CLAIMED','WRITE_ATTEMPTED','SEND_UNKNOWN') LIMIT 1"
             ).fetchone()
@@ -158,9 +201,16 @@ class Mt5WritePort:
         approval_id: str,
         campaign_id: str,
         account_key: str,
+        final_snapshot_hash: str = "",
+        final_policy_hash: str = "",
+        final_risk_expires_at: str = "",
     ) -> str:
         if operation_type not in {"ENTRY", "SMOKE", "CANCEL", "CLOSE"}:
             raise ExecutionBoundaryError("operation type is not allowlisted")
+        if operation_type in {"ENTRY", "SMOKE"} and (
+            len(final_snapshot_hash) != 64 or len(final_policy_hash) != 64 or not final_risk_expires_at
+        ):
+            raise ExecutionBoundaryError("ENTRY/SMOKE requires an exact final-risk authorization")
         request_json = json.dumps(dict(request), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         request_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
         client_request_id = hashlib.sha256(f"{operation_id}\0{request_hash}".encode("utf-8")).hexdigest()
@@ -176,13 +226,23 @@ class Mt5WritePort:
             connection.execute(
                 """INSERT INTO order_state_records
                    (order_id,state,request_hash,request_json,approval_id,operation_type,
-                    authorization_kind,authorization_reference,client_request_id,updated_at_utc)
-                   VALUES(?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                   authorization_kind,authorization_reference,client_request_id,
+                   final_snapshot_hash,final_policy_hash,final_risk_expires_at,updated_at_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
                 (operation_id, "SEND_ARMED", request_hash, request_json, approval_id, operation_type,
-                 "OPERATOR_APPROVAL", approval_id, client_request_id),
+                 "OPERATOR_APPROVAL", approval_id, client_request_id,
+                 final_snapshot_hash, final_policy_hash, final_risk_expires_at),
             )
 
         try:
+            if operation_type in {"ENTRY", "SMOKE"}:
+                ledger.append(
+                    "RISK_APPROVED", entity_type="order", entity_id=operation_id,
+                    payload={
+                        "request_hash": request_hash, "snapshot_hash": final_snapshot_hash,
+                        "policy_hash": final_policy_hash, "expires_at": final_risk_expires_at,
+                    },
+                )
             ledger.append(
                 "SEND_ARMED", entity_type="order", entity_id=operation_id,
                 payload={

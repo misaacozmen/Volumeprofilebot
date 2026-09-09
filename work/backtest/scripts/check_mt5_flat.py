@@ -18,7 +18,7 @@ def _write_result(path: Path, payload: dict[str, object]) -> None:
 
 def load_mt5_environment(required_names: tuple[str, ...]) -> dict[str, str]:
     names = tuple(dict.fromkeys((*required_names, "XM_MT5_TERMINAL_PATH")))
-    values = {name: os.environ.get(name, "").strip() for name in names}
+    values = {name: environment_value(name).strip() for name in names}
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise RuntimeError(f"Required MT5 environment is incomplete: {', '.join(missing)}")
@@ -54,14 +54,17 @@ def evaluate_readiness(
         # environment fallback keeps the generic diagnostic compatible with
         # older forward fixtures; Super1's runtime guard rejects that shape.
         terminal_path = str(
-            config.get("terminal_path") or os.environ.get("XM_MT5_TERMINAL_PATH", "")
+            config.get("terminal_path") or environment_value("XM_MT5_TERMINAL_PATH")
         ).strip()
         if not terminal_path:
             raise RuntimeError("Portable MT5 readiness requires a pinned terminal path.")
         expected_data_root = Path(terminal_path).resolve().parent
         identity_checks["windows_profile"] = terminal_data_path == expected_data_root
     else:
-        expected_data_root = (Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal").resolve()
+        app_data = PlatformPaths.current().app_data
+        if app_data is None:
+            raise RuntimeError("APPDATA is unavailable")
+        expected_data_root = (app_data / "MetaQuotes" / "Terminal").resolve()
         identity_checks["windows_profile"] = (
             os.path.commonpath(
                 (os.path.normcase(expected_data_root), os.path.normcase(terminal_data_path))
@@ -384,3 +387,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import PlatformPaths, environment_value

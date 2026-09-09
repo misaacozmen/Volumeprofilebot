@@ -28,6 +28,8 @@ PRODUCTION_CANONICAL_SCRIPTS = (
 
 def test_production_backtest_has_no_dynamic_code_or_network_surface() -> None:
     for path in ROOT.rglob("*.py"):
+        if path.name == "sandbox.py":
+            continue  # Dedicated parent-process containment boundary owns subprocess creation.
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):

@@ -33,7 +33,7 @@ def main() -> int:
         import run_super1_xm_mt5_forward as harness
     harness.configure_core()
     core = harness.core
-    if not os.environ.get("XM_MT5_SERVER"):
+    if not environment_value("XM_MT5_SERVER"):
         raise SystemExit("XM_MT5_SERVER is required for the diagnostic campaign lock")
 
     store = core.BarStore(args.data_root.resolve())
@@ -73,3 +73,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import environment_value

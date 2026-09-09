@@ -9,11 +9,44 @@ from pathlib import Path
 import hashlib
 import re
 from typing import Mapping
+import threading
 from uuid import UUID
 
 
 class SettingsError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformPaths:
+    system_root: Path
+    app_data: Path | None
+
+    @classmethod
+    def current(cls, environment: Mapping[str, str] | None = None) -> "PlatformPaths":
+        env = os.environ if environment is None else environment
+        root = Path(_get(env, "SystemRoot") or r"C:\Windows")
+        app_data = _get(env, "APPDATA")
+        return cls(root, Path(app_data) if app_data else None)
+
+
+def environment_snapshot() -> dict[str, str]:
+    """The only production escape hatch for passing the environment to validation."""
+    return dict(os.environ)
+
+
+def minimal_subprocess_environment(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a non-secret platform-only environment for isolated workers."""
+    env = os.environ if environment is None else environment
+    allowed = ("SystemRoot", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "TEMP", "TMP", "LANG", "LC_ALL", "TZ")
+    result: dict[str, str] = {}
+    forbidden = re.compile(r"(?:XM_|CAPITAL_|SUPER1_|TOKEN|KEY|PASSWORD|SECRET)", re.IGNORECASE)
+    for name in allowed:
+        value = env.get(name)
+        if value and not forbidden.search(name):
+            result[name] = str(value)
+    result["PYTHONHASHSEED"] = "0"
+    return result
 
 
 SUPPORTED_ENV = frozenset(
@@ -27,6 +60,34 @@ SUPPORTED_ENV = frozenset(
 SECRET_FIELDS = frozenset({"read_only_password", "password", "capital_api_key", "capital_api_password"})
 _SID_PATTERN = re.compile(r"^S-\d-(?:\d+-)+\d+$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentField:
+    key: str
+    target: str
+    value_type: str
+    secret: bool = False
+    source_policy: str = "ENV_ALLOWLIST"
+
+
+ENVIRONMENT_SCHEMA = tuple(
+    EnvironmentField(key, target, kind, secret)
+    for key, target, kind, secret in (
+        ("XM_MT5_TERMINAL_PATH", "terminal_path", "path", False),
+        ("XM_MT5_SERVER", "server", "string", False),
+        ("XM_MT5_SIGNED_SERVER_ASSERTION", "signed_server_assertion", "string", False),
+        ("XM_MT5_READ_ONLY_PASSWORD", "read_only_password", "secret", True),
+        ("XM_MT5_PASSWORD", "password", "secret", True),
+        ("CAPITAL_IDENTIFIER", "capital_identifier", "secret", True),
+        ("CAPITAL_API_KEY", "capital_api_key", "secret", True),
+        ("CAPITAL_API_PASSWORD", "capital_api_password", "secret", True),
+        ("SUPER1_INVOCATION_NONCE", "invocation_nonce", "uuid", False),
+        ("SUPER1_RUNNER_SID", "runner_sid", "sid", False),
+        ("SUPER1_LAUNCHER_SHA256", "launcher_sha256", "sha256", False),
+        ("SUPER1_INVOCATION_STARTED_AT", "invocation_started_at", "timestamp", False),
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +113,7 @@ class RuntimeSettings:
 
     def to_public_dict(self) -> dict[str, str]:
         return {
-            field.name: ("***" if field.name in SECRET_FIELDS and getattr(self, field.name) else "")
+            field.name: str(getattr(self, field.name))
             for field in fields(self)
             if field.name not in SECRET_FIELDS
         } | {field: "***" for field in SECRET_FIELDS if getattr(self, field)}
@@ -159,4 +220,19 @@ def load_settings(
 
 
 def load_once(config: Mapping[str, object], *, environment: Mapping[str, str] | None = None) -> RuntimeSettings:
-    return load_settings(config, environment=environment)
+    settings = load_settings(config, environment=environment)
+    fingerprint = hashlib.sha256(
+        repr((dict(config), tuple(sorted((environment_snapshot() if environment is None else environment).items())))).encode()
+    ).hexdigest()
+    with _LOAD_LOCK:
+        global _LOADED_FINGERPRINT, _LOADED_SETTINGS
+        if _LOADED_FINGERPRINT is None:
+            _LOADED_FINGERPRINT, _LOADED_SETTINGS = fingerprint, settings
+        elif _LOADED_FINGERPRINT != fingerprint:
+            raise SettingsError("runtime settings were already loaded from different inputs")
+        return _LOADED_SETTINGS
+
+
+_LOAD_LOCK = threading.Lock()
+_LOADED_FINGERPRINT: str | None = None
+_LOADED_SETTINGS: RuntimeSettings | None = None

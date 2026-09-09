@@ -590,7 +590,7 @@ def build_run(run_id: str, temp: Path, predecessor: Path, attempt_id: str) -> tu
     write_json(temp / "baseline-validation.json", {"run_id": run_id, "attempt_id": attempt_id, **baseline})
     write_json(temp / "predecessor-integrity-before.json", {"run_id": run_id, "attempt_id": attempt_id, "relative_path": predecessor.name, "tree_sha256": predecessor_before, "file_count": predecessor_count_before, "expected_tree_sha256": "1ef02906da6b19b8e882ca56679ad76471aa220d372ebb9d95c13dcb75a0cbdb"})
     write_json(temp / "failed-sibling-integrity-before.json", {"run_id": run_id, "attempt_id": attempt_id, **failed_before})
-    env = os.environ.copy()
+    env = environment_snapshot()
     env.update({"SUPER1_RUN_ID": run_id, "SUPER1_EVIDENCE_MODE": "LOCAL_SYNTHETIC_ONLY", "PYTEST_ADDOPTS": ""})
     python = str(Path(sys.executable).resolve())
     processes: dict[str, dict[str, object]] = {}
@@ -788,7 +788,7 @@ def publication_negative_case(output_base: Path, case_id: str) -> int:
         "receipt_name_collision": "RECEIPT_NAME_COLLISION",
         "receipt_partial_write": "RECEIPT_PARTIAL_WRITE",
     }.get(case_id, "PUBLICATION_NEGATIVE_CASE_UNKNOWN")
-    if os.environ.get("SUPER1_NEGATIVE_PHASE") == "clean":
+    if environment_value("SUPER1_NEGATIVE_PHASE") == "clean":
         print(json.dumps({"case_id": case_id, "phase": "clean", "ok": True}, sort_keys=True))
         return 0
     if case_id == "canonical_run_name_collision":
@@ -840,3 +840,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import environment_snapshot, environment_value

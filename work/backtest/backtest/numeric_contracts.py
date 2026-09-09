@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_EVEN
 from numbers import Real
 from typing import Any
 
@@ -59,3 +60,48 @@ def validate_trade_geometry(direction: str, entry: Any, stop: Any, target: Any) 
     if direction not in {"long", "short"}:
         raise FinancialMathError("trade direction is invalid")
     return entry_value, stop_value, target_value
+
+
+def _decimal(value: Any, name: str) -> Decimal:
+    finite_float(value, name)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise FinancialMathError(f"{name} is not a finite decimal") from exc
+
+
+def quantize_price(value: Any, tick_size: Any) -> float:
+    price, tick = _decimal(value, "price"), _decimal(tick_size, "tick_size")
+    if price <= 0 or tick <= 0:
+        raise FinancialMathError("price and tick_size must be positive")
+    return float((price / tick).to_integral_value(rounding=ROUND_HALF_EVEN) * tick)
+
+
+def quantize_volume_down(value: Any, step: Any, minimum: Any, maximum: Any) -> float:
+    volume, quantum = _decimal(value, "volume"), _decimal(step, "volume_step")
+    lower, upper = _decimal(minimum, "volume_min"), _decimal(maximum, "volume_max")
+    if quantum <= 0 or lower <= 0 or upper < lower or volume <= 0:
+        raise FinancialMathError("volume contract is invalid")
+    rounded = (volume / quantum).to_integral_value(rounding=ROUND_DOWN) * quantum
+    if rounded < lower or rounded > upper:
+        raise FinancialMathError("quantized volume is outside broker limits")
+    return float(rounded)
+
+
+def safe_divide(numerator: Any, denominator: Any, *, reason: str) -> tuple[float | None, str | None]:
+    top, bottom = finite_float(numerator, "numerator"), finite_float(denominator, "denominator")
+    if bottom == 0:
+        return None, reason
+    result = top / bottom
+    if not math.isfinite(result):
+        raise FinancialMathError("division result is non-finite")
+    return result, None
+
+
+def finite_vector(values: Any, name: str = "values") -> list[float]:
+    if isinstance(values, (str, bytes, bool)) or values is None:
+        raise FinancialMathError(f"{name} must be a numeric vector")
+    try:
+        return [finite_float(value, f"{name}[{index}]") for index, value in enumerate(values)]
+    except TypeError as exc:
+        raise FinancialMathError(f"{name} must be a numeric vector") from exc

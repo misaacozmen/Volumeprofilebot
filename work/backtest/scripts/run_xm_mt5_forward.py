@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import run_capital_forward as core
 from backtest.numeric_contracts import validate_trade_geometry
-from backtest.live.settings import SettingsError, load_settings
+from backtest.live.settings import SettingsError, environment_snapshot, load_settings
 from backtest.live.execution import Mt5WritePort
 from backtest.live.retry import AllowedTransportError, CircuitBreaker, CircuitOpenError, NonRetryableReadError, RetryError, RetryPolicy
 from super1_runtime_guard import order_mutex
@@ -166,7 +166,7 @@ class XmMt5ReadOnlyClient:
         self.mt5 = mt5
         self.login_id = int(config["account_login"])
         try:
-            settings = load_settings(config, environment={**os.environ, **secrets}, enforce_required=False)
+            settings = load_settings(config, environment={**environment_snapshot(), **secrets}, enforce_required=False)
         except SettingsError as exc:
             raise XmMt5Error(str(exc)) from exc
         self.server = settings.server
@@ -224,41 +224,37 @@ class XmMt5ReadOnlyClient:
         )
 
     def login(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "login": self.login_id,
-            "server": self.server,
-            "timeout": 60_000,
-        }
-        if self.password:
-            kwargs["password"] = self.password
-        if getattr(self, "portable", False):
-            kwargs["portable"] = True
-        ok = (
-            self.mt5.initialize(self.terminal_path, **kwargs)
-            if self.terminal_path
-            else self.mt5.initialize(**kwargs)
-        )
-        if not ok:
-            primary_error = self._safe_last_error()
-            self.mt5.shutdown()
-            if not self._initialize_terminal_only():
-                fallback_error = self._safe_last_error()
-                self.mt5.shutdown()
-                raise XmMt5Error(
-                    "MT5 initialize failed; "
-                    f"primary={primary_error}; terminal_only={fallback_error}"
-                )
-            login_kwargs: dict[str, Any] = {
-                "server": self.server,
-                "timeout": 60_000,
-            }
+        def connect_once() -> Any:
+            kwargs: dict[str, Any] = {"login": self.login_id, "server": self.server, "timeout": 60_000}
             if self.password:
-                login_kwargs["password"] = self.password
-            if not self.mt5.login(self.login_id, **login_kwargs):
-                login_error = self._safe_last_error()
+                kwargs["password"] = self.password
+            if getattr(self, "portable", False):
+                kwargs["portable"] = True
+            try:
+                ok = self.mt5.initialize(self.terminal_path, **kwargs) if self.terminal_path else self.mt5.initialize(**kwargs)
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                raise AllowedTransportError("MT5 initialize transport failure") from exc
+            if not ok:
                 self.mt5.shutdown()
-                raise XmMt5Error(f"MT5 explicit login failed: {login_error}")
-        account = self._retry_mt5_read("account_info")
+                if not self._initialize_terminal_only():
+                    self.mt5.shutdown()
+                    raise AllowedTransportError("MT5 initialize did not establish a session")
+                login_kwargs: dict[str, Any] = {"server": self.server, "timeout": 60_000}
+                if self.password:
+                    login_kwargs["password"] = self.password
+                if not self.mt5.login(self.login_id, **login_kwargs):
+                    self.mt5.shutdown()
+                    raise AllowedTransportError("MT5 explicit login did not establish a session")
+            return self._retry_mt5_read("account_info")
+
+        try:
+            policy = getattr(self, "_read_retry_policy", None)
+            if not isinstance(policy, RetryPolicy):
+                policy = RetryPolicy(breaker=getattr(self, "_read_breaker", None))
+                self._read_retry_policy = policy
+            account = policy.read(connect_once)
+        except RetryError as exc:
+            raise XmMt5Error("MT5 connection retry deadline exhausted; broker detail=***") from exc
         if account is None or int(account.login) != self.login_id:
             self.mt5.shutdown()
             raise XmMt5Error("MT5 connected to an unexpected account.")
@@ -3027,7 +3023,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                                 "direction": direction,
                                 "reason_code": exc.code,
                             }
-                        result = self.mt5.order_check(request)
+                        result = self._retry_mt5_read("order_check", request)
                         if result is None or int(result.retcode) != 0:
                             retcode = None if result is None else int(result.retcode)
                             if retcode is None or retcode in {
@@ -3558,7 +3554,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     }
         check_error: str | None = None
         try:
-            check = self.mt5.order_check(request)
+            check = self._retry_mt5_read("order_check", request)
         except Exception as exc:
             check = None
             check_error = str(exc)

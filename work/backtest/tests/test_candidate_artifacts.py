@@ -143,7 +143,7 @@ def test_checked_in_threshold_artifact_is_valid() -> None:
         verify_inputs=True,
     )
     assert payload["calibration"]["cutoff_exclusive"] == "2025-01-01"
-    assert payload["provenance"]["environment"]["git_commit"] is None
+    assert payload["provenance"]["environment"]["git_commit"] == "1b233f524c1f03b7eb9cf3afc076507626ad4bf8"
 
 
 def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monkeypatch) -> None:

@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from backtest.signals import SignalProposal
-from backtest.live.contracts import BrokerSnapshot, InstrumentContract
+from backtest.live.contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy
 from backtest.live.risk_guard import RiskGuard, RiskGuardError
 
 
@@ -64,3 +64,43 @@ def test_guard_denies_missing_approval_health_contract_or_budget() -> None:
     assert not guard.evaluate(proposal(), snapshot(daily_realized_r=-1.0)).approved
     assert not guard.evaluate(proposal(), snapshot(snapshot_hash="")).approved
     assert not guard.evaluate(proposal(), snapshot(), approval_id="").approved
+
+
+def policy() -> LiveRiskPolicy:
+    return LiveRiskPolicy(
+        -1.0,
+        (("XM_MT5_US100CASH_SUPER1", 1), ("XM_MT5_US500CASH_SUPER1", 2)),
+        3,
+        (("XM_MT5_US100CASH_SUPER1", "US100Cash"), ("XM_MT5_US500CASH_SUPER1", "US500Cash")),
+        1,
+        2,
+        300,
+        (("XM_MT5_US100CASH_SUPER1", 100.0), ("XM_MT5_US500CASH_SUPER1", 100.0)),
+    )
+
+
+def policy_snapshot(**updates: object) -> BrokerSnapshot:
+    signed = policy()
+    values = {
+        "total_entry_count": 0, "entry_counts_by_instrument": {},
+        "open_position_counts_by_instrument": {}, "pending_order_counts_by_instrument": {},
+        "policy_hash": signed.policy_hash, "instrument_contract_hash": contract().contract_hash,
+        "leverage": 2.0, "pair_exposure_percent": 0.0, "concentration_percent": 0.0,
+        **updates,
+    }
+    return snapshot(**values)
+
+
+def test_v3_policy_enforces_broker_trade_counts_cooldown_and_exact_hashes() -> None:
+    guard = RiskGuard(policy=policy(), clock=lambda: NOW)
+    assert guard.evaluate(proposal(), policy_snapshot(), approval_id="approval-1").approved
+    assert not guard.evaluate(proposal(), policy_snapshot(total_entry_count=3), approval_id="approval-1").approved
+    assert not guard.evaluate(
+        proposal(),
+        policy_snapshot(entry_counts_by_instrument={"XM_MT5_US100CASH_SUPER1": 1}),
+        approval_id="approval-1",
+    ).approved
+    assert not guard.evaluate(
+        proposal(), policy_snapshot(last_accepted_entry_at=NOW - timedelta(seconds=299)), approval_id="approval-1"
+    ).approved
+    assert not guard.evaluate(proposal(), policy_snapshot(policy_hash="bad"), approval_id="approval-1").approved

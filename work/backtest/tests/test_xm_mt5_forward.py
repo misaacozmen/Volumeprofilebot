@@ -184,7 +184,7 @@ def test_mt5_login_total_failure_is_transient_and_redacts_password() -> None:
     assert isinstance(exc_info.value, MODULE.XmMt5Error)
     assert "top-secret" not in str(exc_info.value)
     assert "***" in str(exc_info.value)
-    assert mt5.shutdown_count == 2
+    assert mt5.shutdown_count == 10  # two fail-closed shutdowns per bounded connection attempt
     assert client.connected is False
 
 
@@ -1106,6 +1106,9 @@ class _CanonicalTestWriteAdapter:
             approval_id=approval_id,
             campaign_id="test-campaign",
             account_key="318413815",
+            final_snapshot_hash="1" * 64,
+            final_policy_hash="2" * 64,
+            final_risk_expires_at="2099-01-01T00:00:00+00:00",
         )
         response = self.port.send(operation_id)
         connection = sqlite3.connect(self.db_path)

@@ -21,6 +21,13 @@
       "pip_size": 0.01,
       "cost_unit": "price",
       "trade_calc_mode": 0
+      ,"canonical_underlying": "NASDAQ_100"
+      ,"expected_company": "XM Global Limited"
+      ,"broker_path_regex": "^Indices\\\\US Indices$"
+      ,"broker_description_regex": "^US100 Cash Index$"
+      ,"session_calendar_id": "US_EQUITY_RTH"
+      ,"expected_one_tick_value_at_min_volume": 0.001
+      ,"economic_value_tolerance": 0.0001
     }
   ]
 }

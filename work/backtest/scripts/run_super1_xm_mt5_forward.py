@@ -16,14 +16,14 @@ import pandas as pd
 from backtest.live.approval import ApprovalError, ApprovalStore, proposal_hash, wire_request_hash
 from backtest.live.audit_ledger import AUDIT_SCHEMA_VERSION, GENESIS_HASH, AuditLedger, event_hash
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
-from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, RiskApprovedOrder
+from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder
 from backtest.live.execution import Mt5WritePort
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
 from backtest.live.risk_guard import RiskGuard
 from backtest.live.halt import HaltController, emergency_flatten_cycle
-from backtest.live.instruments import InstrumentRegistry
+from backtest.live.instruments import InstrumentRegistry, validate_economic_semantics
 from backtest.live.order_state import OrderStateMachine
-from backtest.live.settings import RuntimeSettings
+from backtest.live.settings import PlatformPaths, RuntimeSettings
 from backtest.live.strategy_health import LockedOOSBaseline, StrategyHealth
 from backtest.signals import SignalProposal
 
@@ -64,7 +64,7 @@ def write_event_log_anchor(event_hash: str, event_id: str) -> None:
         raise Super1RuntimeError("audit anchor payload is invalid")
     if sys.platform != "win32":
         raise Super1RuntimeError("Windows Event Log audit anchor is unavailable")
-    eventcreate = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "eventcreate.exe"
+    eventcreate = PlatformPaths.current().system_root / "System32" / "eventcreate.exe"
     if not eventcreate.is_file():
         raise Super1RuntimeError("trusted eventcreate.exe is missing")
     message = f"sequence_anchor event_id={event_id}; event_hash={event_hash.lower()}"
@@ -155,6 +155,32 @@ def _signed_risk_limits(config: dict[str, Any]) -> dict[str, float]:
     if not all(math.isfinite(value) for value in values.values()):
         raise Super1RuntimeError("signed risk limits contain non-finite values")
     return values
+
+
+def _signed_live_risk_policy(config: dict[str, Any]) -> LiveRiskPolicy:
+    raw = config.get("live_risk_policy")
+    limits = _signed_risk_limits(config)
+    if not isinstance(raw, dict):
+        raise Super1RuntimeError("signed live risk policy is missing")
+    legs = config.get("legs")
+    if not isinstance(legs, dict):
+        raise Super1RuntimeError("signed live risk instrument bindings are missing")
+    whitelist = tuple(sorted((str(value["instrument_id"]), str(value["epic"])) for value in legs.values()))
+    try:
+        return LiveRiskPolicy(
+            float(raw["daily_loss_cap_r"]),
+            tuple(sorted((str(key), int(value)) for key, value in raw["max_trades_per_day_by_instrument"].items())),
+            int(raw["max_total_trades_per_day"]),
+            whitelist,
+            int(raw["max_open_positions_by_instrument"]),
+            int(raw["max_total_open_positions"]),
+            int(raw["entry_cooldown_seconds"]),
+            tuple(sorted((str(key), float(value)) for key, value in raw["max_position_volume_by_instrument"].items())),
+            limits["max_total_stop_risk_percent"], limits["max_margin_fraction"],
+            limits["max_leverage"], limits["max_pair_exposure_percent"], limits["max_concentration_percent"],
+        )
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise Super1RuntimeError("signed live risk policy is invalid") from exc
 
 
 def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
@@ -633,7 +659,7 @@ class _Super1ProductionAdapter:
         volume = float(request.get("volume") or 0.0)
         if volume < self.contract.volume_min or volume > self.contract.volume_max:
             raise core.CriticalLiveError("production request volume is outside the signed registry")
-        check = self.client.mt5.order_check(request)
+        check = self.client._retry_mt5_read("order_check", request)
         retcode = None if check is None else getattr(check, "retcode", None)
         if retcode is None or int(retcode) != 0:
             raise core.CriticalLiveError("production broker order_check did not pass")
@@ -1048,6 +1074,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         if info is None:
             raise xm.BrokerStateUnknownError("signed production symbol metadata is unavailable")
         contract = registry.symbol_info(symbol, info)
+        validate_economic_semantics(contract, self.mt5.order_calc_profit)
         if contract.instrument_id != instrument_id:
             raise Super1RuntimeError("signed instrument ID does not match the registry")
         return registry, contract, registry_hash
@@ -1084,6 +1111,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             )
 
         try:
+            policy = _signed_live_risk_policy(self.config)
             return BrokerFactsBuilder(
                 read=self._retry_mt5_read,
                 order_calc_profit=self.mt5.order_calc_profit,
@@ -1100,6 +1128,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 deals_start=start,
                 deals_end=end,
                 approval=approval,
+                policy_hash=policy.policy_hash,
             )
         except BrokerFactsError as exc:
             controller.trigger("BROKER_FACTS_UNKNOWN", error=str(exc), symbol=symbol)
@@ -1223,10 +1252,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         elif current.get("proposal") != staged or current.get("state") not in {"STAGED", "APPROVED"}:
             store.close()
             raise Super1RuntimeError("persisted production proposal is not the exact current proposal")
-        approval_id = str(getattr(self, "_runtime_secrets", {}).get("SUPER1_APPROVAL_ID") or "")
         approval = store.find_approved(order_id, campaign_id=campaign_id, account_key=account_key, release_id=release_id, candidate_hash=candidate_hash)
-        if approval is not None:
-            approval_id = approval.approval_id
+        approval_id = "" if approval is None else approval.approval_id
         if approval is None or not approval_id:
             store.close()
             return {
@@ -1248,6 +1275,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             expected_candidate_hash=candidate_hash,
         )
         limits = _signed_risk_limits(self.config)
+        policy = _signed_live_risk_policy(self.config)
         adapter = _Super1ProductionAdapter(self, output_root, request, contract)
         ledger = AuditLedger(
             self._order_db(output_root), campaign_id=campaign_id, account_key=account_key,
@@ -1255,6 +1283,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         )
         dependencies = ProductionDependencies(
             risk_guard=RiskGuard(
+                policy=policy,
                 pair_cap_r=limits["daily_loss_cap_r"],
                 daily_loss_cap_r=limits["daily_loss_cap_r"],
                 base_risk_percent=float(self.config["base_risk_percent"]),
@@ -1565,7 +1594,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             raise core.CriticalLiveError("Daily Super1 pair-cap or unresolved broker state blocks new orders.")
         if stop_risk > equity * 0.022:
             raise core.CriticalLiveError("Aggregate Super1 worst-case stop risk exceeds 2.2 percent of equity.")
-        checked = self.mt5.order_check(request)
+        checked = self._retry_mt5_read("order_check", request)
         if checked is None or int(getattr(checked, "retcode", -1)) != 0:
             raise core.CriticalLiveError("Final order_check failed immediately before SEND_ARMED.")
 
@@ -1596,6 +1625,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             if info is None:
                 raise xm.BrokerStateUnknownError("SMOKE symbol metadata is unavailable")
             contract = registry.symbol_info(symbol, info)
+            validate_economic_semantics(contract, self.mt5.order_calc_profit)
             if contract.instrument_id != instrument_id:
                 raise core.CriticalLiveError("SMOKE instrument ID does not match the signed registry")
             tick = self._retry_mt5_read("symbol_info_tick", symbol)
@@ -1625,6 +1655,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 
             def snapshot(approval: bool) -> BrokerSnapshot:
                 try:
+                    policy = _signed_live_risk_policy(self.config)
                     return BrokerFactsBuilder(
                         read=self._retry_mt5_read,
                         order_calc_profit=self.mt5.order_calc_profit,
@@ -1641,6 +1672,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                         deals_start=(now - pd.Timedelta(days=1)).to_pydatetime(),
                         deals_end=(now + pd.Timedelta(minutes=1)).to_pydatetime(),
                         approval=approval,
+                        policy_hash=policy.policy_hash,
                     )
                 except BrokerFactsError as exc:
                     raise core.CriticalLiveError(f"SMOKE broker facts are unknown: {exc}") from exc
@@ -1712,6 +1744,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 expected_candidate_hash=candidate_hash,
             )
             limits = _signed_risk_limits(self.config)
+            policy = _signed_live_risk_policy(self.config)
             adapter = _Super1ProductionSmokeAdapter(self, output_root, request, contract)
             ledger = AuditLedger(
                 self._order_db(output_root), campaign_id=campaign_id, account_key=account_key,
@@ -1719,6 +1752,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             )
             dependencies = ProductionDependencies(
                 risk_guard=RiskGuard(
+                    policy=policy,
                     pair_cap_r=limits["daily_loss_cap_r"],
                     daily_loss_cap_r=limits["daily_loss_cap_r"],
                     base_risk_percent=float(self.config["base_risk_percent"]),

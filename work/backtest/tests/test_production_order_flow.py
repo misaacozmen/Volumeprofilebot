@@ -76,8 +76,8 @@ def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_p
 
     snapshots = iter(
         (
-            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="1" * 64, order_calc_profit=profit, order_calc_margin=margin),
-            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", approval=True, halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="2" * 64, order_calc_profit=profit, order_calc_margin=margin),
+            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="1" * 64, policy_hash="3" * 64, order_calc_profit=profit, order_calc_margin=margin),
+            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", approval=True, halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="2" * 64, policy_hash="3" * 64, order_calc_profit=profit, order_calc_margin=margin),
         )
     )
 

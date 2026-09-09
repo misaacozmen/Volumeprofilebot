@@ -11,7 +11,7 @@ from numbers import Real
 from typing import Any, Callable, Mapping
 
 from ..signals import SignalProposal
-from .contracts import BrokerSnapshot, InstrumentContract, RiskApprovedOrder, RiskDecision
+from .contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder, RiskDecision
 
 
 class RiskGuardError(RuntimeError):
@@ -62,7 +62,16 @@ class RiskGuard:
         max_concentration_percent: float | None = None,
         max_snapshot_age_seconds: float = 60.0,
         clock: Callable[[], datetime] | None = None,
+        policy: LiveRiskPolicy | None = None,
     ) -> None:
+        self.policy = policy
+        if policy is not None:
+            daily_loss_cap_r = policy.daily_loss_cap_r
+            max_total_stop_risk_percent = policy.max_total_stop_risk_percent
+            max_margin_fraction = policy.max_margin_fraction
+            max_leverage = policy.max_leverage
+            max_pair_exposure_percent = policy.max_pair_exposure_percent
+            max_concentration_percent = policy.max_concentration_percent
         self.pair_cap_r = _finite(pair_cap_r, "pair_cap_r")
         self.daily_loss_cap_r = self.pair_cap_r if daily_loss_cap_r is None else _finite(daily_loss_cap_r, "daily_loss_cap_r")
         self.base_risk_percent = _finite(base_risk_percent, "base_risk_percent", nonnegative=True)
@@ -126,6 +135,42 @@ class RiskGuard:
         contract = self._value(snapshot, "instrument_contract")
         if not isinstance(contract, InstrumentContract) or contract.instrument_id != proposal.instrument_id:
             raise RiskGuardError("instrument contract does not match proposal")
+        if self.policy is not None:
+            if self._value(snapshot, "policy_hash") != self.policy.policy_hash:
+                raise RiskGuardError("broker snapshot policy hash mismatch")
+            if self._value(snapshot, "instrument_contract_hash") != contract.contract_hash:
+                raise RiskGuardError("broker snapshot instrument contract hash mismatch")
+            whitelist = dict(self.policy.instrument_whitelist)
+            if whitelist.get(proposal.instrument_id) != contract.broker_symbol:
+                raise RiskGuardError("instrument is outside the exact signed whitelist")
+            if proposal.broker_symbol and proposal.broker_symbol != contract.broker_symbol:
+                raise RiskGuardError("proposal broker symbol differs from signed contract")
+            total_entries = self._value(snapshot, "total_entry_count")
+            entry_counts = self._value(snapshot, "entry_counts_by_instrument")
+            position_counts = self._value(snapshot, "open_position_counts_by_instrument")
+            pending_counts = self._value(snapshot, "pending_order_counts_by_instrument")
+            if isinstance(total_entries, bool) or not isinstance(total_entries, int) or total_entries < 0:
+                raise RiskGuardError("daily broker entry count is missing")
+            if not all(isinstance(value, Mapping) for value in (entry_counts, position_counts, pending_counts)):
+                raise RiskGuardError("broker exposure counts are missing")
+            def exact_count(values: Mapping[str, Any], key: str) -> int:
+                value = values.get(key, 0)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise RiskGuardError("broker count is invalid")
+                return value
+            if total_entries >= self.policy.max_total_trades_per_day or exact_count(entry_counts, proposal.instrument_id) >= dict(self.policy.max_trades_per_day_by_instrument)[proposal.instrument_id]:
+                raise RiskGuardError("daily broker trade-count limit is active")
+            if sum(exact_count(position_counts, key) for key in whitelist) >= self.policy.max_total_open_positions or exact_count(position_counts, proposal.instrument_id) >= self.policy.max_open_positions_by_instrument:
+                raise RiskGuardError("open-position limit is active")
+            if exact_count(pending_counts, proposal.instrument_id) > 0:
+                raise RiskGuardError("an owned pending order already exists")
+            last_entry = self._value(snapshot, "last_accepted_entry_at")
+            if last_entry is not None:
+                if not isinstance(last_entry, datetime):
+                    raise RiskGuardError("last accepted entry time is invalid")
+                last_entry = last_entry if last_entry.tzinfo is not None else last_entry.replace(tzinfo=timezone.utc)
+                if (now - last_entry).total_seconds() < self.policy.entry_cooldown_seconds:
+                    raise RiskGuardError("entry cooldown is active")
         if self._value(snapshot, "halt") is not False:
             raise RiskGuardError("HALT is active")
         if require_approval and self._value(snapshot, "approval") is not True:
@@ -163,6 +208,8 @@ class RiskGuard:
         volume = steps * contract.volume_step
         if volume < contract.volume_min or volume > contract.volume_max:
             raise RiskGuardError("calculated volume is outside signed instrument limits")
+        if self.policy is not None and volume > dict(self.policy.max_position_volume_by_instrument)[proposal.instrument_id]:
+            raise RiskGuardError("calculated volume exceeds signed policy limit")
         volume = round(volume, max(contract.digits, 8))
         stop_risk = abs(_finite(profit_calculator(action, contract.broker_symbol, volume, proposal.entry_price, proposal.stop_price), "stop_risk"))
         risk_tolerance = max(1e-8, abs(risk_cash) * 1e-8)
@@ -195,7 +242,8 @@ class RiskGuard:
         return self._evaluate(proposal, broker_snapshot, approval_id=approval_id, require_approval=True)[0]
 
     def approve(self, proposal: SignalProposal, broker_snapshot: BrokerSnapshot | Mapping[str, Any] | Callable[[], BrokerSnapshot], *, approval_id: str) -> RiskApprovedOrder:
-        decision, values = self._evaluate(proposal, broker_snapshot, approval_id=approval_id, require_approval=True)
+        snapshot = self._snapshot(broker_snapshot)
+        decision, values = self._evaluate(proposal, snapshot, approval_id=approval_id, require_approval=True)
         if not decision.approved or values is None:
             raise RiskGuardError(decision.reason)
         volume, _contract, risk_cash, stop_risk, margin = values
@@ -211,11 +259,13 @@ class RiskGuard:
             margin_required=margin, approved_at=decision.checked_at,
             snapshot_hash=decision.snapshot_hash, approval_id=approval_id,
             request_hash=_request_hash(request), persisted=False,
+            policy_hash=str(self._value(snapshot, "policy_hash", "")),
         )
 
     def plan(self, proposal: SignalProposal, broker_snapshot: BrokerSnapshot | Mapping[str, Any] | Callable[[], BrokerSnapshot]) -> RiskApprovedOrder:
         """Build exact volume/risk facts before operator approval is issued."""
-        decision, values = self._evaluate(proposal, broker_snapshot, approval_id=None, require_approval=False)
+        snapshot = self._snapshot(broker_snapshot)
+        decision, values = self._evaluate(proposal, snapshot, approval_id=None, require_approval=False)
         if not decision.approved or values is None:
             raise RiskGuardError(decision.reason)
         volume, _contract, risk_cash, stop_risk, margin = values
@@ -230,6 +280,7 @@ class RiskGuard:
             proposal=proposal, volume=volume, risk_cash=risk_cash, stop_risk=stop_risk,
             margin_required=margin, approved_at=decision.checked_at,
             snapshot_hash=decision.snapshot_hash, request_hash=_request_hash(request),
+            policy_hash=str(self._value(snapshot, "policy_hash", "")),
         )
 
     final_check = evaluate

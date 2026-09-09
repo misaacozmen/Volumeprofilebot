@@ -237,6 +237,16 @@ class StrategyHealth:
         self.transition(StrategyHealthState.DISABLED, reason=reason)
         return self._record(HealthDecision(self.state, reason or "OPERATOR_DISABLED"))
 
+    def reconcile_decay(self, *, owned_positions: int, owned_pending_orders: int) -> HealthDecision:
+        if self.state != StrategyHealthState.DECAYED:
+            raise StrategyHealthError("only a DECAYED strategy can reconcile to DISABLED")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (owned_positions, owned_pending_orders)):
+            raise StrategyHealthError("owned broker exposure counts are invalid")
+        if owned_positions or owned_pending_orders:
+            return self._record(HealthDecision(self.state, "OWNED_EXPOSURE_RECONCILIATION_PENDING"))
+        self.transition(StrategyHealthState.DISABLED)
+        return self._record(HealthDecision(self.state, "DECAYED_EXPOSURE_FULLY_RECONCILED"))
+
     def allows_new_position(self) -> bool:
         return self.state in {StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING}
 
@@ -290,6 +300,17 @@ class StrategyHealth:
                     updated_at_utc TEXT NOT NULL
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS broker_terminal_deals (
+                    deal_id TEXT PRIMARY KEY, first_seen_at_utc TEXT NOT NULL
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS strategy_health_cursor (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_deal_id TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL
+                )"""
+            )
             metrics = {
                 "closed_fills": self.closed_fills,
                 "valid_sessions": self.valid_sessions,
@@ -299,6 +320,15 @@ class StrategyHealth:
                 "session_ids": list(self.session_ids),
             }
             connection.execute("BEGIN IMMEDIATE")
+            persisted_ids = {str(row[0]) for row in connection.execute("SELECT deal_id FROM broker_terminal_deals")}
+            current_ids = set(self.broker_deal_ids)
+            if not persisted_ids.issubset(current_ids):
+                raise StrategyHealthError("append-only broker deal set lost persisted facts")
+            observed_at = datetime.now(timezone.utc).isoformat()
+            connection.executemany(
+                "INSERT OR IGNORE INTO broker_terminal_deals(deal_id,first_seen_at_utc) VALUES(?,?)",
+                ((deal_id, observed_at) for deal_id in self.broker_deal_ids),
+            )
             connection.execute(
                 """INSERT INTO strategy_health_state(singleton,state,baseline_candidate_hash,baseline_json,metrics_json,updated_at_utc)
                    VALUES(1,?,?,?,?,?)
@@ -306,6 +336,12 @@ class StrategyHealth:
                    baseline_candidate_hash=excluded.baseline_candidate_hash, baseline_json=excluded.baseline_json,
                    metrics_json=excluded.metrics_json, updated_at_utc=excluded.updated_at_utc""",
                 (self.state, self.baseline.candidate_hash, json.dumps(asdict(self.baseline), sort_keys=True, separators=(",", ":")), json.dumps(metrics, sort_keys=True, separators=(",", ":")), datetime.now(timezone.utc).isoformat()),
+            )
+            connection.execute(
+                """INSERT INTO strategy_health_cursor(singleton,last_deal_id,updated_at_utc) VALUES(1,?,?)
+                   ON CONFLICT(singleton) DO UPDATE SET last_deal_id=excluded.last_deal_id,
+                   updated_at_utc=excluded.updated_at_utc""",
+                (self.broker_deal_ids[-1] if self.broker_deal_ids else "", observed_at),
             )
             connection.commit()
         except Exception:
@@ -329,6 +365,8 @@ class StrategyHealth:
             row = connection.execute(
                 "SELECT state,baseline_candidate_hash,baseline_json,metrics_json FROM strategy_health_state WHERE singleton=1"
             ).fetchone()
+            durable_deal_ids = {str(item[0]) for item in connection.execute("SELECT deal_id FROM broker_terminal_deals")}
+            cursor = connection.execute("SELECT last_deal_id FROM strategy_health_cursor WHERE singleton=1").fetchone()
         except sqlite3.Error as exc:
             raise StrategyHealthError("canonical strategy-health state is missing") from exc
         finally:
@@ -357,6 +395,8 @@ class StrategyHealth:
             raise StrategyHealthError("canonical strategy-health metrics are corrupt") from exc
         if health.closed_fills != len(set(health.broker_deal_ids)) or health.valid_sessions != len(set(health.session_ids)):
             raise StrategyHealthError("canonical strategy-health counters are not derived from unique broker facts")
+        if durable_deal_ids != set(health.broker_deal_ids) or cursor is None or (health.broker_deal_ids and str(cursor[0]) != health.broker_deal_ids[-1]):
+            raise StrategyHealthError("canonical strategy-health cursor/deal set is corrupt")
         if not all(math.isfinite(value) for value in (health.rolling_net_r, health.drawdown_r)):
             raise StrategyHealthError("canonical strategy-health metrics are non-finite")
         return health

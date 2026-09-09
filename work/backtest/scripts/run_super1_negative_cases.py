@@ -429,7 +429,7 @@ def invoke(executor: str, case_root: Path, nodeid: str, run_id: str, output_name
         argv = [python, "-m", "pytest", "-q", test_nodeid or nodeid]
     else:
         argv = [python, "scripts/run_super1_run010_evidence.py", "--output-base", str(case_root / f"publication-base-{safe_name(output_name)}"), "--publication-test-case", nodeid.rsplit("[", 1)[-1].rstrip("]")]
-    environment = os.environ.copy()
+    environment = environment_snapshot()
     environment["SUPER1_NEGATIVE_PHASE"] = phase
     if executor == "pytest_plugin_session":
         environment["PYTHONPATH"] = str(ROOT / "scripts") + os.pathsep + environment.get("PYTHONPATH", "")
@@ -568,3 +568,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import environment_snapshot

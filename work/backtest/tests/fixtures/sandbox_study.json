@@ -1,0 +1,13 @@
+{
+  "seed": 7,
+  "symbol": "DUKASCOPY_USATECHIDXUSD",
+  "timeframe": "5m",
+  "search_space": {"reward_r": [2.0, 3.0]},
+  "train_sessions": 30,
+  "oos_sessions": 10,
+  "step_sessions": 10,
+  "anchored": true,
+  "max_evals": 2,
+  "minimum_closed_trades": 1,
+  "objective_metric": "daily_r_sharpe_rf0"
+}

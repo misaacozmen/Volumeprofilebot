@@ -73,6 +73,9 @@ class BrokerFactsBuilder:
         mutex: Callable[[], Any] | None = None,
         contract_resolver: Callable[[str], InstrumentContract] | None = None,
         deal_out_values: set[Any] | None = None,
+        deal_in_values: set[Any] | None = None,
+        deal_inout_values: set[Any] | None = None,
+        deal_out_by_values: set[Any] | None = None,
     ) -> None:
         self.read = read
         self.order_calc_profit = order_calc_profit
@@ -84,6 +87,9 @@ class BrokerFactsBuilder:
         self.mutex = mutex or (lambda: nullcontext())
         self.contract_resolver = contract_resolver
         self.deal_out_values = deal_out_values or {1, "1", "OUT", "DEAL_ENTRY_OUT"}
+        self.deal_in_values = deal_in_values or {0, "0", "IN", "DEAL_ENTRY_IN"}
+        self.deal_inout_values = deal_inout_values or {2, "2", "INOUT", "DEAL_ENTRY_INOUT"}
+        self.deal_out_by_values = deal_out_by_values or {3, "3", "OUT_BY", "DEAL_ENTRY_OUT_BY"}
 
     def _collection(self, operation: str, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
         value = self.read(operation, *args, **kwargs)
@@ -101,7 +107,11 @@ class BrokerFactsBuilder:
             if not deal_id or deal_id in seen:
                 raise BrokerFactsError("strategy broker deals contain a missing or duplicate deal ID")
             seen.add(deal_id)
-            if deal.get("entry") not in self.deal_out_values:
+            entry = deal.get("entry")
+            known = self.deal_in_values | self.deal_out_values | self.deal_inout_values | self.deal_out_by_values
+            if entry not in known:
+                raise BrokerFactsError(f"strategy deal {deal_id} has an unknown entry type")
+            if entry not in self.deal_out_values | self.deal_inout_values | self.deal_out_by_values:
                 continue
             position_id = str(deal.get("position_id") or "").strip()
             if not position_id:
@@ -175,6 +185,7 @@ class BrokerFactsBuilder:
         deals_start: datetime,
         deals_end: datetime,
         approval: bool | None = None,
+        policy_hash: str = "",
     ) -> BrokerSnapshot:
         current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
         with self.mutex():
@@ -196,6 +207,8 @@ class BrokerFactsBuilder:
             pending = tuple(_row(item) for item in pending_raw)
             deals = tuple(_row(item) for item in deals_raw)
             owned_deals = tuple(item for item in deals if self.strategy_matcher(item))
+            owned_positions = tuple(item for item in positions if self.strategy_matcher(item))
+            owned_pending = tuple(item for item in pending if self.strategy_matcher(item))
             daily_realized_r = self._daily_realized_r(owned_deals)
             total_stop_risk = self._stop_risk(positions + pending, contract)
             pair_exposure_percent, concentration_percent = self._exposure_metrics(positions + pending, contract, equity)
@@ -205,6 +218,41 @@ class BrokerFactsBuilder:
             health = self.strategy_health_reader()
             if not isinstance(health, str) or health not in {"UNKNOWN", "WARMUP", "ACTIVE", "MONITORING", "DECAYED", "DISABLED"}:
                 raise BrokerFactsError("canonical strategy health state is unknown")
+            def instrument_id(row: Mapping[str, Any]) -> str:
+                symbol = str(row.get("symbol") or "")
+                resolved = contract if symbol == contract.broker_symbol else (self.contract_resolver(symbol) if self.contract_resolver else None)
+                if resolved is None:
+                    raise BrokerFactsError(f"no signed contract for owned symbol {symbol}")
+                return resolved.instrument_id
+
+            entry_positions: dict[str, str] = {}
+            owned_deal_ids: list[str] = []
+            last_entry: datetime | None = None
+            last_loss: datetime | None = None
+            for deal in owned_deals:
+                deal_id = str(deal.get("deal_id") or deal.get("ticket") or "")
+                owned_deal_ids.append(deal_id)
+                entry = deal.get("entry")
+                position_id = str(deal.get("position_id") or "")
+                if entry in self.deal_in_values | self.deal_inout_values:
+                    if not position_id:
+                        raise BrokerFactsError("strategy entry deal has no position ID")
+                    entry_positions[position_id] = instrument_id(deal)
+                raw_time = deal.get("time_msc", deal.get("time"))
+                if raw_time is not None:
+                    timestamp = datetime.fromtimestamp(float(raw_time) / (1000.0 if "time_msc" in deal else 1.0), tz=timezone.utc)
+                    if entry in self.deal_in_values | self.deal_inout_values and (last_entry is None or timestamp > last_entry):
+                        last_entry = timestamp
+                    if entry in self.deal_out_values | self.deal_inout_values | self.deal_out_by_values:
+                        pnl = sum(_number(deal[field], f"deal {deal_id} {field}") for field in ("profit", "commission", "swap", "fee"))
+                        if pnl < 0 and (last_loss is None or timestamp > last_loss):
+                            last_loss = timestamp
+            entry_counts: dict[str, int] = {}
+            for value in entry_positions.values(): entry_counts[value] = entry_counts.get(value, 0) + 1
+            position_counts: dict[str, int] = {}
+            pending_counts: dict[str, int] = {}
+            for row in owned_positions: position_counts[instrument_id(row)] = position_counts.get(instrument_id(row), 0) + 1
+            for row in owned_pending: pending_counts[instrument_id(row)] = pending_counts.get(instrument_id(row), 0) + 1
             payload = {
                 "as_of": current.isoformat(), "account_login": account_login, "equity": equity,
                 "margin_free": margin_free, "positions": positions, "pending_orders": pending,
@@ -214,6 +262,12 @@ class BrokerFactsBuilder:
                 "leverage": leverage,
                 "pair_exposure_percent": pair_exposure_percent,
                 "concentration_percent": concentration_percent,
+                "total_entry_count": len(entry_positions), "entry_counts_by_instrument": entry_counts,
+                "open_position_counts_by_instrument": position_counts, "pending_order_counts_by_instrument": pending_counts,
+                "last_accepted_entry_at": None if last_entry is None else last_entry.isoformat(),
+                "last_terminal_loss_at": None if last_loss is None else last_loss.isoformat(),
+                "owned_deal_ids": owned_deal_ids, "policy_hash": policy_hash,
+                "instrument_contract_hash": contract.contract_hash,
             }
             return BrokerSnapshot(
                 current, equity, margin_free, open_positions=positions, pending_orders=pending,
@@ -224,4 +278,9 @@ class BrokerFactsBuilder:
                 concentration_percent=concentration_percent,
                 snapshot_hash=hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode("utf-8")).hexdigest(),
                 order_calc_profit=self.order_calc_profit, order_calc_margin=self.order_calc_margin,
+                total_entry_count=len(entry_positions), entry_counts_by_instrument=entry_counts,
+                open_position_counts_by_instrument=position_counts, pending_order_counts_by_instrument=pending_counts,
+                last_accepted_entry_at=last_entry, last_terminal_loss_at=last_loss,
+                owned_deal_ids=tuple(owned_deal_ids), policy_hash=policy_hash,
+                instrument_contract_hash=contract.contract_hash,
             )

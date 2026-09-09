@@ -21,6 +21,7 @@ import pandas as pd
 
 from backtest.live.settings import environment_value
 from backtest.live.halt import HaltController, HaltError
+from backtest.live.retry import CircuitBreaker, NonRetryableReadError, RetryPolicy, RetryableReadError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -307,28 +308,24 @@ class CapitalDemoClient:
         self.api_password = secrets["CAPITAL_API_PASSWORD"]
         self.cst = ""
         self.security_token = ""
+        self._read_policy = RetryPolicy(breaker=CircuitBreaker())
 
     def login(self) -> dict[str, Any]:
-        request = Request(
-            f"{self.base_url}/session",
-            data=json.dumps(
-                {
-                    "identifier": self.identifier,
-                    "password": self.api_password,
-                    "encryptedPassword": False,
-                }
-            ).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json", "X-CAP-API-KEY": self.api_key},
-        )
-        status, headers, payload = self._open(request)
-        if status != 200:
-            raise CapitalApiError(f"Capital demo login returned HTTP {status}.")
-        self.cst = headers.get("CST", "")
-        self.security_token = headers.get("X-SECURITY-TOKEN", "")
-        if not self.cst or not self.security_token:
-            raise CapitalApiError("Capital demo login did not return session tokens.")
-        return payload
+        def login_once() -> dict[str, Any]:
+            request = Request(
+                f"{self.base_url}/session",
+                data=json.dumps({"identifier": self.identifier, "password": self.api_password, "encryptedPassword": False}).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json", "X-CAP-API-KEY": self.api_key},
+            )
+            status, headers, payload = self._open(request)
+            if status != 200:
+                raise NonRetryableReadError("Capital login returned an unexpected status")
+            cst, token = headers.get("CST", ""), headers.get("X-SECURITY-TOKEN", "")
+            if not cst or not token:
+                raise NonRetryableReadError("Capital login response schema is incomplete")
+            self.cst, self.security_token = cst, token
+            return payload
+        return self._read_policy.read(login_once)
 
     def get(self, endpoint: str, params: dict[str, object] | None = None) -> dict[str, Any]:
         if not self.cst:
@@ -339,21 +336,17 @@ class CapitalDemoClient:
             method="GET",
             headers={"CST": self.cst, "X-SECURITY-TOKEN": self.security_token},
         )
-        try:
-            status, _, payload = self._open(request)
-        except CapitalApiError as exc:
-            if "HTTP 401" not in str(exc):
-                raise
-            self.login()
-            request = Request(
+        def read_once() -> dict[str, Any]:
+            current = Request(
                 f"{self.base_url}/{endpoint.lstrip('/')}{query}",
                 method="GET",
                 headers={"CST": self.cst, "X-SECURITY-TOKEN": self.security_token},
             )
-            status, _, payload = self._open(request)
-        if status != 200:
-            raise CapitalApiError(f"Capital demo GET {endpoint} returned HTTP {status}.")
-        return payload
+            status, _, payload = self._open(current)
+            if status != 200:
+                raise NonRetryableReadError("Capital GET returned an unexpected status")
+            return payload
+        return self._read_policy.read(read_once, refresh_session=self.login)
 
     def prices(
         self,
@@ -383,10 +376,14 @@ class CapitalDemoClient:
                 payload = json.loads(raw) if raw else {}
                 return int(response.status), response.headers, payload
         except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise CapitalApiError(f"Capital API HTTP {exc.code}: {body[:300]}") from exc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            if exc.code == 429 or exc.code == 401 or 500 <= exc.code <= 599:
+                raise RetryableReadError("Capital API retryable HTTP response", status_code=exc.code, retry_after=retry_after) from exc
+            raise NonRetryableReadError(f"Capital API non-retryable HTTP {exc.code}") from exc
         except (URLError, TimeoutError) as exc:
-            raise CapitalApiError(f"Capital API connection error: {exc}") from exc
+            raise RetryableReadError("Capital API connection failure") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NonRetryableReadError("Capital API response schema is invalid") from exc
 
 
 class BarStore:

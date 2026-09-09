@@ -17,7 +17,7 @@ from candidate_artifact import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "research_candidates" / "calibration" / "first30_thresholds_pre2025_v1.json"
+ARTIFACT = ROOT / "research_candidates" / "calibration" / "first30_thresholds_pre2025_v2.json"
 CUTOFF_EXCLUSIVE = "2025-01-01"
 QUANTILES = (0.60, 0.70)
 
@@ -83,7 +83,7 @@ def create_artifact(
     payload = seal_artifact(
         {
             "artifact_type": "first30_thresholds",
-            "artifact_id": "first30_thresholds_pre2025_v1",
+            "artifact_id": "first30_thresholds_pre2025_v2",
             "calibration": {
                 "cutoff_exclusive": CUTOFF_EXCLUSIVE,
                 "quantiles": list(QUANTILES),

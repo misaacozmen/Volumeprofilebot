@@ -15,11 +15,11 @@ def main() -> None:
         import MetaTrader5 as mt5
     except ImportError as exc:
         raise SystemExit("MetaTrader5 Python package is not installed.") from exc
-    password = os.environ.get("XM_MT5_READ_ONLY_PASSWORD") or getpass.getpass(
+    password = environment_value("XM_MT5_READ_ONLY_PASSWORD") or getpass.getpass(
         "XM salt-okunur MetaTrader parolasi: "
     )
-    terminal_path = os.environ.get("XM_MT5_TERMINAL_PATH", "").strip()
-    server_override = os.environ.get("XM_MT5_SERVER", "").strip()
+    terminal_path = environment_value("XM_MT5_TERMINAL_PATH").strip()
+    server_override = environment_value("XM_MT5_SERVER").strip()
     servers = [server_override] if server_override else DEFAULT_SERVERS
     for server in servers:
         kwargs = {
@@ -40,3 +40,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+from backtest.live.settings import environment_value

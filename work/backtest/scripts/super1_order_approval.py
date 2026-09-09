@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("proposal_id")
     approve = sub.add_parser("approve")
     approve.add_argument("proposal_id")
+    approve.add_argument("--proposal-hash", required=True)
+    approve.add_argument("--wire-request-hash", required=True)
     reject = sub.add_parser("reject")
     reject.add_argument("proposal_id")
     reject.add_argument("--reason", default="")
@@ -54,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
         record = store.show_for_proposal(args.proposal_id)
         value = {field: getattr(record, field) for field in record.__slots__}
     elif args.command == "approve":
+        staged = store.get_proposal(args.proposal_id)
+        if staged is None or staged["proposal_hash"] != args.proposal_hash:
+            raise RuntimeError("Exact staged proposal hash does not match.")
+        proposal = staged["proposal"]
+        if str(proposal.get("wire_request_hash") or "") != args.wire_request_hash:
+            raise RuntimeError("Exact staged wire-request hash does not match.")
         config, _, _ = load_runtime_config(APP_ROOT)
         sid = current_process_sid()
         if sid != str(config["authorized_operator_sid"]):
@@ -68,7 +76,14 @@ def main(argv: list[str] | None = None) -> int:
         candidate_path = APP_ROOT / str(config["candidate_path"])
         candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
         record = store.approve(args.proposal_id, lease=lease, operator_sid=sid, release_id=str(lease["release_id"]), candidate_hash=str(candidate.get("artifact_sha256") or candidate.get("candidate_artifact_sha256") or candidate.get("candidate_hash") or ""))
-        value = {field: getattr(record, field) for field in record.__slots__}
+        wire = proposal.get("wire_request") or {}
+        value = {
+            **{field: getattr(record, field) for field in record.__slots__},
+            "operator_preview": {
+                key: proposal.get(key, wire.get(key))
+                for key in ("symbol", "direction", "entry", "sl", "tp", "volume", "risk_cash", "risk_r", "expires_at", "policy_hash")
+            },
+        }
     else:
         record = store.reject(args.proposal_id, reason=args.reason)
         value = {field: getattr(record, field) for field in record.__slots__}

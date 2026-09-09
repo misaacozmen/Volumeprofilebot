@@ -33,11 +33,20 @@ def test_mt5_write_port_claims_durable_order_once_and_blocks_restart_replay(tmp_
     store.connection.execute("UPDATE approvals SET state='CONSUMED' WHERE approval_id=?", (approval.approval_id,))
     store.close()
     ledger = AuditLedger(db, campaign_id="campaign", account_key="account")
+    ledger.append(
+        "RISK_APPROVED", entity_type="order", entity_id="order-1",
+        payload={"request_hash": request_hash, "snapshot_hash": "1" * 64, "policy_hash": "2" * 64,
+                 "expires_at": (now + timedelta(seconds=30)).isoformat()},
+    )
     ledger.append("SEND_ARMED", entity_type="order", entity_id="order-1", payload={"request_hash": request_hash})
     connection = sqlite3.connect(db)
     connection.execute("INSERT INTO order_state_records(order_id,state,request_hash,updated_at_utc) VALUES(?,?,?,?)", ("order-1", "SEND_ARMED", request_hash, now.isoformat()))
     port = Mt5WritePort(None, db)
-    port.arm_in_transaction(connection, order_id="order-1", request=request, request_hash=request_hash, approval_id=approval.approval_id)
+    port.arm_in_transaction(
+        connection, order_id="order-1", request=request, request_hash=request_hash,
+        approval_id=approval.approval_id, final_snapshot_hash="1" * 64,
+        final_policy_hash="2" * 64, final_risk_expires_at=(now + timedelta(seconds=30)).isoformat(),
+    )
     connection.commit()
     connection.close()
 

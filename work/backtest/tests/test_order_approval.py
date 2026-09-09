@@ -101,4 +101,22 @@ def test_proposal_is_single_lifecycle_and_consumption_is_replay_safe(tmp_path) -
         )
     row = store.connection.execute("SELECT state FROM staged_proposals WHERE proposal_id='p1'").fetchone()
     assert row == ("CONSUMED",)
+    states = [row[0] for row in store.connection.execute("SELECT state FROM approval_state_outbox ORDER BY rowid")]
+    assert states == ["STAGED", "APPROVED", "CONSUMED"]
     store.close()
+
+
+def test_expired_consume_is_persisted_with_audit_in_same_store(tmp_path) -> None:
+    store = ApprovalStore(tmp_path / "approval.sqlite3", now=lambda: NOW)
+    staged = {**proposal(), "approval_type": "market"}
+    store.stage(staged, campaign_id="c1", account_key="a1", release_id="r1", candidate_hash="c1", approval_type="market")
+    approval = store.approve("p1", lease=LEASE, operator_sid="S-1-5-19", release_id="r1", candidate_hash="c1")
+    with pytest.raises(ApprovalError, match="expired"):
+        store.consume_and_arm(
+            approval.approval_id, proposal=staged, campaign_id="c1", account_key="a1",
+            release_id="r1", candidate_hash="c1", lease_nonce="n1", operator_sid="S-1-5-19",
+            order_id="p1", request=staged["wire_request"], arm=lambda *_: None,
+            now=NOW + timedelta(seconds=31),
+        )
+    assert store.show(approval.approval_id).state == "EXPIRED"
+    assert store.connection.execute("SELECT state FROM approval_state_outbox ORDER BY rowid DESC LIMIT 1").fetchone() == ("EXPIRED",)

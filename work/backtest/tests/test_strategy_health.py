@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from backtest.live.strategy_health import LockedOOSBaseline, StrategyHealth, StrategyHealthError, StrategyHealthState
 
@@ -42,3 +43,19 @@ def test_insufficient_baseline_blocks_promotion_and_severe_dd_decays_once() -> N
     health = StrategyHealth(baseline=baseline())
     health.activate(broker_deals=deals(60))
     assert health.evaluate(broker_deals=deals(60, r=-1.0)).state == StrategyHealthState.DECAYED
+
+
+def test_decayed_disables_only_after_owned_exposure_is_flat() -> None:
+    health = StrategyHealth(StrategyHealthState.DECAYED, baseline=baseline())
+    assert health.reconcile_decay(owned_positions=1, owned_pending_orders=0).state == StrategyHealthState.DECAYED
+    assert health.reconcile_decay(owned_positions=0, owned_pending_orders=0).state == StrategyHealthState.DISABLED
+
+
+def test_canonical_deal_set_is_append_only(tmp_path: Path) -> None:
+    path = tmp_path / "health.sqlite3"
+    health = StrategyHealth(baseline=baseline())
+    health.activate(broker_deals=deals(2))
+    health.persist_canonical(path)
+    health.activate(broker_deals=deals(1))
+    with pytest.raises(StrategyHealthError, match="append-only"):
+        health.persist_canonical(path)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -154,6 +154,7 @@ class ProductionOrderFlow:
         self._audit_state(
             proposal, state.state, campaign_id=campaign_id, account_key=account_key,
             payload={"snapshot_hash": precheck.snapshot_hash, "risk_cash": planned.risk_cash, "stop_risk": planned.stop_risk, "volume": planned.volume},
+            event_type="RISK_PRECHECK_APPROVED",
         )
         self._event("STAGED")
         staged_proposal = {
@@ -242,6 +243,9 @@ class ProductionOrderFlow:
                     request=wire_request,
                     request_hash=_request_digest,
                     approval_id=approval_id,
+                    final_snapshot_hash=order.snapshot_hash,
+                    final_policy_hash=order.policy_hash,
+                    final_risk_expires_at=(order.approved_at + timedelta(seconds=30)).isoformat(),
                 )
             else:
                 self._persist_state(
@@ -249,6 +253,20 @@ class ProductionOrderFlow:
                     _request_digest, dict(wire_request), approval_id,
                 )
             if same_db:
+                final_expiry = (order.approved_at + timedelta(seconds=30)).isoformat()
+                d.audit_ledger.append_in_transaction(
+                    "RISK_APPROVED",
+                    entity_type="order",
+                    entity_id=proposal.proposal_id,
+                    campaign_id=campaign_id,
+                    account_key=account_key,
+                    payload={
+                        "snapshot_hash": order.snapshot_hash, "policy_hash": order.policy_hash,
+                        "request_hash": order.request_hash, "checked_at": order.approved_at.isoformat(),
+                        "expires_at": final_expiry,
+                    },
+                    connection=connection,
+                )
                 d.audit_ledger.append_in_transaction(
                     "SEND_ARMED",
                     entity_type="order",
