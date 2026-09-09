@@ -149,7 +149,7 @@ class Mt5WritePort:
         finally:
             connection.close()
 
-    def _arm_authorized_operation(
+    def arm_operator_operation(
         self,
         operation_id: str,
         *,

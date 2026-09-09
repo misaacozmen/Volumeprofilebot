@@ -32,6 +32,7 @@ CAPITAL_SPEC.loader.exec_module(CAPITAL_MODULE)
 def test_phase0_legacy_send_armed_path_is_blocked_without_durable_write_adapter(tmp_path, monkeypatch) -> None:
     mt5 = FakeOrderMt5()
     client = demo_client(mt5)
+    del client._write_adapter
     original_send = mt5.order_send
     monkeypatch.setattr(
         mt5,
@@ -47,6 +48,7 @@ def test_phase0_legacy_send_armed_path_is_blocked_without_durable_write_adapter(
 
     monkeypatch.setattr(mt5, "order_send", original_send)
     restarted = demo_client(mt5)
+    del restarted._write_adapter
     result = place_candidate(restarted, tmp_path)
     assert result["state"] == "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED"
     assert mt5.pending_send_count == 0

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import importlib.util
 import json
 import multiprocessing
 from pathlib import Path
 import sqlite3
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 
@@ -15,6 +17,8 @@ import pandas as pd
 import pytest
 
 from v08_helpers import checkpoint_if_enabled, record_if_enabled
+from backtest.live.approval import ApprovalStore
+from backtest.live.execution import Mt5WritePort
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1062,6 +1066,61 @@ def test_live_pair_cap_stays_latched_after_intraday_breach() -> None:
     assert result["state"] == "SUPPRESSED_DAILY_CAP"
 
 
+class _CanonicalTestWriteAdapter:
+    """Test-only adapter that exercises the same durable SQLite write port."""
+
+    def __init__(self, mt5: object) -> None:
+        self._temp = tempfile.TemporaryDirectory(prefix="otobt-test-write-")
+        self.db_path = Path(self._temp.name) / "orders.sqlite3"
+        store = ApprovalStore(self.db_path)
+        store.close()
+        self.port = Mt5WritePort(mt5, self.db_path)
+
+    def send(self, request: dict[str, object]) -> object:
+        request_json = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        request_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+        operation_id = "test-" + request_hash
+        approval_id = "approval-" + request_hash
+        action = int(request.get("action", -1))
+        operation_type = "CANCEL" if action == 8 else ("CLOSE" if "position" in request else "ENTRY")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                """INSERT OR IGNORE INTO approvals
+                   (approval_id,state,lease_id,lease_nonce,operator_sid,campaign_id,account_key,
+                    proposal_id,proposal_hash,approval_type,issued_at_utc,expires_at_utc,
+                    release_id,candidate_hash,reason,wire_request_hash)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (approval_id, "CONSUMED", "test-lease", "test-nonce", "S-1-5-21-2",
+                 "test-campaign", "318413815", operation_id, request_hash, operation_type,
+                 "2026-01-01T00:00:00+00:00", "2099-01-01T00:00:00+00:00",
+                 "test-release", "f" * 64, "", request_hash),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.port.arm_operator_operation(
+            operation_id,
+            operation_type=operation_type,
+            request=request,
+            approval_id=approval_id,
+            campaign_id="test-campaign",
+            account_key="318413815",
+        )
+        response = self.port.send(operation_id)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "UPDATE order_state_records SET state='WRITE_ACKNOWLEDGED',updated_at_utc=datetime('now') "
+                "WHERE order_id=? AND state='WRITE_ATTEMPTED'",
+                (operation_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return response
+
+
 def demo_client(fake_mt5: FakeTradeMt5) -> object:
     client = object.__new__(MODULE.XmMt5DemoOrderClient)
     client.mt5 = fake_mt5
@@ -1075,6 +1134,7 @@ def demo_client(fake_mt5: FakeTradeMt5) -> object:
     client.demo_verified = False
     client.account = None
     client.terminal = None
+    client._write_adapter = _CanonicalTestWriteAdapter(fake_mt5)
     return client
 
 

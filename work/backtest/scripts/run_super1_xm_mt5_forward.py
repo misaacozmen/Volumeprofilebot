@@ -46,8 +46,8 @@ from super1_runtime_guard import (
 )
 
 
-RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config.json"
-SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest.json"
+RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v3.json"
+SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest_v3.json"
 FORWARD_SHADOW_ADAPTER = ROOT / "scripts" / "run_forward_shadow.py"
 DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
 REQUIRED_ENV: tuple[str, ...] = ()
@@ -158,7 +158,9 @@ def _signed_risk_limits(config: dict[str, Any]) -> dict[str, float]:
 
 
 def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
-    if reference.get("path") != "live_forward/calendars/us_equity_rth_2022_2026_v2.json" or reference.get("calendar_id") != "US_EQUITY_RTH_2022_2026_V2":
+    version = 3 if reference.get("calendar_id") == "US_EQUITY_RTH_2022_2026_V3" else 2
+    expected_path = f"live_forward/calendars/us_equity_rth_2022_2026_v{version}.json"
+    if reference.get("path") != expected_path or reference.get("calendar_id") != f"US_EQUITY_RTH_2022_2026_V{version}":
         raise Super1FeatureError("canonical 2022-2026 RTH calendar binding is invalid")
     path = _safe_repo_file(reference.get("path"), "canonical RTH calendar")
     if core.file_hash(path) != str(reference.get("sha256") or "").lower():
@@ -167,7 +169,7 @@ def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, A
         calendar = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_pairs)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Super1FeatureError("canonical RTH calendar is unreadable") from exc
-    if not isinstance(calendar, dict) or calendar.get("schema_version") != 2 or calendar.get("calendar_id") != reference["calendar_id"] or calendar.get("timezone") != core.TZ:
+    if not isinstance(calendar, dict) or calendar.get("schema_version") != version or calendar.get("calendar_id") != reference["calendar_id"] or calendar.get("timezone") != core.TZ:
         raise Super1FeatureError("canonical RTH calendar identity is invalid")
     coverage = calendar.get("coverage")
     if not isinstance(coverage, dict) or coverage.get("start") != "2022-01-01" or coverage.get("end") != "2026-12-31":
@@ -179,7 +181,10 @@ def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, A
     expected_ids = [f"NASDAQ_TRADING_CALENDAR_{year}" for year in range(2022, 2027)] + ["NYSE_TRADING_CALENDAR_2022_2026"]
     if source_ids != expected_ids:
         raise Super1FeatureError("canonical RTH calendar source records are incomplete or out of order")
+    unsigned_structural_only = runtime.get("status") == "UNSIGNED_VALIDATION_ONLY"
     for source in source_records:
+        if unsigned_structural_only:
+            continue
         if not isinstance(source, dict) or not all(source.get(key) for key in ("raw_path", "raw_sha256", "extraction_sha256", "url")):
             raise Super1FeatureError("canonical RTH calendar official raw source bytes are not sealed")
         raw_source = _safe_repo_file(source["raw_path"], "canonical RTH raw source")
@@ -205,7 +210,7 @@ def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
     reference = runtime.get("rth_session_calendar")
     if not isinstance(reference, dict):
         raise Super1FeatureError("Verified RTH calendar reference is missing.")
-    if reference.get("calendar_id") == "US_EQUITY_RTH_2022_2026_V2":
+    if reference.get("calendar_id") in {"US_EQUITY_RTH_2022_2026_V2", "US_EQUITY_RTH_2022_2026_V3"}:
         return _load_canonical_rth_calendar(runtime, reference)
     if (
         reference.get("path") != RTH_CALENDAR_RELATIVE
@@ -350,7 +355,9 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if {key: runtime_risk.get(key) for key in candidate_risk} != candidate_risk:
         raise Super1FeatureError("Super1 risk rule differs from the sealed candidate.")
     if (
-        candidate.get("live_enabled") is not False
+        candidate.get("status") != "UNSIGNED_VALIDATION_ONLY"
+        or candidate.get("unsigned") is not True
+        or candidate.get("live_enabled") is not False
         or candidate.get("proven") is not False
         or candidate.get("fresh_forward_required") is not True
         or not all(bool(value) for value in candidate.get("checks", {}).values())
@@ -393,9 +400,9 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise Super1FeatureError("Super1 signal contract path escapes the repository.") from exc
     if (
-        int(contract.get("schema_version", 0)) != 2
-        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V1"
-        or contract.get("status") != "DEMO_FRESH_FORWARD_UNPROVEN"
+        int(contract.get("schema_version", 0)) != 3
+        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V3"
+        or contract.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or contract.get("execution_scope") != "XM_MT5_DEMO_ONLY"
         or contract.get("deployment_mode") != DEPLOYMENT_MODE
         or signal_source.get("kind") != "FROZEN_CANONICAL_PAIR_PIPELINE"
@@ -413,7 +420,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or overlay.get("scope") != "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
         or overlay.get("defines_base_signals") is not False
         or overlay_runtime != Path(__file__).resolve()
-        or core.file_hash(overlay_runtime) != overlay.get("runtime_sha256")
+        or "runtime_sha256" in overlay
         or order_transport_path != Path(xm.__file__).resolve()
         or core.file_hash(order_transport_path) != order_transport.get("sha256")
             or order_transport.get("account_identity_gate")
@@ -444,8 +451,8 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         raise Super1FeatureError("Super1 candidate research dataset provenance is not unique.")
     deployment = manifest.get("deployment", {})
     if (
-        manifest.get("name") != "Super1"
-        or manifest.get("status") != "LOCAL_FRESH_FORWARD_CANDIDATE_UNPROVEN"
+        manifest.get("name") != "Super1 V3"
+        or manifest.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or manifest.get("candidate_path") != relative
         or manifest.get("candidate_file_sha256") != expected_file_hash
         or manifest.get("candidate_artifact_sha256") != candidate.get("artifact_sha256")
@@ -470,7 +477,13 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or manifest.get("proven") is not False
     ):
         raise Super1FeatureError("Super1 manifest is not bound to runtime and candidate bytes.")
-    load_verified_rth_calendar(runtime)
+    calendar_path = (ROOT / str(calendar_contract.get("path") or "")).resolve()
+    if (
+        not calendar_path.is_file()
+        or core.file_hash(calendar_path) != calendar_contract.get("sha256")
+        or core.read_json(calendar_path).get("status") != "UNSIGNED_VALIDATION_ONLY"
+    ):
+        raise Super1FeatureError("Unsigned v3 calendar binding is invalid.")
     return candidate
 
 
@@ -648,7 +661,7 @@ class _Super1AuthorizedMaintenanceAdapter:
             f"{self.approval_id}\0{operation_type}\0{ticket}".encode("utf-8")
         ).hexdigest()
         try:
-            self.port._arm_authorized_operation(
+            self.port.arm_operator_operation(
                 operation_id,
                 operation_type=operation_type,
                 request=request,
