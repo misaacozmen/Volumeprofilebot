@@ -34,6 +34,9 @@ from backtest.risk_xray import build_risk_xray, write_risk_xray
 
 
 DEFAULT_REPORT_DIR = ROOT / "outputs" / "reports" / "canonical_production_full_history_research"
+DEFAULT_GAP_INVENTORY = ROOT / "outputs" / "reports" / ".canonical_full_history_corrected_20260908_v2.h1dqbpdj" / "invalid_leg_days.csv"
+DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired"
+GAP_INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
 _ACTIVE_STAGING: Path | None = None
 
 
@@ -42,12 +45,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", default="2022-01-03")
     parser.add_argument("--end", default=None)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
+    parser.add_argument("--gap-inventory", type=Path, default=DEFAULT_GAP_INVENTORY)
+    parser.add_argument("--reacquired-root", type=Path, default=DEFAULT_REACQUIRED_ROOT)
     return parser.parse_args()
 
 
 def frame_hash(frame: pd.DataFrame) -> str:
     columns = [name for name in ("time", "open", "high", "low", "close", "volume") if name in frame]
     return stable_frame_hash(frame[columns])
+
+
+def reacquired_frame_hash(frame: pd.DataFrame) -> str:
+    canonical = frame[["time", "open", "high", "low", "close", "volume"]].copy()
+    canonical["time"] = canonical["time"].map(lambda value: pd.Timestamp(value).isoformat())
+    return sha256(canonical.to_csv(index=False, lineterminator="\n").encode("utf-8")).hexdigest()
 
 
 def contract_hash(
@@ -78,6 +89,67 @@ def period_frame(frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) ->
     local_start = (start - pd.Timedelta(days=21)).tz_localize("America/New_York")
     local_end = (end + pd.Timedelta(days=4)).tz_localize("America/New_York")
     return frame[(frame["time"] >= local_start) & (frame["time"] < local_end)].copy()
+
+
+def apply_verified_reacquisitions(
+    loaded: dict[tuple[str, str], pd.DataFrame],
+    inventory_path: Path,
+    reacquired_root: Path,
+) -> dict[tuple[str, str], pd.DataFrame]:
+    if sha256(inventory_path.read_bytes()).hexdigest() != GAP_INVENTORY_SHA256:
+        raise ValueError("invalid-leg inventory hash does not match the frozen source report")
+    inventory = pd.read_csv(inventory_path)
+    selected = inventory.loc[inventory["missing_intervals"].map(lambda value: bool(json.loads(value)))]
+    if selected.empty:
+        raise ValueError("frozen invalid-leg inventory contains no actual missing intervals")
+    result = {key: frame.copy() for key, frame in loaded.items()}
+    seen: set[tuple[str, str]] = set()
+    for row in selected.itertuples(index=False):
+        leg = str(row.leg)
+        date = str(row.date)
+        symbol, timeframe = comparison.SYMBOLS[leg]
+        marker = (date, leg)
+        if marker in seen:
+            raise ValueError(f"duplicate reacquisition target: {date}/{leg}")
+        seen.add(marker)
+        directory = reacquired_root / f"{date}_{leg}"
+        paths = sorted(directory.glob(f"*, {timeframe}_*.csv"))
+        if len(paths) != 1:
+            raise ValueError(f"expected exactly one reacquired dataset for {date}/{leg}")
+        path = paths[0]
+        manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (
+            manifest.get("provider") != "Dukascopy"
+            or manifest.get("side") != "BID"
+            or manifest.get("source_granularity") != "M1"
+            or manifest.get("resampling", {}).get("timeframe") != timeframe
+            or manifest.get("request_range") != {"start": date, "end_exclusive": (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")}
+        ):
+            raise ValueError(f"reacquisition manifest contract mismatch: {date}/{leg}")
+        for raw in manifest.get("raw_chunks", []):
+            raw_path = ROOT / str(raw["raw_path"])
+            if sha256(raw_path.read_bytes()).hexdigest() != raw["raw_sha256"]:
+                raise ValueError(f"raw reacquisition hash mismatch: {date}/{leg}")
+        fresh = filters.load_ohlcv([path]).frame
+        if reacquired_frame_hash(fresh) != manifest.get("derived_sha256"):
+            raise ValueError(f"derived reacquisition hash mismatch: {date}/{leg}")
+        fresh_dates = fresh["time"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
+        replacement = fresh.loc[fresh_dates == date]
+        if replacement.empty:
+            raise ValueError(f"reacquisition returned no bars for {date}/{leg}")
+        current = result[(symbol, timeframe)]
+        current_dates = current["time"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
+        result[(symbol, timeframe)] = (
+            pd.concat([current.loc[current_dates != date], replacement], ignore_index=True)
+            .sort_values("time", kind="mergesort")
+            .drop_duplicates("time", keep="last")
+            .reset_index(drop=True)
+        )
+    expected = {(str(row.date), str(row.leg)) for row in selected.itertuples(index=False)}
+    if seen != expected:
+        raise ValueError("not every actual invalid leg-day was reacquired")
+    return result
 
 
 def checkpoint_paths(report_dir: Path, year: int) -> dict[str, Path]:
@@ -320,7 +392,9 @@ def _main_impl() -> None:
     report_parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{report_dir.name}.", dir=report_parent))
     _ACTIVE_STAGING = staging_dir
-    loaded = filters.load_data()
+    loaded = apply_verified_reacquisitions(
+        filters.load_data(), args.gap_inventory.resolve(), args.reacquired_root.resolve()
+    )
     configs = comparison.build_active_configs(loaded)
     state_config = ManualStateConfig()
     available_end = min(pd.Timestamp(frame["time"].max()).tz_localize(None).normalize() for frame in loaded.values())

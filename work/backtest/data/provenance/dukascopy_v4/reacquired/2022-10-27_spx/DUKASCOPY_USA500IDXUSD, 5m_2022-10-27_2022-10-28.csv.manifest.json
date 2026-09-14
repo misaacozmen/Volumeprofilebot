@@ -1,0 +1,47 @@
+{
+  "derived_sha256": "146aca26aabe80dca2752cf81c28d7077e6a2e9f7b23fc8439ef7ca0cf539f3e",
+  "downloader": {
+    "integrity": "sha512-o2Co/asUD/TXFNhblJUYkRseHMt/uvFrnhzOKWezLuiFJqbl4Zn2oJGL4/W+PY1b2YsI11+9+TO40qNQBAj8/w==",
+    "lockfile_sha256": "74506876532b3d1caf4be740fc42c79e9eb529518770afd05c40a0463c732dee",
+    "package": "dukascopy-node",
+    "version": "1.50.0"
+  },
+  "duplicates": 0,
+  "failed_attempts": [],
+  "gaps_over_one_minute": 2,
+  "instrument": "usa500idxusd",
+  "normalization_sha256": "9e7e37dfe0906ab89905edaba09f24e0c30367f765a2966ffb98a8856bf45732",
+  "output_path": "data/provenance/dukascopy_v4/reacquired/2022-10-27_spx/DUKASCOPY_USA500IDXUSD, 5m_2022-10-27_2022-10-28.csv",
+  "parent_normalization_sha256": "9e7e37dfe0906ab89905edaba09f24e0c30367f765a2966ffb98a8856bf45732",
+  "provider": "Dukascopy",
+  "raw_chunks": [
+    {
+      "instrument": "usa500idxusd",
+      "price_type": "BID",
+      "raw_byte_count": 214877,
+      "raw_path": "data/provenance/dukascopy_v4/raw/59/592d7eca3c99e87d9e1752950d634c9e80f44e0fee2ed571d10f963d933f0dad.csv",
+      "raw_sha256": "592d7eca3c99e87d9e1752950d634c9e80f44e0fee2ed571d10f963d933f0dad",
+      "request_from": "2022-10-26",
+      "request_to": "2022-10-29"
+    }
+  ],
+  "raw_row_bounds": {
+    "first": "2022-10-27T00:00:00-04:00",
+    "last": "2022-10-27T23:59:00-04:00",
+    "rows": 1305
+  },
+  "request_range": {
+    "end_exclusive": "2022-10-28",
+    "start": "2022-10-27"
+  },
+  "resampling": {
+    "algorithm": "pandas left-closed/left-labelled OHLCV v1",
+    "source_sha256": "a6a56197cdf59362f8e4ca804fa4b090352961aa65c0379a6123f198a2e0518a",
+    "timeframe": "5m"
+  },
+  "schema_version": 4,
+  "side": "BID",
+  "source_granularity": "M1",
+  "symbol": "DUKASCOPY_USA500IDXUSD",
+  "timezone": "America/New_York"
+}

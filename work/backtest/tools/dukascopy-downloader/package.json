@@ -1,0 +1,8 @@
+{
+  "name": "otobt-dukascopy-downloader",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "dukascopy-node": "1.50.0"
+  }
+}
