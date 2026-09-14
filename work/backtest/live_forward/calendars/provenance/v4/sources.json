@@ -1,0 +1,18 @@
+{
+  "retrieved_at_utc": "2026-09-14T14:32:44.107752Z",
+  "http_status": 200,
+  "content_types": {"pdf": "application/pdf", "html": "text/html"},
+  "sources": [
+    {"source_id":"NASDAQ_2022","exchange":"NASDAQ","coverage":2022,"requested_url":"https://www.nasdaqtrader.com/content/technicalsupport/2022tradingcalendar.pdf","final_url":"https://www.nasdaqtrader.com/content/technicalsupport/2022tradingcalendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2022.pdf"},
+    {"source_id":"NASDAQ_2023","exchange":"NASDAQ","coverage":2023,"requested_url":"https://www.nasdaqtrader.com/content/technicalsupport/2023tradingcalendar.pdf","final_url":"https://www.nasdaqtrader.com/content/technicalsupport/2023tradingcalendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2023.pdf"},
+    {"source_id":"NASDAQ_2024","exchange":"NASDAQ","coverage":2024,"requested_url":"https://www.nasdaqtrader.com/content/technicalsupport/2024tradingcalendar.pdf","final_url":"https://www.nasdaqtrader.com/content/technicalsupport/2024tradingcalendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2024.pdf"},
+    {"source_id":"NASDAQ_2025","exchange":"NASDAQ","coverage":2025,"requested_url":"https://www.nasdaqtrader.com/content/technicalsupport/2025tradingcalendar.pdf","final_url":"https://www.nasdaqtrader.com/content/technicalsupport/2025tradingcalendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2025.pdf"},
+    {"source_id":"NASDAQ_2026","exchange":"NASDAQ","coverage":2026,"requested_url":"https://www.nasdaqtrader.com/content/technicalsupport/2026tradingcalendar.pdf","final_url":"https://www.nasdaqtrader.com/content/technicalsupport/2026tradingcalendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2026.pdf"},
+    {"source_id":"NYSE_2022","exchange":"NYSE","coverage":2022,"requested_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2022_Yearly_Trading_Calendar.pdf","final_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2022_Yearly_Trading_Calendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nyse_2022.pdf"},
+    {"source_id":"NYSE_2023","exchange":"NYSE","coverage":2023,"requested_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2023_Yearly_Trading_Calendar.pdf","final_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2023_Yearly_Trading_Calendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nyse_2023.pdf"},
+    {"source_id":"NYSE_2024","exchange":"NYSE","coverage":2024,"requested_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2024_Yearly_Trading_Calendar.pdf","final_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2024_Yearly_Trading_Calendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nyse_2024.pdf"},
+    {"source_id":"NYSE_2025","exchange":"NYSE","coverage":2025,"requested_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2025_Yearly_Trading_Calendar.pdf","final_url":"https://www.nyse.com/publicdocs/ICE_NYSE_2025_Yearly_Trading_Calendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nyse_2025.pdf"},
+    {"source_id":"NYSE_2026","exchange":"NYSE","coverage":2026,"requested_url":"https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf","final_url":"https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf","raw_path":"live_forward/calendars/provenance/v4/raw/nyse_2026.pdf"},
+    {"source_id":"NASDAQ_2025_01_09_NOTICE","exchange":"NASDAQ","coverage":"2025-01-09","requested_url":"https://www.nasdaqtrader.com/TraderNews.aspx?id=UTP2024-20","final_url":"https://www.nasdaqtrader.com/TraderNews.aspx?id=UTP2024-20","raw_path":"live_forward/calendars/provenance/v4/raw/nasdaq_2025_01_09_notice.html"}
+  ]
+}

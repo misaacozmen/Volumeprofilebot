@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
+import json
+from pathlib import Path
+import shutil
 
 import pytest
 
@@ -9,7 +13,7 @@ from backtest.market_calendar import DEFAULT_CALENDAR_PATH, MarketCalendarError,
 
 def test_signed_calendar_covers_full_required_range_and_early_closes() -> None:
     payload, digest = load_signed_calendar()
-    assert payload["calendar_id"] == "US_EQUITY_RTH_2022_2026_V2"
+    assert payload["calendar_id"] == "US_EQUITY_RTH_2022_2026_V4"
     assert payload["coverage"] == {"start": "2022-01-01", "end": "2026-12-31"}
     assert digest
     dates = signed_market_dates("2022-01-01", "2026-12-31")
@@ -66,3 +70,31 @@ def test_custom_calendar_requires_explicit_hash_and_tamper_is_rejected(tmp_path)
     target.write_text(target.read_text(encoding="utf-8").replace("16:00", "15:00", 1), encoding="utf-8")
     with pytest.raises(MarketCalendarError, match="raw SHA-256 mismatch"):
         load_signed_calendar(artifact=target, expected_sha256="0" * 64)
+
+
+def v4_copy(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "repo"
+    shutil.copytree(DEFAULT_CALENDAR_PATH.parent / "provenance" / "v4", root / "live_forward" / "calendars" / "provenance" / "v4")
+    shutil.copy2(DEFAULT_CALENDAR_PATH, root / "live_forward" / "calendars" / DEFAULT_CALENDAR_PATH.name)
+    (root / "scripts").mkdir()
+    shutil.copy2(Path(__file__).resolve().parents[1] / "scripts" / "build_verified_market_calendar.py", root / "scripts" / "build_verified_market_calendar.py")
+    calendar = root / "live_forward" / "calendars" / DEFAULT_CALENDAR_PATH.name
+    return root, calendar
+
+
+@pytest.mark.parametrize("target", ["raw", "extracted"])
+def test_v4_provenance_tamper_is_rejected_even_while_unsigned(tmp_path: Path, target: str) -> None:
+    root, calendar = v4_copy(tmp_path)
+    path = next((root / "live_forward" / "calendars" / "provenance" / "v4" / target).iterdir())
+    path.write_bytes(path.read_bytes() + b"tamper")
+    with pytest.raises(MarketCalendarError, match="provenance (hash mismatch|is unreadable)"):
+        load_signed_calendar(artifact=calendar, expected_calendar_id="US_EQUITY_RTH_2022_2026_V4", expected_sha256=sha256(calendar.read_bytes()).hexdigest())
+
+
+def test_v4_missing_exchange_year_is_rejected(tmp_path: Path) -> None:
+    _, calendar = v4_copy(tmp_path)
+    payload = json.loads(calendar.read_text(encoding="utf-8"))
+    payload["source_records"] = [row for row in payload["source_records"] if row["source_id"] != "NYSE_2024"]
+    calendar.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    with pytest.raises(MarketCalendarError, match="source matrix|full range"):
+        load_signed_calendar(artifact=calendar, expected_calendar_id="US_EQUITY_RTH_2022_2026_V4", expected_sha256=sha256(calendar.read_bytes()).hexdigest())

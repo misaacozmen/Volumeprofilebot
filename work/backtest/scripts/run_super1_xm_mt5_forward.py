@@ -19,6 +19,7 @@ from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder
 from backtest.live.execution import Mt5WritePort
 from backtest.live.deal_ingestion import TerminalDealIngestor
+from backtest.market_calendar import MarketCalendarError, load_signed_calendar
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
 from backtest.live.risk_guard import RiskGuard
 from backtest.live.halt import HaltController, emergency_flatten_cycle
@@ -185,38 +186,20 @@ def _signed_live_risk_policy(config: dict[str, Any]) -> LiveRiskPolicy:
 
 
 def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
-    version = 3 if reference.get("calendar_id") == "US_EQUITY_RTH_2022_2026_V3" else 2
-    expected_path = f"live_forward/calendars/us_equity_rth_2022_2026_v{version}.json"
-    if reference.get("path") != expected_path or reference.get("calendar_id") != f"US_EQUITY_RTH_2022_2026_V{version}":
-        raise Super1FeatureError("canonical 2022-2026 RTH calendar binding is invalid")
     path = _safe_repo_file(reference.get("path"), "canonical RTH calendar")
-    if core.file_hash(path) != str(reference.get("sha256") or "").lower():
-        raise Super1FeatureError("canonical RTH calendar raw hash mismatch")
     try:
-        calendar = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_pairs)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise Super1FeatureError("canonical RTH calendar is unreadable") from exc
-    if not isinstance(calendar, dict) or calendar.get("schema_version") != version or calendar.get("calendar_id") != reference["calendar_id"] or calendar.get("timezone") != core.TZ:
-        raise Super1FeatureError("canonical RTH calendar identity is invalid")
+        calendar, calendar_hash = load_signed_calendar(
+            artifact=path, expected_calendar_id=str(reference.get("calendar_id") or ""),
+            expected_sha256=str(reference.get("sha256") or ""),
+        )
+    except MarketCalendarError as exc:
+        raise Super1FeatureError(f"canonical RTH calendar verification failed: {exc}") from exc
     coverage = calendar.get("coverage")
     if not isinstance(coverage, dict) or coverage.get("start") != "2022-01-01" or coverage.get("end") != "2026-12-31":
         raise Super1FeatureError("canonical RTH calendar coverage is invalid")
     source_records = calendar.get("source_records")
-    if not isinstance(source_records, list) or len(source_records) != 6:
+    if not isinstance(source_records, list):
         raise Super1FeatureError("canonical RTH calendar must contain all official source records")
-    source_ids = [str(item.get("id") or "") for item in source_records if isinstance(item, dict)]
-    expected_ids = [f"NASDAQ_TRADING_CALENDAR_{year}" for year in range(2022, 2027)] + ["NYSE_TRADING_CALENDAR_2022_2026"]
-    if source_ids != expected_ids:
-        raise Super1FeatureError("canonical RTH calendar source records are incomplete or out of order")
-    unsigned_structural_only = runtime.get("status") == "UNSIGNED_VALIDATION_ONLY"
-    for source in source_records:
-        if unsigned_structural_only:
-            continue
-        if not isinstance(source, dict) or not all(source.get(key) for key in ("raw_path", "raw_sha256", "extraction_sha256", "url")):
-            raise Super1FeatureError("canonical RTH calendar official raw source bytes are not sealed")
-        raw_source = _safe_repo_file(source["raw_path"], "canonical RTH raw source")
-        if core.file_hash(raw_source) != str(source["raw_sha256"]).lower():
-            raise Super1FeatureError("canonical RTH raw source hash mismatch")
     closed = {str(value) for value in calendar.get("closed_dates", [])}
     early = {str(value) for value in calendar.get("early_close_dates", [])}
     start = pd.Timestamp(coverage["start"]).date()
@@ -230,14 +213,14 @@ def _load_canonical_rth_calendar(runtime: dict[str, Any], reference: dict[str, A
             sessions[key] = {"date": key, "state": "EARLY_CLOSE", "start": "09:30", "end": "13:00"}
         else:
             sessions[key] = {"date": key, "state": "OPEN", "start": "09:30", "end": "16:00"}
-    return {"path": str(path), "sha256": core.file_hash(path), "calendar_id": calendar["calendar_id"], "coverage": coverage, "sessions": sessions, "source_records": source_records}
+    return {"path": str(path), "sha256": calendar_hash, "calendar_id": calendar["calendar_id"], "coverage": coverage, "sessions": sessions, "source_records": source_records}
 
 
 def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
     reference = runtime.get("rth_session_calendar")
     if not isinstance(reference, dict):
         raise Super1FeatureError("Verified RTH calendar reference is missing.")
-    if reference.get("calendar_id") in {"US_EQUITY_RTH_2022_2026_V2", "US_EQUITY_RTH_2022_2026_V3"}:
+    if reference.get("calendar_id") in {"US_EQUITY_RTH_2022_2026_V2", "US_EQUITY_RTH_2022_2026_V3", "US_EQUITY_RTH_2022_2026_V4"}:
         return _load_canonical_rth_calendar(runtime, reference)
     if (
         reference.get("path") != RTH_CALENDAR_RELATIVE
