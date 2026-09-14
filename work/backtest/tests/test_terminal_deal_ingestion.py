@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from backtest.live.deal_ingestion import TerminalDealIngestionError, TerminalDealIngestor
+from backtest.live.deal_ingestion import TerminalDealIngestionError, TerminalDealIngestor, TerminalQueryBatch
 
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
@@ -24,8 +24,11 @@ def deal(ticket: int, entry: str, volume: str, profit: str, *, order: int = 101,
 
 
 def ingestor(tmp_path, rows):
+    def read(start, end):
+        return TerminalQueryBatch(tuple(rows), True, start, end, NOW, "1" * 64, "2" * 64)
+
     return TerminalDealIngestor(
-        tmp_path / "orders.sqlite3", read_deals=lambda _start, _end: tuple(rows),
+        tmp_path / "orders.sqlite3", read_deals=read,
         account_key="account-hash", campaign_id="campaign", candidate_hash="c" * 64,
         campaign_start=NOW - timedelta(days=30), magic=77, comment_prefix="S1:", now=lambda: NOW,
     )
@@ -78,6 +81,16 @@ def test_read_failure_does_not_create_or_advance_cursor(tmp_path) -> None:
         store.ingest()
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM terminal_ingestion_cursor").fetchone()[0] == 0
+
+
+def test_plain_list_is_not_a_complete_terminal_query_batch(tmp_path) -> None:
+    store = TerminalDealIngestor(
+        tmp_path / "orders.sqlite3", read_deals=lambda _start, _end: [], account_key="account-hash",
+        campaign_id="campaign", candidate_hash="c" * 64,
+        campaign_start=NOW - timedelta(days=1), magic=77, now=lambda: NOW,
+    )
+    with pytest.raises(TerminalDealIngestionError, match="cursor was not advanced"):
+        store.ingest()
 
 
 def test_unknown_ownership_fails_closed_and_inout_splits_episodes(tmp_path) -> None:

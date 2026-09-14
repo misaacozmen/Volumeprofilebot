@@ -127,6 +127,151 @@ def validate_unsigned_candidate(
     }
 
 
+def _v4_payload_hash(payload: Mapping[str, Any]) -> str:
+    body = {key: value for key, value in payload.items() if key != "artifact_sha256"}
+    return sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _read_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CandidateValidationError(f"{label} is unreadable") from exc
+    if not isinstance(value, dict):
+        raise CandidateValidationError(f"{label} is not an object")
+    return value
+
+
+def validate_super1_v4_candidate(
+    path: str | Path,
+    root: str | Path,
+    require_promotable: bool,
+) -> dict[str, Any]:
+    """Validate the V4-only candidate/manifest/config hash chain.
+
+    This intentionally does not call the V2/V3 validator: old candidate schemas
+    must never inherit V4 promotion semantics.
+    """
+    root_path = Path(root).resolve()
+    candidate_path = Path(path).resolve()
+    try:
+        candidate_path.relative_to(root_path)
+    except ValueError as exc:
+        raise CandidateValidationError("V4 candidate path escapes repository") from exc
+    candidate = _read_object(candidate_path, "V4 candidate")
+    if int(candidate.get("schema_version", 0)) != 4:
+        raise CandidateValidationError("V4 candidate schema_version is required")
+    if candidate.get("unsigned") is not True or candidate.get("live_enabled") is not False or candidate.get("proven") is not False:
+        raise CandidateValidationError("V4 candidate safety flags are invalid")
+    artifact = _require_hash(candidate.get("artifact_sha256"), "candidate artifact_sha256")
+    if artifact != _v4_payload_hash(candidate):
+        raise CandidateValidationError("V4 candidate artifact hash mismatch")
+
+    manifest_relative = str(candidate.get("manifest_path") or "")
+    manifest_path = _file(root_path, manifest_relative, "V4 manifest") if manifest_relative else candidate_path.with_name("super1_manifest_v4.json")
+    try:
+        manifest_path.relative_to(root_path)
+    except ValueError as exc:
+        raise CandidateValidationError("V4 manifest path escapes repository") from exc
+    if not manifest_path.is_file():
+        raise CandidateValidationError("V4 manifest is missing")
+    manifest = _read_object(manifest_path, "V4 manifest")
+    if int(manifest.get("schema_version", 0)) != 4:
+        raise CandidateValidationError("V4 manifest schema_version is required")
+
+    binding = manifest.get("promotion_bindings", manifest.get("bindings"))
+    if not isinstance(binding, Mapping):
+        raise CandidateValidationError("V4 manifest promotion bindings are missing")
+    candidate_binding = candidate.get("promotion_bindings")
+    if not isinstance(candidate_binding, Mapping) or dict(candidate_binding) != dict(binding):
+        raise CandidateValidationError("candidate promotion_bindings differ from the V4 manifest")
+
+    checked: dict[str, str] = {}
+    for key, value in binding.items():
+        if not key.endswith("_path"):
+            continue
+        digest_key = "candidate_file_sha256" if key == "candidate_path" else key[:-5] + "_sha256"
+        relative = str(value or "")
+        file_path = _file(root_path, relative, f"V4 binding {key}")
+        observed = sha256(file_path.read_bytes()).hexdigest()
+        expected = _require_hash(
+            binding.get(digest_key, manifest.get(digest_key)),
+            f"V4 binding {digest_key}",
+        )
+        if observed != expected:
+            raise CandidateValidationError(f"V4 binding hash mismatch: {key}")
+        checked[key] = observed
+
+    config_relative = str(binding.get("config_path") or manifest.get("config_path") or "")
+    config_path = _file(root_path, config_relative, "V4 config")
+    config = _read_object(config_path, "V4 config")
+    if int(config.get("schema_version", 0)) != 4 or config.get("status") != "UNSIGNED_VALIDATION_ONLY":
+        raise CandidateValidationError("V4 config schema/status is invalid")
+    if config.get("candidate_path") != binding.get("candidate_path") or config.get("candidate_artifact_sha256") != artifact:
+        raise CandidateValidationError("V4 config candidate binding is invalid")
+    if config.get("candidate_file_sha256") != binding.get("candidate_file_sha256", manifest.get("candidate_file_sha256")):
+        raise CandidateValidationError("V4 config candidate file binding is invalid")
+    if config.get("rth_session_calendar", {}).get("path") != binding.get("calendar_path"):
+        raise CandidateValidationError("V4 config calendar path binding is invalid")
+    if config.get("rth_session_calendar", {}).get("sha256") != binding.get("calendar_sha256"):
+        raise CandidateValidationError("V4 config calendar hash binding is invalid")
+    config_hash = _require_hash(binding.get("config_sha256", manifest.get("config_sha256")), "V4 config_sha256")
+    if sha256(config_path.read_bytes()).hexdigest() != config_hash:
+        raise CandidateValidationError("V4 config hash mismatch")
+
+    candidate_relative = candidate_path.relative_to(root_path).as_posix()
+    if binding.get("candidate_path") != candidate_relative:
+        raise CandidateValidationError("V4 manifest candidate path is invalid")
+    candidate_file_hash = _require_hash(
+        binding.get("candidate_file_sha256", manifest.get("candidate_file_sha256")),
+        "V4 candidate_file_sha256",
+    )
+    if candidate_file_hash != sha256(candidate_path.read_bytes()).hexdigest():
+        raise CandidateValidationError("V4 candidate file hash mismatch")
+    candidate_artifact_hash = _require_hash(
+        binding.get("candidate_artifact_sha256", manifest.get("candidate_artifact_sha256")),
+        "V4 candidate_artifact_sha256",
+    )
+    if candidate_artifact_hash != artifact:
+        raise CandidateValidationError("V4 candidate artifact binding is invalid")
+    data_path = _file(root_path, str(binding.get("data_manifest_path") or ""), "V4 data manifest")
+    data_manifest = _read_object(data_path, "V4 data manifest")
+    if data_manifest.get("schema_version") != 4:
+        raise CandidateValidationError("V4 data manifest schema_version is invalid")
+    data_hash = _require_hash(binding.get("data_manifest_sha256"), "V4 data_manifest_sha256")
+    if sha256(data_path.read_bytes()).hexdigest() != data_hash:
+        raise CandidateValidationError("V4 data manifest hash mismatch")
+    if candidate.get("promotion_bindings", {}).get("data_manifest_sha256") != data_hash:
+        raise CandidateValidationError("V4 candidate data binding is invalid")
+    risk_payload = {
+        "risk_limits": config.get("risk_limits"),
+        "live_risk_policy": config.get("live_risk_policy"),
+        "risk_rule": config.get("risk_rule"),
+    }
+    risk_hash = sha256(json.dumps(risk_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    if binding.get("risk_policy_sha256", manifest.get("risk_policy_sha256")) != risk_hash:
+        raise CandidateValidationError("V4 risk policy hash mismatch")
+
+    if require_promotable:
+        coverage = data_manifest.get("coverage")
+        if manifest.get("promotion_blocker") not in (None, ""):
+            raise CandidateValidationError("V4 promotion blocker is active")
+        if data_manifest.get("promotion_status") not in {"VERIFIED_COMPLETE", "COMPLETE"}:
+            raise CandidateValidationError("V4 data manifest is not complete")
+        if not isinstance(coverage, Mapping) or int(coverage.get("invalid_sessions", -1)) != 0 or int(coverage.get("missing_sessions", -1)) != 0:
+            raise CandidateValidationError("V4 promotion requires zero invalid/missing coverage")
+    return {
+        "candidate_path": candidate_relative,
+        "manifest_path": manifest_path.relative_to(root_path).as_posix(),
+        "candidate_artifact_sha256": artifact,
+        "config_sha256": config_hash,
+        "data_manifest_sha256": data_hash,
+        "promotion_blocker": manifest.get("promotion_blocker"),
+        "promotable": bool(require_promotable),
+        "checked_paths": checked,
+    }
+
+
 def validate_promotable_candidate(path: str | Path, *, root: str | Path) -> dict[str, Any]:
     """Validate promotion-only evidence in addition to the structural hash chain."""
     result = validate_unsigned_candidate(path, root=root)

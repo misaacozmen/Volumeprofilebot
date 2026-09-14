@@ -21,6 +21,14 @@ def main() -> None:
     parser.add_argument("--timeframes", default="3m,5m")
     parser.add_argument("--raw-dir", type=Path, default=Path("data/raw"))
     args = parser.parse_args()
+    provenance_root = (ROOT / "data" / "provenance" / "dukascopy_v4").resolve()
+    raw_root = args.raw_dir.resolve()
+    try:
+        raw_root.relative_to(provenance_root)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("recovery cannot publish into the V4 provenance tree without a V5 manifest/attestation")
 
     csv_paths = sorted(path for path in args.temp_dir.glob("*.csv") if path.stat().st_size > 0)
     if not csv_paths:

@@ -419,6 +419,9 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
     runtime = json.loads((ROOT / "live_forward" / "capital_demo_config.json").read_text(encoding="utf-8"))
     runtime["manual_required"] = False
     monkeypatch.setattr(MODULE, "runtime_config", lambda: runtime)
+    parent_lock = copy.deepcopy(MODULE.read_json(MODULE.PARENT_BASELINE))
+    parent_lock["engine_manifest"]["code_hash"] = MODULE.source_code_hash()
+    monkeypatch.setattr(MODULE, "validate_parent_baseline", lambda: parent_lock)
 
     trade_date = pd.Timestamp("2026-07-29", tz=MODULE.TZ).date()
     profile_start = pd.Timestamp("2026-07-28 18:00", tz=MODULE.TZ)
@@ -482,16 +485,14 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
             assert not (root / "finalized").exists()
             assert not (root / "sessions").exists()
 
-        with pytest.raises(MODULE.CriticalLiveError, match="baseline|code hash"):
-            MODULE.finalize_session(
-                root,
-                store,
-                market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
-                knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-                finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-                fetches=fetches,
-            )
-        return
+        result = MODULE.finalize_session(
+            root,
+            store,
+            market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
+            knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+            finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+            fetches=fetches,
+        )
         assert result["state"] == "VALID"
         marker = root / "finalized" / f"{trade_date}.json"
         assert marker.exists()

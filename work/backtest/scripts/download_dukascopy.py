@@ -41,13 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provenance-root", type=Path, default=Path("data/provenance/dukascopy_v4"))
     parser.add_argument("--keep-1m", action="store_true", help="Also write normalized 1m CSV.")
     parser.add_argument("--session-context-hours", type=int, default=0, help="Include this many local hours before --from-date in normalized output.")
-    parser.add_argument("--batch-size", default="20")
+    parser.add_argument("--batch-size", default="1")
     parser.add_argument("--batch-pause", default="1000")
+    parser.add_argument("--retry-count", type=int, default=0)
     parser.add_argument("--chunk-days", type=int, default=60, help="Download range in chunks to avoid large request failures.")
     parser.add_argument(
         "--request-pause-seconds",
         type=float,
-        default=0.0,
+        default=2.0,
         help="Minimum pause between provider requests, including recursively split chunks.",
     )
     parser.add_argument(
@@ -173,20 +174,8 @@ def download_chunk_recursive(
     try:
         return [(run_dukascopy_cli(args, instrument, tmp_dir, output_name, date_from, date_to), date_from, date_to)]
     except subprocess.CalledProcessError:
-        start = pd.Timestamp(date_from)
-        end = pd.Timestamp(date_to)
-        if (end - start).days <= 1:
-            failed_chunks.append({"instrument": instrument, "from": date_from, "to": date_to})
-            return []
-        middle = start + (end - start) / 2
-        middle = pd.Timestamp(middle.date())
-        if middle <= start:
-            middle = start + pd.Timedelta(days=1)
-        print(f"Chunk failed; splitting {date_from} -> {date_to} at {middle.strftime('%Y-%m-%d')}")
-        return [
-            *download_chunk_recursive(args, instrument, tmp_dir, date_from, middle.strftime("%Y-%m-%d"), failed_chunks),
-            *download_chunk_recursive(args, instrument, tmp_dir, middle.strftime("%Y-%m-%d"), date_to, failed_chunks),
-        ]
+        failed_chunks.append({"instrument": instrument, "from": date_from, "to": date_to})
+        return []
 
 
 def build_chunk_ranges(from_date: str, to_date: str, chunk_days: int) -> list[tuple[str, str]]:
@@ -244,7 +233,7 @@ def run_dukascopy_cli(
         "-bp",
         str(args.batch_pause),
         "-r",
-        "3",
+        str(args.retry_count),
         "-rp",
         "2000",
     ]

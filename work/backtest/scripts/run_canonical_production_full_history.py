@@ -34,8 +34,9 @@ from backtest.risk_xray import build_risk_xray, write_risk_xray
 
 
 DEFAULT_REPORT_DIR = ROOT / "outputs" / "reports" / "canonical_production_full_history_research"
-DEFAULT_GAP_INVENTORY = ROOT / "outputs" / "reports" / ".canonical_full_history_corrected_20260908_v2.h1dqbpdj" / "invalid_leg_days.csv"
+DEFAULT_GAP_INVENTORY = ROOT / "data" / "provenance" / "dukascopy_v4" / "frozen_invalid_leg_days_v4.csv"
 DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired_session"
+DEFAULT_REACQUISITION_MANIFEST = ROOT / "data" / "provenance" / "dukascopy_v4" / "acquisition_v5" / "reacquisition_manifest_v5.json"
 GAP_INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
 _ACTIVE_STAGING: Path | None = None
 
@@ -47,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--gap-inventory", type=Path, default=DEFAULT_GAP_INVENTORY)
     parser.add_argument("--reacquired-root", type=Path, default=DEFAULT_REACQUIRED_ROOT)
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--reacquisition-manifest", type=Path, default=DEFAULT_REACQUISITION_MANIFEST)
     return parser.parse_args()
 
 
@@ -389,6 +392,24 @@ def invalid_leg_inventory(
 def _main_impl() -> None:
     global _ACTIVE_STAGING
     args = parse_args()
+    from audit_dukascopy_reacquisition_v5 import audit_inventory
+
+    preflight = audit_inventory(
+        args.gap_inventory.resolve(),
+        args.reacquired_root.resolve(),
+        (ROOT / "outputs/reports/dukascopy_reacquisition_v5").resolve(),
+    )
+    if preflight["residual_count"] != 0:
+        raise ValueError(f"V5 reacquisition preflight has {preflight['residual_count']} residual targets")
+    if args.preflight_only:
+        print(json.dumps({"preflight": "PASSED", "target_count": 113, "residual_count": 0}, sort_keys=True), flush=True)
+        return
+    manifest_path = args.reacquisition_manifest.resolve()
+    if not manifest_path.is_file():
+        raise ValueError("exact V5 reacquisition manifest is required")
+    reacquisition_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if reacquisition_manifest.get("inventory_sha256") != GAP_INVENTORY_SHA256 or reacquisition_manifest.get("target_count") != 113 or reacquisition_manifest.get("residual_count") != 0:
+        raise ValueError("V5 reacquisition manifest is not the exact zero-residual authoritative manifest")
     report_dir = args.report_dir.resolve()
     report_parent = report_dir.parent
     report_parent.mkdir(parents=True, exist_ok=True)

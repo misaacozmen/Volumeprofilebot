@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -27,6 +28,134 @@ ENTRY_IN = {0, "0", "IN", "DEAL_ENTRY_IN"}
 ENTRY_OUT = {1, "1", "OUT", "DEAL_ENTRY_OUT"}
 ENTRY_INOUT = {2, "2", "INOUT", "DEAL_ENTRY_INOUT"}
 ENTRY_OUT_BY = {3, "3", "OUT_BY", "DEAL_ENTRY_OUT_BY"}
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _row_mapping(row: Any) -> dict[str, object]:
+    if isinstance(row, Mapping):
+        return {str(key): _json_safe(value) for key, value in row.items()}
+    if hasattr(row, "_asdict"):
+        return {str(key): _json_safe(value) for key, value in row._asdict().items()}
+    try:
+        return {str(key): _json_safe(value) for key, value in vars(row).items()}
+    except TypeError as exc:
+        raise TerminalDealIngestionError("terminal query row is not inspectable") from exc
+
+
+def _row_identity(row: Any) -> tuple[object, ...]:
+    values = _row_mapping(row)
+    return tuple(
+        values.get(name)
+        for name in ("deal_id", "ticket", "order", "position_id", "symbol", "time_msc", "volume", "price", "entry")
+    )
+
+
+def _multiset_hash(rows: Iterable[Any]) -> str:
+    encoded = sorted(_canonical_json(_row_mapping(row)) for row in rows)
+    return _hash(encoded)
+
+
+def _parse_utc(value: datetime | str, label: str) -> datetime:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise TerminalDealIngestionError(f"{label} is not ISO-8601") from exc
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise TerminalDealIngestionError(f"{label} must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalQueryBatch:
+    """Complete, attested result for one closed terminal history window."""
+
+    rows: tuple[Any, ...] | list[Any]
+    complete: bool
+    start_utc: datetime | str
+    end_utc: datetime | str
+    queried_at_utc: datetime | str
+    query_fingerprint: str
+    attestation_fingerprint: str
+
+    def __post_init__(self) -> None:
+        if self.complete is not True:
+            raise TerminalDealIngestionError("terminal query batch is not complete")
+        object.__setattr__(self, "rows", tuple(self.rows))
+        for name in ("start_utc", "end_utc", "queried_at_utc"):
+            object.__setattr__(self, name, _parse_utc(getattr(self, name), name))
+        if self.start_utc >= self.end_utc:
+            raise TerminalDealIngestionError("terminal query batch has an invalid range")
+        for name in ("query_fingerprint", "attestation_fingerprint"):
+            value = str(getattr(self, name) or "")
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+                raise TerminalDealIngestionError(f"{name} is not a SHA-256 digest")
+            object.__setattr__(self, name, value.lower())
+
+    def assert_range(self, start: datetime, end: datetime) -> None:
+        if self.start_utc != _parse_utc(start, "requested start") or self.end_utc != _parse_utc(end, "requested end"):
+            raise TerminalDealIngestionError("terminal query batch range differs from requested window")
+
+
+def build_terminal_query_batch(
+    *,
+    rows: Iterable[Any],
+    repeated_rows: Iterable[Any],
+    orders: Iterable[Any],
+    ticket_deals: Iterable[Any],
+    position_deals: Iterable[Any],
+    local_intents: Iterable[Any] | bool = (),
+    start_utc: datetime,
+    end_utc: datetime,
+    queried_at_utc: datetime,
+) -> TerminalQueryBatch:
+    """Construct a batch only after all range/ticket/position attestations pass."""
+    first = tuple(rows)
+    second = tuple(repeated_rows)
+    order_rows = tuple(orders)
+    ticket_rows = tuple(ticket_deals)
+    position_rows = tuple(position_deals)
+    first_hash = _multiset_hash(first)
+    second_hash = _multiset_hash(second)
+    if first_hash != second_hash:
+        raise TerminalDealIngestionError("terminal history range changed between repeated queries")
+    range_counts: dict[tuple[object, ...], int] = {}
+    for item in first:
+        key = _row_identity(item)
+        range_counts[key] = range_counts.get(key, 0) + 1
+    for item in (*ticket_rows, *position_rows):
+        key = _row_identity(item)
+        if range_counts.get(key, 0) <= 0:
+            raise TerminalDealIngestionError("ticket/position deal is absent from the attested range")
+        range_counts[key] -= 1
+    has_local_intents = bool(local_intents) if isinstance(local_intents, bool) else bool(tuple(local_intents))
+    if not first and (second or order_rows or has_local_intents):
+        raise TerminalDealIngestionError("empty terminal range conflicts with orders or local risk intent")
+    start = _parse_utc(start_utc, "start_utc")
+    end = _parse_utc(end_utc, "end_utc")
+    queried = _parse_utc(queried_at_utc, "queried_at_utc")
+    query_fingerprint = _hash({"start_utc": start.isoformat(), "end_utc": end.isoformat()})
+    attestation_fingerprint = _hash({
+        "query_fingerprint": query_fingerprint,
+        "range_hash": first_hash,
+        "repeated_range_hash": second_hash,
+        "orders_hash": _multiset_hash(order_rows),
+        "ticket_deals_hash": _multiset_hash(ticket_rows),
+        "position_deals_hash": _multiset_hash(position_rows),
+        "local_intents": has_local_intents,
+    })
+    return TerminalQueryBatch(first, True, start, end, queried, query_fingerprint, attestation_fingerprint)
 
 
 def _value(row: Mapping[str, Any] | object, name: str, default: Any = None) -> Any:
@@ -137,11 +266,12 @@ class TerminalDealIngestor:
             CREATE TABLE IF NOT EXISTS terminal_query_windows(
               query_hash TEXT PRIMARY KEY, account_key TEXT NOT NULL, start_utc TEXT NOT NULL,
               end_utc TEXT NOT NULL, result_hash TEXT NOT NULL, deal_count INTEGER NOT NULL,
-              queried_at_utc TEXT NOT NULL, reconciliation INTEGER NOT NULL);
+              queried_at_utc TEXT NOT NULL, reconciliation INTEGER NOT NULL,
+              attestation_fingerprint TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS terminal_ingestion_cursor(
               account_key TEXT PRIMARY KEY, high_water_time_msc INTEGER NOT NULL,
               high_water_ticket INTEGER NOT NULL, last_full_reconciliation_utc TEXT NOT NULL,
-              updated_at_utc TEXT NOT NULL);
+              updated_at_utc TEXT NOT NULL, last_attestation_fingerprint TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS entry_risk_intents(
               account_key TEXT NOT NULL, proposal_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
               candidate_hash TEXT NOT NULL, instrument_id TEXT NOT NULL, request_hash TEXT NOT NULL,
@@ -175,6 +305,16 @@ class TerminalDealIngestor:
               payload_hash TEXT NOT NULL, created_at_utc TEXT NOT NULL, delivered_at_utc TEXT);
             """
         )
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(terminal_query_windows)")}
+        if "attestation_fingerprint" not in columns:
+            connection.execute(
+                "ALTER TABLE terminal_query_windows ADD COLUMN attestation_fingerprint TEXT NOT NULL DEFAULT ''"
+            )
+        cursor_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(terminal_ingestion_cursor)")}
+        if "last_attestation_fingerprint" not in cursor_columns:
+            connection.execute(
+                "ALTER TABLE terminal_ingestion_cursor ADD COLUMN last_attestation_fingerprint TEXT NOT NULL DEFAULT ''"
+            )
 
     def record_entry_risk_intent(
         self, *, proposal_id: str, instrument_id: str, request_hash: str,
@@ -346,24 +486,26 @@ class TerminalDealIngestor:
     def ingest(self, *, observed_at: datetime | None = None) -> TerminalFactSnapshot:
         observed = self._utc(observed_at or self.now())
         with self._connect() as probe:
-            cursor = probe.execute("SELECT high_water_time_msc,high_water_ticket,last_full_reconciliation_utc FROM terminal_ingestion_cursor WHERE account_key=?", (self.account_key,)).fetchone()
+            cursor = probe.execute("SELECT high_water_time_msc,high_water_ticket,last_full_reconciliation_utc,last_attestation_fingerprint FROM terminal_ingestion_cursor WHERE account_key=?", (self.account_key,)).fetchone()
         windows, full = self._windows(observed, cursor)
-        batches: list[tuple[datetime, datetime, list[Any]]] = []
+        batches: list[tuple[datetime, datetime, TerminalQueryBatch]] = []
         for start, end in windows:
             try:
                 result = self.read_deals(start, end)
-                if result is None: raise TerminalDealIngestionError("terminal deal query returned unknown state")
-                batches.append((start, end, list(result)))
+                if not isinstance(result, TerminalQueryBatch):
+                    raise TerminalDealIngestionError("terminal deal query must return TerminalQueryBatch")
+                result.assert_range(start, end)
+                batches.append((start, end, result))
             except Exception as exc:
                 raise TerminalDealIngestionError("terminal deal query failed; cursor was not advanced") from exc
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             max_pair = (int(cursor[0]), int(cursor[1])) if cursor is not None else (0, 0)
-            for start, end, raw_rows in batches:
+            for start, end, batch in batches:
                 query_binding = {"account_key": self.account_key, "start": start.isoformat(), "end": end.isoformat(), "reconciliation": full}
                 source_hash = _hash(query_binding)
-                rows = [self._normalize(item, source_hash) for item in raw_rows]
+                rows = [self._normalize(item, source_hash) for item in batch.rows]
                 rows.sort(key=lambda row: (row["time_msc"], row["deal_ticket"]))
                 result_hash = _hash([{key: row[key] for key in IMMUTABLE_FIELDS} for row in rows])
                 for row in rows:
@@ -383,12 +525,17 @@ class TerminalDealIngestor:
                     self._allocate_entry(connection, row)
                     max_pair = max(max_pair, (row["time_msc"], row["deal_ticket"]))
                 query_hash = _hash({**query_binding, "result_hash": result_hash})
-                connection.execute("INSERT OR IGNORE INTO terminal_query_windows VALUES(?,?,?,?,?,?,?,?)", (query_hash, self.account_key, start.isoformat(), end.isoformat(), result_hash, len(rows), observed.isoformat(), int(full)))
+                connection.execute(
+                    "INSERT OR IGNORE INTO terminal_query_windows VALUES(?,?,?,?,?,?,?,?,?)",
+                    (query_hash, self.account_key, start.isoformat(), end.isoformat(), result_hash,
+                     len(rows), batch.queried_at_utc.isoformat(), int(full), batch.attestation_fingerprint),
+                )
             self._rebuild_episodes(connection)
             last_full = observed.isoformat() if full else str(cursor[2])
+            attestation_fingerprint = _hash([batch.attestation_fingerprint for _, _, batch in batches])
             connection.execute(
-                "INSERT INTO terminal_ingestion_cursor VALUES(?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET high_water_time_msc=excluded.high_water_time_msc,high_water_ticket=excluded.high_water_ticket,last_full_reconciliation_utc=excluded.last_full_reconciliation_utc,updated_at_utc=excluded.updated_at_utc",
-                (self.account_key, max_pair[0], max_pair[1], last_full, observed.isoformat()),
+                "INSERT INTO terminal_ingestion_cursor VALUES(?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET high_water_time_msc=excluded.high_water_time_msc,high_water_ticket=excluded.high_water_ticket,last_full_reconciliation_utc=excluded.last_full_reconciliation_utc,updated_at_utc=excluded.updated_at_utc,last_attestation_fingerprint=excluded.last_attestation_fingerprint",
+                (self.account_key, max_pair[0], max_pair[1], last_full, observed.isoformat(), attestation_fingerprint),
             )
             outbox_payload = {"account_key": self.account_key, "deal_facts_hash": self._facts_hash(connection), "watermark": list(max_pair), "observed_at": observed.isoformat()}
             outbox_hash = _hash(outbox_payload)
@@ -502,8 +649,10 @@ class TerminalDealIngestor:
     def snapshot(self, *, observed_at: datetime | None = None) -> TerminalFactSnapshot:
         observed = self._utc(observed_at or self.now())
         with self._connect() as connection:
-            cursor = connection.execute("SELECT high_water_time_msc,high_water_ticket,last_full_reconciliation_utc FROM terminal_ingestion_cursor WHERE account_key=?", (self.account_key,)).fetchone()
+            cursor = connection.execute("SELECT high_water_time_msc,high_water_ticket,last_full_reconciliation_utc,last_attestation_fingerprint FROM terminal_ingestion_cursor WHERE account_key=?", (self.account_key,)).fetchone()
             if cursor is None: raise TerminalDealIngestionError("terminal facts have not been reconciled")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(cursor[3] or "")):
+                raise TerminalDealIngestionError("terminal facts lack a complete query attestation")
             reconciliation = datetime.fromisoformat(str(cursor[2]))
             if observed - reconciliation > timedelta(hours=24): raise TerminalDealIngestionError("terminal fact reconciliation is stale")
             start_msc = int(observed.astimezone(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).timestamp() * 1000)

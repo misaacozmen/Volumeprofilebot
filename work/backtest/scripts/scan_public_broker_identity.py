@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
+import time
 
 
 PUBLIC_PREFIXES = ("live_forward/", "research_candidates/", "forward_shadow/", "deploy/")
@@ -60,14 +62,88 @@ def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
     return matches
 
 
+def _git(root: Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True).stdout
+
+
+def _deny_values(denylist: Path | None) -> tuple[list[bytes], str | None]:
+    if denylist is None:
+        return [], None
+    raw = denylist.read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+    return [str(item).encode("utf-8") for item in payload.get("denylist", []) if str(item)], sha256(raw).hexdigest()
+
+
+def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, object]], dict[str, int]]:
+    rows = _git(root, "rev-list", "--objects", "--all").decode("utf-8", "replace").splitlines()
+    matches: list[dict[str, object]] = []
+    counts = {"commit_count": int(_git(root, "rev-list", "--all", "--count").decode().strip() or 0), "blob_count": 0, "object_count": 0, "scanned_bytes": 0}
+    seen: set[str] = set()
+    for row in rows:
+        object_id, _, path = row.partition(" ")
+        if object_id in seen:
+            continue
+        seen.add(object_id)
+        kind = _git(root, "cat-file", "-t", object_id).strip()
+        counts["object_count"] += 1
+        if kind != b"blob":
+            continue
+        counts["blob_count"] += 1
+        blob = _git(root, "cat-file", "blob", object_id)
+        counts["scanned_bytes"] += len(blob)
+        denied_count = sum(blob.count(item) for item in denied)
+        fields: list[str] = []
+        if path.startswith(PUBLIC_PREFIXES) and path.endswith(".json"):
+            try:
+                fields = concrete_paths(json.loads(blob.decode("utf-8")))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        if fields or denied_count:
+            matches.append({"object": object_id, "path": path or "<unmapped>", "field_paths": fields, "denylist_match_count": denied_count, "blob_sha256": sha256(blob).hexdigest()})
+    return matches, counts
+
+
+def _ref_tips(root: Path) -> list[dict[str, str]]:
+    output = _git(root, "for-each-ref", "--format=%(refname) %(objectname)").decode("utf-8", "replace")
+    return [{"ref": row.split(" ", 1)[0], "sha": row.split(" ", 1)[1]} for row in output.splitlines() if " " in row]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--denylist", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    matches = scan(args.root.resolve(), args.denylist.resolve() if args.denylist else None)
-    payload = {"schema_version": 1, "match_count": len(matches), "matches": matches}
+    root = args.root.resolve()
+    denylist = args.denylist.resolve() if args.denylist else None
+    started = datetime.now(timezone.utc)
+    matches = scan(root, denylist)
+    denied, denylist_sha256 = _deny_values(denylist)
+    history_matches, counts = _history_scan(root, denied)
+    before_head = _git(root, "rev-parse", "HEAD").decode().strip()
+    before_origin = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True, check=False).stdout.strip()
+    after_head = _git(root, "rev-parse", "HEAD").decode().strip()
+    after_origin = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True, check=False).stdout.strip()
+    ended = datetime.now(timezone.utc)
+    scanner_hash = sha256(Path(__file__).read_bytes()).hexdigest()
+    payload = {
+        "schema_version": 2,
+        "source_head": before_head,
+        "all_ref_tips": _ref_tips(root),
+        **counts,
+        "scanner_source_sha256": scanner_hash,
+        "private_denylist_sha256": denylist_sha256,
+        "working_tree_match_count": len(matches),
+        "reachable_history_match_count": len(history_matches),
+        "sanitized_mirror_match_count": None,
+        "source_unchanged": before_head == after_head,
+        "origin_unchanged": before_origin == after_origin,
+        "started_at_utc": started.isoformat().replace("+00:00", "Z"),
+        "finished_at_utc": ended.isoformat().replace("+00:00", "Z"),
+        "match_count": len(matches),
+        "matches": matches,
+        "reachable_history_matches": history_matches,
+    }
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

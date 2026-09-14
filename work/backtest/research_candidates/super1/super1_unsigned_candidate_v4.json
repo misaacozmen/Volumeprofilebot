@@ -1,6 +1,6 @@
 {
   "artifact_id": "super1_unsigned_candidate_v4",
-  "artifact_sha256": "953db9d6d0aa55031204a62899b8eaf256715b6682cf895abbb5c07f3c0db362",
+  "artifact_sha256": "819edd0e138cfc0fd2bdaf599a55d75f8bb78b607234c24184c076791a81817b",
   "artifact_type": "strategy_candidate",
   "checks": {
     "criteria_pass": true,
@@ -24,9 +24,21 @@
   "live_enabled": false,
   "name": "SUPER1_UNSIGNED_CANDIDATE_V4",
   "promotion_bindings": {
+    "account_binding_schema_path": "live_forward/account_binding_schema_v4.json",
+    "calendar_path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
     "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
-    "data_manifest_sha256": "10a110afc812ec4fc95e787d9c20748a1a03d14755bdff2f179bf9da9929e7a6",
-    "engine_source_sha256": "3749c255ffb724c8ddff72a3848feff3eb671023b417c641fce78a2b496c4431"
+    "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
+    "config_path": "live_forward/super1_xm_mt5_demo_config_v4.json",
+    "data_manifest_path": "data/provenance/dukascopy_v4/data_manifest_v4.json",
+    "data_manifest_sha256": "97c7f0f8d3fce09dab54ea2f6ba3234b58ce14bb4533962862355c0f1c0fc9c1",
+    "deal_schema_path": "backtest/live/deal_ingestion.py",
+    "deal_schema_sha256": "604d2ba612336f4955adf086a824c3a45e6c01e1cd51b5442edaa0b92dec2c9f",
+    "engine_source_sha256": "3b894450270145438de9b734dd8cdf02dde14105d6951a45a85ec54b93a43655",
+    "instrument_registry_path": "live_forward/instrument_registry_v4.json",
+    "locked_oos_baseline_path": "research_candidates/super1/super1_locked_oos_baseline_v4.json",
+    "sandbox_protocol_path": "backtest/live_signal_protocol.py",
+    "sandbox_protocol_sha256": "751872032f65e2adf574802a7dc03d21ecc25e4e08b9d135644c9fb0df377833",
+    "signal_contract_path": "research_candidates/super1/super1_signal_contract_v4.json"
   },
   "proven": false,
   "provenance": {
@@ -107,7 +119,7 @@
     "negative_scale": 0.75,
     "nonnegative_scale": 1.1
   },
-  "schema_version": 2,
+  "schema_version": 4,
   "selection_protocol": {
     "development_period": "2016-2024",
     "final_holdout_period": "2025-2026",

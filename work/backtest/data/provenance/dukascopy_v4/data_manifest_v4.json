@@ -3,6 +3,7 @@
     "end_exclusive": "2026-07-03",
     "start": "2022-01-01"
   },
+  "authoritative_target_count": 113,
   "evaluation_domain": {
     "end": "2026-07-02",
     "start": "2022-01-03"
@@ -77,6 +78,7 @@
       "sha256": "6186785ef42768d669cd222a8f13366f052cb77807658bdc7bc5c7ef3aeb4a24"
     }
   ],
+  "frozen_invalid_leg_inventory_path": "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv",
   "frozen_invalid_leg_inventory_sha256": "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075",
   "promotion_status": "PENDING_RESIDUAL_GAP_AUDIT",
   "provider": "Dukascopy",

@@ -227,7 +227,7 @@ if ((@($postTestGitStatus | Sort-Object) -join "`n") -cne (@($initialRepoGitStat
     throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
 }
 if ($Profile -eq "super1") {
-    $runtimeValidationCommand = "import json,sys; from pathlib import Path; sys.path.insert(0, r'$SourceRoot\\scripts'); import run_super1_xm_mt5_forward as super1; runtime=json.loads((Path(r'$SourceRoot') / 'live_forward' / 'super1_xm_mt5_demo_config.json').read_text(encoding='utf-8')); super1.validate_super1_candidate(runtime)"
+    $runtimeValidationCommand = "import sys; from pathlib import Path; sys.path.insert(0, r'$SourceRoot\\scripts'); from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(Path(r'$SourceRoot') / 'research_candidates' / 'super1' / 'super1_unsigned_candidate_v4.json', Path(r'$SourceRoot'), False)"
     $runtimeValidationOutput = & $Python -E -B -c $runtimeValidationCommand 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Super1 runtime/candidate validation failed: $($runtimeValidationOutput -join ' ')"
@@ -282,7 +282,7 @@ if (-not (Test-TrueValue $freshRow.core_tests_passed) -or
     throw "Fresh engine reliability audit did not pass the 56/7/8.5R, determinism, prefix, core-test, or coverage gates."
 }
 $FreshHistoryRoot = Join-Path $TempRoot "fresh-canonical-full-history"
-$freshHistoryOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_canonical_production_full_history.py") --report-dir $FreshHistoryRoot 2>&1
+$freshHistoryOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_canonical_production_full_history.py") --report-dir $FreshHistoryRoot --gap-inventory (Join-Path $SourceRoot "data\provenance\dukascopy_v4\frozen_invalid_leg_days_v4.csv") --reacquired-root (Join-Path $SourceRoot "data\provenance\dukascopy_v4\reacquired_session") --reacquisition-manifest (Join-Path $SourceRoot "data\provenance\dukascopy_v4\acquisition_v5\reacquisition_manifest_v5.json") 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "Fresh canonical full-history gate failed closed: $($freshHistoryOutput -join ' ')"
 }
@@ -466,7 +466,8 @@ try {
     }
     if ($Profile -eq "super1") {
         $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v4.json"
-        $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_promotable_candidate; validate_promotable_candidate(r'$candidatePath', root=r'$Stage')" 2>&1
+        $requirePromotable = if ($ValidateOnly) { "False" } else { "True" }
+        $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(r'$candidatePath', root=r'$Stage', require_promotable=$requirePromotable)" 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Unsigned Super1 candidate validation failed: $($candidateValidationOutput -join ' ')"
         }

@@ -2,5 +2,10 @@ __pycache__/
 *.py[cod]
 .venv/
 outputs/reports/*.csv
+outputs/reports/.dukascopy_acquisition_v5/
+data/provenance/dukascopy_v4/acquisition_v5/state.json
+data/provenance/dukascopy_v4/acquisition_v5/state.json.part
+data/provenance/dukascopy_v4/acquisition_v5/provider.lock
+data/provenance/dukascopy_v4/acquisition_v5/http_cas/**/*.part
 data/processed/*
 !data/processed/.gitkeep

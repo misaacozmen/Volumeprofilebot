@@ -29,10 +29,33 @@ from backtest.state_audit import pipeline_records, prefix_invariance_violations
 
 
 REPORT_DIR = ROOT / "outputs" / "reports" / "engine_reliability_audit_2025_feb_mar"
+FROZEN_INVENTORY = ROOT / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv"
+REACQUISITION_MANIFEST = ROOT / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
 
 
-def main(report_dir: Path | None = None) -> bool:
+def main(
+    report_dir: Path | None = None,
+    inventory_path: Path | None = None,
+    reacquisition_manifest: Path | None = None,
+) -> bool:
     started = time.perf_counter()
+    if inventory_path is not None or reacquisition_manifest is not None:
+        from audit_dukascopy_reacquisition_v5 import audit_inventory
+
+        inventory = (inventory_path or FROZEN_INVENTORY).resolve()
+        preflight = audit_inventory(
+            inventory,
+            ROOT / "data/provenance/dukascopy_v4/reacquired_session",
+            ROOT / "outputs/reports/dukascopy_reacquisition_v5",
+        )
+        if preflight["residual_count"] != 0:
+            raise RuntimeError(f"reacquisition residual is {preflight['residual_count']}; reliability audit is blocked")
+        manifest_path = (reacquisition_manifest or REACQUISITION_MANIFEST).resolve()
+        if not manifest_path.is_file():
+            raise RuntimeError("exact V5 reacquisition manifest is missing")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("target_count") != 113 or manifest.get("residual_count") != 0:
+            raise RuntimeError("exact V5 reacquisition manifest is not zero-residual")
     target_report_dir = (report_dir or REPORT_DIR).resolve()
     target_report_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{target_report_dir.name}.", dir=target_report_dir.parent))
@@ -305,6 +328,8 @@ if __name__ == "__main__":
         type=Path,
         help="Write the fresh attestation to this directory; never reuse an existing report.",
     )
+    parser.add_argument("--frozen-inventory", type=Path, default=FROZEN_INVENTORY)
+    parser.add_argument("--reacquisition-manifest", type=Path, default=REACQUISITION_MANIFEST)
     arguments = parser.parse_args()
-    if not main(arguments.report_dir):
+    if not main(arguments.report_dir, arguments.frozen_inventory, arguments.reacquisition_manifest):
         raise SystemExit("engine reliability audit is not ready for release")

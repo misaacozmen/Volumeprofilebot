@@ -19,7 +19,10 @@ from backtest.live.audit_ledger import AUDIT_SCHEMA_VERSION, GENESIS_HASH, Audit
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder
 from backtest.live.execution import Mt5WritePort
-from backtest.live.deal_ingestion import TerminalDealIngestor
+from backtest.live.deal_ingestion import (
+    TerminalDealIngestor,
+    build_terminal_query_batch,
+)
 from backtest.live.deployment_binding import DeploymentBindingError, load_verified_deployment_binding
 from backtest.market_calendar import MarketCalendarError, load_signed_calendar
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
@@ -37,6 +40,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import run_capital_forward as core
 import run_xm_mt5_forward as xm
 from candidate_artifact import ArtifactValidationError, load_artifact
+from backtest.candidate_validation import CandidateValidationError, validate_super1_v4_candidate
 from super1_runtime_guard import (
     AccountBindingMismatchError,
     Super1RuntimeError,
@@ -342,6 +346,11 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relative, str) or not relative:
         raise Super1FeatureError("Super1 runtime has no candidate_path.")
     candidate_path = (ROOT / relative).resolve()
+    if int(runtime.get("schema_version", 0)) == 4:
+        try:
+            validate_super1_v4_candidate(candidate_path, ROOT, require_promotable=False)
+        except CandidateValidationError as exc:
+            raise Super1FeatureError(f"Super1 V4 hash chain is invalid: {exc}") from exc
     try:
         candidate_path.relative_to(ROOT.resolve())
     except ValueError as exc:
@@ -350,13 +359,16 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if not candidate_path.is_file() or core.file_hash(candidate_path) != expected_file_hash:
         raise Super1FeatureError("Super1 candidate file hash mismatch.")
     try:
-        candidate = load_artifact(
-            candidate_path,
-            ROOT,
-            artifact_type="strategy_candidate",
-            verify_inputs=True,
-        )
-    except ArtifactValidationError as exc:
+        if int(runtime.get("schema_version", 0)) == 4:
+            candidate = core.read_json(candidate_path)
+        else:
+            candidate = load_artifact(
+                candidate_path,
+                ROOT,
+                artifact_type="strategy_candidate",
+                verify_inputs=True,
+            )
+    except (ArtifactValidationError, OSError, ValueError) as exc:
         raise Super1FeatureError(f"Super1 candidate artifact is invalid: {exc}") from exc
     if candidate.get("artifact_sha256") != runtime.get("candidate_artifact_sha256"):
         raise Super1FeatureError("Super1 candidate artifact SHA mismatch.")
@@ -656,6 +668,34 @@ class _Super1ProductionAdapter:
         self.entry_writes += 1
         return self.write_port.send(order.proposal_id)
 
+    def reconcile(self, response: Any, order: RiskApprovedOrder) -> BrokerEvidence:
+        try:
+            retcode = int(getattr(response, "retcode"))
+            ticket = int(getattr(response, "order"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise core.CriticalLiveError("production broker response is unreadable") from exc
+        accepted = {
+            int(getattr(self.client.mt5, "TRADE_RETCODE_PLACED", 10008)),
+            int(getattr(self.client.mt5, "TRADE_RETCODE_DONE", 10009)),
+        }
+        if retcode not in accepted or ticket <= 0:
+            raise core.CriticalLiveError("production broker response was not accepted")
+        observed = self.client._mt5_collection("orders_get", ticket=ticket)
+        request = self.request_for_order(order)
+        exact = [
+            item for item in observed
+            if int(getattr(item, "ticket", 0) or 0) == ticket
+            and self.client._broker_request_matches(item, request)
+        ]
+        if len(exact) != 1:
+            raise core.CriticalLiveError("production broker order readback is not exact")
+        return BrokerEvidence(
+            "SEND", retcode, ticket=ticket,
+            deal_id=(int(getattr(response, "deal", 0) or 0) or None),
+            broker_state="READBACK_CONFIRMED",
+            raw={"ticket": ticket, "proposal_id": order.proposal_id},
+        )
+
 
 class _Super1AuthorizedMaintenanceAdapter:
     """Stages a typed maintenance operation under the consumed smoke approval."""
@@ -685,35 +725,6 @@ class _Super1AuthorizedMaintenanceAdapter:
             return self.port.send(operation_id)
         except Exception as exc:
             raise core.CriticalLiveError(f"durable maintenance operation failed: {exc}") from exc
-
-    def reconcile(self, response: Any, order: RiskApprovedOrder) -> BrokerEvidence:
-        try:
-            retcode = int(getattr(response, "retcode"))
-            ticket = int(getattr(response, "order"))
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise core.CriticalLiveError("production broker response is unreadable") from exc
-        accepted = {
-            int(getattr(self.client.mt5, "TRADE_RETCODE_PLACED", 10008)),
-            int(getattr(self.client.mt5, "TRADE_RETCODE_DONE", 10009)),
-        }
-        if retcode not in accepted or ticket <= 0:
-            raise core.CriticalLiveError("production broker response was not accepted")
-        observed = self.client._mt5_collection("orders_get", ticket=ticket)
-        request = self.request_for_order(order)
-        exact = [
-            item for item in observed
-            if int(getattr(item, "ticket", 0) or 0) == ticket
-            and self.client._broker_request_matches(item, request)
-        ]
-        if len(exact) != 1:
-            raise core.CriticalLiveError("production broker order readback is not exact")
-        return BrokerEvidence(
-            "SEND", retcode, ticket=ticket,
-            deal_id=(int(getattr(response, "deal", 0) or 0) or None),
-            broker_state="READBACK_CONFIRMED",
-            raw={"ticket": ticket, "proposal_id": order.proposal_id},
-        )
-
 
 class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     def __init__(self, config: dict[str, Any], secrets: dict[str, str], *, mt5_module: Any | None = None):
@@ -1116,6 +1127,56 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             self._emergency_flatten(output_root, "BROKER_FACTS_UNKNOWN")
             raise xm.BrokerStateUnknownError(str(exc)) from exc
 
+    def _terminal_query_batch(self, output_root: Path, start: object, end: object, queried_at: object):
+        """Read and attest one closed range before allowing deal ingestion to commit."""
+        first = self._retry_mt5_read("history_deals_get", start, end)
+        repeated = self._retry_mt5_read("history_deals_get", start, end)
+        orders = self._retry_mt5_read("history_orders_get", start, end)
+        order_rows = tuple(orders)
+        tickets = {
+            int(getattr(row, "ticket", 0) or getattr(row, "order", 0) or 0)
+            for row in order_rows
+        }
+        positions = {
+            str(getattr(row, "position_id", "") or getattr(row, "position", "") or "")
+            for row in (*tuple(first), *order_rows)
+        }
+        tickets.discard(0)
+        positions.discard("")
+        ticket_deals = tuple(
+            deal
+            for ticket in sorted(tickets)
+            for deal in tuple(self._retry_mt5_read("history_deals_get", ticket=ticket))
+        )
+        position_deals = tuple(
+            deal
+            for position in sorted(positions)
+            for deal in tuple(self._retry_mt5_read("history_deals_get", position=position))
+        )
+        local_intents: list[tuple[object, ...]] = []
+        database = self._order_db(output_root)
+        if database.is_file():
+            connection = sqlite3.connect(database)
+            try:
+                table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intents'"
+                ).fetchone()
+                if table:
+                    local_intents = connection.execute(
+                        "SELECT order_id,status FROM order_intents "
+                        "WHERE created_at >= ? AND created_at < ? "
+                        "AND status IN ('WRITE_CLAIMED','SUBMITTED','UNKNOWN','ACCEPTED')",
+                        (pd.Timestamp(start).tz_convert("UTC").isoformat(), pd.Timestamp(end).tz_convert("UTC").isoformat()),
+                    ).fetchall()
+            finally:
+                connection.close()
+        return build_terminal_query_batch(
+            rows=tuple(first), repeated_rows=tuple(repeated), orders=order_rows,
+            ticket_deals=ticket_deals, position_deals=position_deals,
+            local_intents=local_intents, start_utc=pd.Timestamp(start).to_pydatetime(),
+            end_utc=pd.Timestamp(end).to_pydatetime(), queried_at_utc=pd.Timestamp(queried_at).to_pydatetime(),
+        )
+
     def _terminal_deal_ingestor(self, output_root: Path, now: pd.Timestamp) -> TerminalDealIngestor:
         database = self._order_db(output_root)
         connection = sqlite3.connect(database, timeout=30.0)
@@ -1126,10 +1187,12 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             row = connection.execute("SELECT MIN(created_at) FROM order_intents").fetchone() if table else None
         finally:
             connection.close()
-        campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC")
+        campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC") - pd.Timedelta(milliseconds=1)
+        if campaign_start >= now.tz_convert("UTC"):
+            campaign_start = now.tz_convert("UTC") - pd.Timedelta(milliseconds=1)
         return TerminalDealIngestor(
             database,
-            read_deals=lambda start, end: self._retry_mt5_read("history_deals_get", start, end),
+            read_deals=lambda start, end: self._terminal_query_batch(output_root, start, end, now),
             account_key=self._account_key(),
             campaign_id=str(self.config.get("campaign_id") or ""),
             candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),

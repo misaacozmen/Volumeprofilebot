@@ -30,9 +30,15 @@ def canonical_hash(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
+FROZEN_INVENTORY = ROOT / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv"
+FROZEN_INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
+
+
 def main() -> None:
     calendar = ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v4.json"
     data_root = ROOT / "data/provenance/dukascopy_v4"
+    if not FROZEN_INVENTORY.is_file() or digest(FROZEN_INVENTORY) != FROZEN_INVENTORY_SHA256:
+        raise SystemExit("frozen V4 inventory is missing or has the wrong SHA-256")
     manifest_paths = sorted(data_root.glob("reacquired_session/**/*.manifest.json"))
     data_manifest = {
         "schema_version": 4,
@@ -41,7 +47,9 @@ def main() -> None:
         "source_granularity": "M1",
         "evaluation_domain": {"start": "2022-01-03", "end": "2026-07-02"},
         "acquisition_envelope": {"start": "2022-01-01", "end_exclusive": "2026-07-03"},
-        "frozen_invalid_leg_inventory_sha256": "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075",
+        "frozen_invalid_leg_inventory_path": FROZEN_INVENTORY.relative_to(ROOT).as_posix(),
+        "frozen_invalid_leg_inventory_sha256": FROZEN_INVENTORY_SHA256,
+        "authoritative_target_count": 113,
         "fresh_leg_day_manifests": [
             {"path": path.relative_to(ROOT).as_posix(), "sha256": digest(path)} for path in manifest_paths
         ],
@@ -66,12 +74,25 @@ def main() -> None:
     old_candidate = json.loads((ROOT / "research_candidates/super1/super1_unsigned_candidate_v3.json").read_text(encoding="utf-8"))
     candidate = deepcopy(old_candidate)
     candidate.update({
+        "schema_version": 4,
         "artifact_id": "super1_unsigned_candidate_v4",
         "name": "SUPER1_UNSIGNED_CANDIDATE_V4",
         "status": "UNSIGNED_VALIDATION_ONLY",
         "promotion_bindings": {
+            "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
+            "calendar_path": calendar.relative_to(ROOT).as_posix(),
             "calendar_sha256": digest(calendar),
+            "data_manifest_path": data_manifest_path.relative_to(ROOT).as_posix(),
             "data_manifest_sha256": digest(data_manifest_path),
+            "config_path": "live_forward/super1_xm_mt5_demo_config_v4.json",
+            "signal_contract_path": "research_candidates/super1/super1_signal_contract_v4.json",
+            "instrument_registry_path": "live_forward/instrument_registry_v4.json",
+            "locked_oos_baseline_path": "research_candidates/super1/super1_locked_oos_baseline_v4.json",
+            "account_binding_schema_path": "live_forward/account_binding_schema_v4.json",
+            "sandbox_protocol_path": "backtest/live_signal_protocol.py",
+            "deal_schema_path": "backtest/live/deal_ingestion.py",
+            "sandbox_protocol_sha256": digest(ROOT / "backtest/live_signal_protocol.py"),
+            "deal_schema_sha256": digest(ROOT / "backtest/live/deal_ingestion.py"),
             "engine_source_sha256": source_code_hash(),
         },
     })
@@ -134,6 +155,8 @@ def main() -> None:
         "candidate_path": candidate_path.relative_to(ROOT).as_posix(),
         "candidate_file_sha256": digest(candidate_path),
         "candidate_artifact_sha256": candidate["artifact_sha256"],
+        "data_manifest_path": data_manifest_path.relative_to(ROOT).as_posix(),
+        "data_manifest_sha256": digest(data_manifest_path),
         "signal_contract_path": contract_path.relative_to(ROOT).as_posix(),
         "signal_contract_sha256": digest(contract_path),
         "strategy_health_baseline": baseline,
@@ -177,13 +200,17 @@ def main() -> None:
         "locked_oos_baseline_path": baseline_path.relative_to(ROOT).as_posix(),
         "locked_oos_baseline_sha256": digest(baseline_path),
         "engine_source_sha256": source_code_hash(),
+        "sandbox_protocol_path": "backtest/live_signal_protocol.py",
         "sandbox_protocol_sha256": digest(ROOT / "backtest/live_signal_protocol.py"),
+        "deal_schema_path": "backtest/live/deal_ingestion.py",
         "deal_schema_sha256": digest(ROOT / "backtest/live/deal_ingestion.py"),
         "risk_policy_sha256": risk_policy_hash,
         "account_binding_schema_sha256": digest(schema_path),
+        "account_binding_schema_path": schema_path.relative_to(ROOT).as_posix(),
+        "promotion_bindings": candidate["promotion_bindings"],
         "reliability_manifest_sha256": None,
         "risk_xray_manifest_sha256": None,
-        "promotion_blocker": "PENDING_DATA_GATES",
+        "promotion_blocker": "PUBLIC_HISTORY_IDENTITY",
         "deployment": {
             "target": "LOCAL_WINDOWS_PC", "isolation_required": True,
             "demo_order_execution_enabled": True, "real_money_live_enabled": False,

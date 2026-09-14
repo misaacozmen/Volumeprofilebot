@@ -1339,7 +1339,7 @@ def finalize_session(
             prefix_cutoffs = {key: pd.Timestamp(prefix["cutoffs"][key]) for key in LEG_ORDER}
             prefix_signal = sandbox_signal_payload(
                 output_root, frames, configs, state_config, trade_date,
-                shared_asof, knowledge_utc, prefix_cutoffs, runtime,
+                shared_asof, knowledge_utc, prefix_cutoffs, runtime, gates,
             )
             for key in LEG_ORDER:
                 cutoff = prefix_cutoffs[key]
