@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from backtest.signals import SignalProposal
 from backtest.live.approval import ApprovalStore, wire_request_hash
 from backtest.live.audit_ledger import AuditLedger
-from backtest.live.contracts import BrokerSnapshot, InstrumentContract
+from backtest.live.contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy
+from backtest.live.deal_ingestion import TerminalDealIngestor
 from backtest.live.execution import Mt5ExecutionAdapter
 from backtest.live.halt import HaltController
 from backtest.live.instruments import InstrumentRegistry
@@ -67,6 +68,11 @@ def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_p
     approval = approvals.approve(proposal.proposal_id, lease=lease, operator_sid=lease["authorized_operator_sid"], release_id=release_id, candidate_hash=proposal.candidate_hash, now=NOW)
 
     contract = _contract()
+    policy = LiveRiskPolicy(
+        -1.0, (("i1", 1), ("i2", 2)), 3,
+        (("i1", "US100Cash"), ("i2", "US500Cash")), 1, 2, 300,
+        (("i1", 100.0), ("i2", 100.0)),
+    )
 
     def profit(action: str, symbol: str, volume: float, entry: float, stop: float) -> float:
         return -abs(entry - stop) * volume * 10.0
@@ -76,8 +82,8 @@ def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_p
 
     snapshots = iter(
         (
-            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="1" * 64, policy_hash="3" * 64, order_calc_profit=profit, order_calc_margin=margin),
-            BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", approval=True, halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="2" * 64, policy_hash="3" * 64, order_calc_profit=profit, order_calc_margin=margin),
+                BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="1" * 64, policy_hash=policy.policy_hash, instrument_contract_hash=contract.contract_hash, order_calc_profit=profit, order_calc_margin=margin, total_entry_count=0, leverage=2.0, pair_exposure_percent=0.0, concentration_percent=0.0, deal_facts_hash="d" * 64, deal_reconciliation_at=NOW, deal_watermark_time_msc=0, deal_watermark_ticket=0),
+                BrokerSnapshot(NOW, 10_000.0, 5_000.0, daily_realized_r=0.0, strategy_health="ACTIVE", approval=True, halt=False, instrument_contract=contract, total_stop_risk=0.0, snapshot_hash="2" * 64, policy_hash=policy.policy_hash, instrument_contract_hash=contract.contract_hash, order_calc_profit=profit, order_calc_margin=margin, total_entry_count=0, leverage=2.0, pair_exposure_percent=0.0, concentration_percent=0.0, deal_facts_hash="d" * 64, deal_reconciliation_at=NOW, deal_watermark_time_msc=0, deal_watermark_ticket=0),
         )
     )
 
@@ -102,10 +108,15 @@ def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_p
     health = StrategyHealth("ACTIVE", baseline=baseline, expected_candidate_hash="c" * 64)
     ledger = AuditLedger(tmp_path / "audit.sqlite3", campaign_id=campaign_id, account_key=account_key)
     dependencies = ProductionDependencies(
-        risk_guard=RiskGuard(clock=lambda: NOW), order_state=OrderStateMachine(), audit_ledger=ledger,
+        risk_guard=RiskGuard(policy=policy, clock=lambda: NOW), order_state=OrderStateMachine(), audit_ledger=ledger,
         halt_controller=HaltController(tmp_path / "runtime"), instrument_registry=InstrumentRegistry([contract]),
         approval_store=approvals, runtime_settings=RuntimeSettings("DEMO_ORDER"), strategy_health=health,
         execution_adapter=adapter,
+        deal_ingestor=TerminalDealIngestor(
+            tmp_path / "approvals.sqlite3", read_deals=lambda _start, _end: (),
+            account_key=account_key, campaign_id=campaign_id, candidate_hash="c" * 64,
+            campaign_start=NOW - timedelta(days=1), magic=1, now=lambda: NOW,
+        ),
     )
 
     flow = ProductionOrderFlow(dependencies)

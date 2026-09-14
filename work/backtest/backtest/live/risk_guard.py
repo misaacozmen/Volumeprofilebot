@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from decimal import Decimal
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,6 +12,7 @@ from numbers import Real
 from typing import Any, Callable, Mapping
 
 from ..signals import SignalProposal
+from ..numeric_contracts import FinancialMathError, quantize_volume_down
 from .contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder, RiskDecision
 
 
@@ -136,6 +138,16 @@ class RiskGuard:
         if not isinstance(contract, InstrumentContract) or contract.instrument_id != proposal.instrument_id:
             raise RiskGuardError("instrument contract does not match proposal")
         if self.policy is not None:
+            facts_hash = str(self._value(snapshot, "deal_facts_hash", "") or "")
+            reconciled = self._value(snapshot, "deal_reconciliation_at")
+            watermark_time = self._value(snapshot, "deal_watermark_time_msc")
+            watermark_ticket = self._value(snapshot, "deal_watermark_ticket")
+            if len(facts_hash) != 64 or not isinstance(reconciled, datetime) or reconciled.tzinfo is None:
+                raise RiskGuardError("terminal deal facts are missing or stale")
+            if reconciled > as_of or (as_of - reconciled).total_seconds() > 86400:
+                raise RiskGuardError("terminal deal reconciliation is stale")
+            if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (watermark_time, watermark_ticket)):
+                raise RiskGuardError("terminal deal watermark is invalid")
             if self._value(snapshot, "policy_hash") != self.policy.policy_hash:
                 raise RiskGuardError("broker snapshot policy hash mismatch")
             if self._value(snapshot, "instrument_contract_hash") != contract.contract_hash:
@@ -204,16 +216,14 @@ class RiskGuard:
             raise RiskGuardError("broker stop loss calculation is zero")
         risk_cash = equity * self.base_risk_percent / 100.0
         raw_volume = risk_cash / loss_per_unit
-        steps = math.floor((raw_volume + contract.volume_step * 1e-9) / contract.volume_step)
-        volume = steps * contract.volume_step
-        if volume < contract.volume_min or volume > contract.volume_max:
-            raise RiskGuardError("calculated volume is outside signed instrument limits")
+        try:
+            volume = quantize_volume_down(raw_volume, contract.volume_step, contract.volume_min, contract.volume_max)
+        except FinancialMathError as exc:
+            raise RiskGuardError("calculated volume is outside signed instrument limits") from exc
         if self.policy is not None and volume > dict(self.policy.max_position_volume_by_instrument)[proposal.instrument_id]:
             raise RiskGuardError("calculated volume exceeds signed policy limit")
-        volume = round(volume, max(contract.digits, 8))
         stop_risk = abs(_finite(profit_calculator(action, contract.broker_symbol, volume, proposal.entry_price, proposal.stop_price), "stop_risk"))
-        risk_tolerance = max(1e-8, abs(risk_cash) * 1e-8)
-        if stop_risk <= 0 or stop_risk > risk_cash + risk_tolerance:
+        if stop_risk <= 0 or Decimal(str(stop_risk)) > Decimal(str(risk_cash)):
             raise RiskGuardError("stop risk exceeds the current risk budget")
         if stop_risk + total_stop_risk > equity * self.max_total_stop_risk_percent / 100.0:
             raise RiskGuardError("aggregate stop risk exceeds existing limit")

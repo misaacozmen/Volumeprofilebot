@@ -146,6 +146,10 @@ class BrokerSnapshot:
     owned_deal_ids: Sequence[str] = field(default_factory=tuple)
     policy_hash: str = ""
     instrument_contract_hash: str = ""
+    deal_facts_hash: str = ""
+    deal_reconciliation_at: datetime | None = None
+    deal_watermark_time_msc: int | None = None
+    deal_watermark_ticket: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

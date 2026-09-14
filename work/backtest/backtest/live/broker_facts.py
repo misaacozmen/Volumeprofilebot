@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -12,6 +11,7 @@ from numbers import Real
 from typing import Any, Callable, Mapping
 
 from .contracts import BrokerSnapshot, InstrumentContract
+from .deal_ingestion import TerminalFactSnapshot
 
 
 class BrokerFactsError(RuntimeError):
@@ -68,7 +68,7 @@ class BrokerFactsBuilder:
         order_calc_margin: Callable[..., Any],
         halt_reader: Callable[[], bool],
         strategy_health_reader: Callable[[], str],
-        starting_risk_reader: Callable[[str], float | None],
+        terminal_fact_reader: Callable[[datetime], TerminalFactSnapshot],
         strategy_matcher: Callable[[Mapping[str, Any]], bool],
         mutex: Callable[[], Any] | None = None,
         contract_resolver: Callable[[str], InstrumentContract] | None = None,
@@ -82,7 +82,7 @@ class BrokerFactsBuilder:
         self.order_calc_margin = order_calc_margin
         self.halt_reader = halt_reader
         self.strategy_health_reader = strategy_health_reader
-        self.starting_risk_reader = starting_risk_reader
+        self.terminal_fact_reader = terminal_fact_reader
         self.strategy_matcher = strategy_matcher
         self.mutex = mutex or (lambda: nullcontext())
         self.contract_resolver = contract_resolver
@@ -98,33 +98,6 @@ class BrokerFactsBuilder:
         if not isinstance(value, (tuple, list)):
             raise BrokerFactsError(f"broker {operation} returned a non-collection")
         return tuple(value)
-
-    def _daily_realized_r(self, deals: tuple[dict[str, Any], ...]) -> float:
-        grouped: dict[str, float] = {}
-        seen: set[str] = set()
-        for deal in deals:
-            deal_id = str(deal.get("deal_id") or deal.get("ticket") or "").strip()
-            if not deal_id or deal_id in seen:
-                raise BrokerFactsError("strategy broker deals contain a missing or duplicate deal ID")
-            seen.add(deal_id)
-            entry = deal.get("entry")
-            known = self.deal_in_values | self.deal_out_values | self.deal_inout_values | self.deal_out_by_values
-            if entry not in known:
-                raise BrokerFactsError(f"strategy deal {deal_id} has an unknown entry type")
-            if entry not in self.deal_out_values | self.deal_inout_values | self.deal_out_by_values:
-                continue
-            position_id = str(deal.get("position_id") or "").strip()
-            if not position_id:
-                raise BrokerFactsError("strategy exit deal has no position ID")
-            risk = self.starting_risk_reader(position_id)
-            risk_value = _number(risk, f"starting risk for position {position_id}", positive=True)
-            components = []
-            for field in ("profit", "commission", "swap", "fee"):
-                if field not in deal:
-                    raise BrokerFactsError(f"strategy deal {deal_id} is missing {field}")
-                components.append(_number(deal[field], f"deal {deal_id} {field}"))
-            grouped[position_id] = grouped.get(position_id, 0.0) + sum(components) / risk_value
-        return float(sum(grouped.values()))
 
     def _stop_risk(self, rows: tuple[dict[str, Any], ...], default_contract: InstrumentContract) -> float:
         total = 0.0
@@ -182,8 +155,6 @@ class BrokerFactsBuilder:
         now: datetime,
         contract: InstrumentContract,
         candidate_hash: str,
-        deals_start: datetime,
-        deals_end: datetime,
         approval: bool | None = None,
         policy_hash: str = "",
     ) -> BrokerSnapshot:
@@ -194,10 +165,11 @@ class BrokerFactsBuilder:
                 raise BrokerFactsError("broker account snapshot is unknown")
             positions_raw = self._collection("positions_get")
             pending_raw = self._collection("orders_get")
-            daily_start = current.astimezone(ZoneInfo("America/New_York")).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ).astimezone(timezone.utc)
-            deals_raw = self._collection("history_deals_get", daily_start, current)
+            terminal = self.terminal_fact_reader(current)
+            if not isinstance(terminal, TerminalFactSnapshot):
+                raise BrokerFactsError("canonical terminal fact snapshot is missing")
+            if terminal.as_of > current or current - terminal.reconciliation_at > timedelta(hours=24):
+                raise BrokerFactsError("canonical terminal fact snapshot is stale")
             account_login = _value(account, "login")
             equity = _number(_value(account, "equity"), "account equity", positive=True)
             margin_free = _number(_value(account, "margin_free"), "account margin_free", nonnegative=True)
@@ -205,11 +177,10 @@ class BrokerFactsBuilder:
             leverage = None if raw_leverage is None else _number(raw_leverage, "account leverage", positive=True)
             positions = tuple(_row(item) for item in positions_raw)
             pending = tuple(_row(item) for item in pending_raw)
-            deals = tuple(_row(item) for item in deals_raw)
-            owned_deals = tuple(item for item in deals if self.strategy_matcher(item))
+            deals = tuple(dict(item) for item in terminal.closed_episodes)
             owned_positions = tuple(item for item in positions if self.strategy_matcher(item))
             owned_pending = tuple(item for item in pending if self.strategy_matcher(item))
-            daily_realized_r = self._daily_realized_r(owned_deals)
+            daily_realized_r = float(terminal.daily_realized_r)
             total_stop_risk = self._stop_risk(positions + pending, contract)
             pair_exposure_percent, concentration_percent = self._exposure_metrics(positions + pending, contract, equity)
             halt = self.halt_reader()
@@ -225,30 +196,10 @@ class BrokerFactsBuilder:
                     raise BrokerFactsError(f"no signed contract for owned symbol {symbol}")
                 return resolved.instrument_id
 
-            entry_positions: dict[str, str] = {}
-            owned_deal_ids: list[str] = []
+            owned_deal_ids = list(terminal.owned_deal_ids)
             last_entry: datetime | None = None
             last_loss: datetime | None = None
-            for deal in owned_deals:
-                deal_id = str(deal.get("deal_id") or deal.get("ticket") or "")
-                owned_deal_ids.append(deal_id)
-                entry = deal.get("entry")
-                position_id = str(deal.get("position_id") or "")
-                if entry in self.deal_in_values | self.deal_inout_values:
-                    if not position_id:
-                        raise BrokerFactsError("strategy entry deal has no position ID")
-                    entry_positions[position_id] = instrument_id(deal)
-                raw_time = deal.get("time_msc", deal.get("time"))
-                if raw_time is not None:
-                    timestamp = datetime.fromtimestamp(float(raw_time) / (1000.0 if "time_msc" in deal else 1.0), tz=timezone.utc)
-                    if entry in self.deal_in_values | self.deal_inout_values and (last_entry is None or timestamp > last_entry):
-                        last_entry = timestamp
-                    if entry in self.deal_out_values | self.deal_inout_values | self.deal_out_by_values:
-                        pnl = sum(_number(deal[field], f"deal {deal_id} {field}") for field in ("profit", "commission", "swap", "fee"))
-                        if pnl < 0 and (last_loss is None or timestamp > last_loss):
-                            last_loss = timestamp
-            entry_counts: dict[str, int] = {}
-            for value in entry_positions.values(): entry_counts[value] = entry_counts.get(value, 0) + 1
+            entry_counts = dict(terminal.entry_counts_by_instrument)
             position_counts: dict[str, int] = {}
             pending_counts: dict[str, int] = {}
             for row in owned_positions: position_counts[instrument_id(row)] = position_counts.get(instrument_id(row), 0) + 1
@@ -262,12 +213,15 @@ class BrokerFactsBuilder:
                 "leverage": leverage,
                 "pair_exposure_percent": pair_exposure_percent,
                 "concentration_percent": concentration_percent,
-                "total_entry_count": len(entry_positions), "entry_counts_by_instrument": entry_counts,
+                "total_entry_count": terminal.total_entry_count, "entry_counts_by_instrument": entry_counts,
                 "open_position_counts_by_instrument": position_counts, "pending_order_counts_by_instrument": pending_counts,
                 "last_accepted_entry_at": None if last_entry is None else last_entry.isoformat(),
                 "last_terminal_loss_at": None if last_loss is None else last_loss.isoformat(),
                 "owned_deal_ids": owned_deal_ids, "policy_hash": policy_hash,
                 "instrument_contract_hash": contract.contract_hash,
+                "deal_facts_hash": terminal.deal_facts_hash,
+                "deal_reconciliation_at": terminal.reconciliation_at.isoformat(),
+                "deal_watermark": [terminal.high_water_time_msc, terminal.high_water_ticket],
             }
             return BrokerSnapshot(
                 current, equity, margin_free, open_positions=positions, pending_orders=pending,
@@ -278,9 +232,13 @@ class BrokerFactsBuilder:
                 concentration_percent=concentration_percent,
                 snapshot_hash=hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode("utf-8")).hexdigest(),
                 order_calc_profit=self.order_calc_profit, order_calc_margin=self.order_calc_margin,
-                total_entry_count=len(entry_positions), entry_counts_by_instrument=entry_counts,
+                total_entry_count=terminal.total_entry_count, entry_counts_by_instrument=entry_counts,
                 open_position_counts_by_instrument=position_counts, pending_order_counts_by_instrument=pending_counts,
                 last_accepted_entry_at=last_entry, last_terminal_loss_at=last_loss,
                 owned_deal_ids=tuple(owned_deal_ids), policy_hash=policy_hash,
                 instrument_contract_hash=contract.contract_hash,
+                deal_facts_hash=terminal.deal_facts_hash,
+                deal_reconciliation_at=terminal.reconciliation_at,
+                deal_watermark_time_msc=terminal.high_water_time_msc,
+                deal_watermark_ticket=terminal.high_water_ticket,
             )

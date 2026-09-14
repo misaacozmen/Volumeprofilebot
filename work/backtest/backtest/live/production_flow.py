@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from ..signals import SignalProposal
 from .approval import ApprovalError, ApprovalStore, proposal_hash, wire_request_hash
 from .audit_ledger import AuditLedger
 from .contracts import BrokerEvidence, BrokerSnapshot, ExecutionAdapter, InstrumentContract, RiskApprovedOrder
+from .deal_ingestion import TerminalDealIngestor
 from .execution import issue_persistence_receipt
 from .halt import HaltController
 from .instruments import InstrumentRegistry
@@ -36,6 +38,13 @@ class ProductionDependencies:
     runtime_settings: RuntimeSettings
     strategy_health: StrategyHealth
     execution_adapter: ExecutionAdapter
+    deal_ingestor: TerminalDealIngestor
+
+    def __post_init__(self) -> None:
+        if self.risk_guard.policy is None:
+            raise ProductionFlowError("production risk guard requires a signed policy")
+        if Path(self.approval_store.path).resolve() != self.deal_ingestor.path.resolve():
+            raise ProductionFlowError("approval, SEND_ARMED, and daily risk slot must share one SQLite transaction")
 
 
 REQUIRED_DEPENDENCIES = tuple(ProductionDependencies.__dataclass_fields__)
@@ -235,6 +244,22 @@ class ProductionOrderFlow:
         same_db = Path(d.approval_store.path).resolve() == Path(d.audit_ledger.path).resolve()
 
         def arm(connection: Any, _request_digest: str, _approval_type: str) -> None:
+            d.deal_ingestor.record_entry_risk_intent(
+                proposal_id=proposal.proposal_id, instrument_id=proposal.instrument_id,
+                request_hash=_request_digest, approved_volume=order.volume,
+                approved_risk_cash=order.risk_cash, created_at=order.approved_at,
+                connection=connection,
+            )
+            policy = d.risk_guard.policy
+            if policy is None:
+                raise ProductionFlowError("production risk policy disappeared before SEND_ARMED")
+            d.deal_ingestor.reserve_daily_slot(
+                session_date=order.approved_at.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
+                instrument_id=proposal.instrument_id, proposal_id=proposal.proposal_id,
+                request_hash=_request_digest, max_total=policy.max_total_trades_per_day,
+                max_instrument=dict(policy.max_trades_per_day_by_instrument)[proposal.instrument_id],
+                observed_at=order.approved_at, connection=connection,
+            )
             write_port = getattr(d.execution_adapter, "write_port", None)
             if write_port is not None:
                 write_port.arm_in_transaction(
@@ -329,7 +354,18 @@ class ProductionOrderFlow:
                 payload={"approval_id": approval_id, "request_hash": persisted.request_hash},
             )
             evidence = d.execution_adapter.reconcile(result, persisted)
+            if evidence.ticket is None:
+                raise ProductionFlowError("broker ACK has no order ticket binding")
+            d.deal_ingestor.bind_order(
+                order_ticket=evidence.ticket, proposal_id=proposal.proposal_id,
+                bound_at=evidence.observed_at or datetime.now(timezone.utc),
+            )
+            d.deal_ingestor.transition_daily_slot(proposal_id=proposal.proposal_id, state="SUBMITTED")
         except Exception as exc:
+            try:
+                d.deal_ingestor.transition_daily_slot(proposal_id=proposal.proposal_id, state="UNKNOWN")
+            except Exception:
+                pass
             try:
                 d.halt_controller.trigger(
                     "BROKER_STATE_UNKNOWN_AFTER_SEND",

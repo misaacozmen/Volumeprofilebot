@@ -14,6 +14,8 @@ from typing import Any
 
 import pandas as pd
 
+from backtest.numeric_contracts import FinancialMathError, quantize_price
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -2898,7 +2900,10 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             raise core.CriticalLiveError(f"{symbol}: invalid broker trade tick size.")
 
         def aligned_price(value: float) -> float:
-            return round(round(float(value) / trade_tick_size) * trade_tick_size, digits)
+            try:
+                return quantize_price(value, trade_tick_size)
+            except FinancialMathError as exc:
+                raise core.CriticalLiveError(f"{symbol}: invalid price quantization input.") from exc
 
         entry = aligned_price(entry)
         stop = aligned_price(stop)

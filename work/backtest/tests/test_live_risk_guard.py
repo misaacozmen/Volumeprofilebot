@@ -86,6 +86,8 @@ def policy_snapshot(**updates: object) -> BrokerSnapshot:
         "open_position_counts_by_instrument": {}, "pending_order_counts_by_instrument": {},
         "policy_hash": signed.policy_hash, "instrument_contract_hash": contract().contract_hash,
         "leverage": 2.0, "pair_exposure_percent": 0.0, "concentration_percent": 0.0,
+        "deal_facts_hash": "d" * 64, "deal_reconciliation_at": NOW,
+        "deal_watermark_time_msc": 0, "deal_watermark_ticket": 0,
         **updates,
     }
     return snapshot(**values)

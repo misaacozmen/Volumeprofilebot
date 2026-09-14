@@ -18,6 +18,7 @@ from backtest.live.audit_ledger import AUDIT_SCHEMA_VERSION, GENESIS_HASH, Audit
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder
 from backtest.live.execution import Mt5WritePort
+from backtest.live.deal_ingestion import TerminalDealIngestor
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
 from backtest.live.risk_guard import RiskGuard
 from backtest.live.halt import HaltController, emergency_flatten_cycle
@@ -720,22 +721,6 @@ class _Super1AuthorizedMaintenanceAdapter:
         ]
         if len(exact) != 1:
             raise core.CriticalLiveError("production broker order readback is not exact")
-        position_id = int(getattr(response, "position", 0) or 0)
-        if position_id > 0:
-            connection = sqlite3.connect(self.client._order_db(self.output_root), timeout=30.0)
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "INSERT INTO position_risk_records(position_id,order_id,candidate_hash,starting_risk_cash,created_at_utc) VALUES(?,?,?,?,?) ON CONFLICT(position_id) DO UPDATE SET order_id=excluded.order_id,candidate_hash=excluded.candidate_hash,starting_risk_cash=excluded.starting_risk_cash",
-                    (str(position_id), order.proposal_id, order.proposal.candidate_hash, float(order.risk_cash), core.utc_now().isoformat()),
-                )
-                connection.commit()
-            except Exception:
-                if connection.in_transaction:
-                    connection.rollback()
-                raise
-            finally:
-                connection.close()
         return BrokerEvidence(
             "SEND", retcode, ticket=ticket,
             deal_id=(int(getattr(response, "deal", 0) or 0) or None),
@@ -1088,21 +1073,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         now: pd.Timestamp,
         approval: bool,
     ) -> BrokerSnapshot:
-        start = (now - pd.Timedelta(days=35)).to_pydatetime()
-        end = (now + pd.Timedelta(minutes=1)).to_pydatetime()
         controller = HaltController(output_root)
-
-        def starting_risk(position_id: str) -> float | None:
-            connection = sqlite3.connect(self._order_db(output_root), timeout=30.0)
-            try:
-                connection.execute("PRAGMA busy_timeout=30000")
-                row = connection.execute(
-                    "SELECT starting_risk_cash FROM position_risk_records WHERE position_id=?",
-                    (position_id,),
-                ).fetchone()
-                return None if row is None else row[0]
-            finally:
-                connection.close()
+        ingestor = self._terminal_deal_ingestor(output_root, now)
+        terminal_facts = ingestor.ingest(observed_at=now.to_pydatetime())
 
         def belongs_to_super1(row: dict[str, Any]) -> bool:
             return (
@@ -1118,15 +1091,13 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 order_calc_margin=self.mt5.order_calc_margin,
                 halt_reader=lambda: controller.read() is not None,
                 strategy_health_reader=lambda: health.state,
-                starting_risk_reader=starting_risk,
+                terminal_fact_reader=lambda _current: terminal_facts,
                 strategy_matcher=belongs_to_super1,
                 mutex=order_mutex,
             ).build(
                 now=now.to_pydatetime(),
                 contract=contract,
                 candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
-                deals_start=start,
-                deals_end=end,
                 approval=approval,
                 policy_hash=policy.policy_hash,
             )
@@ -1134,6 +1105,25 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             controller.trigger("BROKER_FACTS_UNKNOWN", error=str(exc), symbol=symbol)
             self._emergency_flatten(output_root, "BROKER_FACTS_UNKNOWN")
             raise xm.BrokerStateUnknownError(str(exc)) from exc
+
+    def _terminal_deal_ingestor(self, output_root: Path, now: pd.Timestamp) -> TerminalDealIngestor:
+        database = self._order_db(output_root)
+        connection = sqlite3.connect(database, timeout=30.0)
+        try:
+            row = connection.execute("SELECT MIN(created_at) FROM order_intents").fetchone()
+        finally:
+            connection.close()
+        campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC")
+        return TerminalDealIngestor(
+            database,
+            read_deals=lambda start, end: self._retry_mt5_read("history_deals_get", start, end),
+            account_key=str(self.config.get("account_login") or ""),
+            campaign_id=str(self.config.get("campaign_id") or ""),
+            candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
+            campaign_start=campaign_start.to_pydatetime(), magic=self.magic,
+            comment_prefix=str(self.config.get("order_comment_prefix") or ""),
+            now=lambda: now.to_pydatetime(),
+        )
 
     def _emergency_flatten(self, output_root: Path, reason: str) -> dict[str, Any]:
         """Flatten every exact broker ticket after a production HALT."""
@@ -1281,6 +1271,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             self._order_db(output_root), campaign_id=campaign_id, account_key=account_key,
             anchor=getattr(self, "_audit_anchor_callback"),
         )
+        snapshot_now = pd.Timestamp(core.utc_now()).tz_convert("UTC")
         dependencies = ProductionDependencies(
             risk_guard=RiskGuard(
                 policy=policy,
@@ -1302,9 +1293,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             runtime_settings=RuntimeSettings("DEMO_ORDER"),
             strategy_health=health,
             execution_adapter=adapter,
+            deal_ingestor=self._terminal_deal_ingestor(output_root, snapshot_now),
         )
         snapshots = 0
-        snapshot_now = pd.Timestamp(core.utc_now()).tz_convert("UTC")
 
         def snapshot_provider() -> BrokerSnapshot:
             nonlocal snapshots
@@ -1656,21 +1647,20 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             def snapshot(approval: bool) -> BrokerSnapshot:
                 try:
                     policy = _signed_live_risk_policy(self.config)
+                    terminal_facts = self._terminal_deal_ingestor(output_root, now).ingest(observed_at=now.to_pydatetime())
                     return BrokerFactsBuilder(
                         read=self._retry_mt5_read,
                         order_calc_profit=self.mt5.order_calc_profit,
                         order_calc_margin=self.mt5.order_calc_margin,
                         halt_reader=lambda: HaltController(output_root).read() is not None,
                         strategy_health_reader=lambda: "ACTIVE",
-                        starting_risk_reader=lambda _position_id: None,
+                        terminal_fact_reader=lambda _current: terminal_facts,
                         strategy_matcher=lambda _row: True,
                         mutex=order_mutex,
                     ).build(
                         now=now.to_pydatetime(),
                         contract=contract,
                         candidate_hash=candidate_hash,
-                        deals_start=(now - pd.Timedelta(days=1)).to_pydatetime(),
-                        deals_end=(now + pd.Timedelta(minutes=1)).to_pydatetime(),
                         approval=approval,
                         policy_hash=policy.policy_hash,
                     )
@@ -1766,6 +1756,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 order_state=OrderStateMachine(), audit_ledger=ledger, halt_controller=HaltController(output_root),
                 instrument_registry=registry, approval_store=ApprovalStore(self._order_db(output_root), halt=lambda reason, **details: core.write_fatal_latch(output_root, reason, reason, **details)),
                 runtime_settings=RuntimeSettings("SMOKE"), strategy_health=health, execution_adapter=adapter,
+                deal_ingestor=self._terminal_deal_ingestor(output_root, now),
             )
             try:
                 def fresh_snapshot() -> BrokerSnapshot:
