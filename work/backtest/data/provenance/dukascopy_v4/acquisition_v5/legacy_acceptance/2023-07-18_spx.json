@@ -1,5 +1,5 @@
 {
-  "auditor_sha256": "8f9385def1d1c47f698bf5edb7f7728e7a69b51b8d5a2a3d137aebd2aaf1f82d",
+  "auditor_sha256": "e2db868c94d4be7e7a4b620d81fc0d8dab8910abd22ede90a1ebadaef2dc1ac7",
   "bundle_path": "reacquired_session/2023-07-18_spx",
   "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
   "derived_path": "reacquired_session/2023-07-18_spx/DUKASCOPY_USA500IDXUSD, 5m_2023-07-18_2023-07-19.csv",
@@ -10,7 +10,7 @@
   "minute_path": "reacquired_session/2023-07-18_spx/DUKASCOPY_USA500IDXUSD, 1m_2023-07-18_2023-07-19.csv",
   "minute_semantic_sha256": "62cf9fcbc1b7906a14c0d8508158e219571ad180ac2fcdc1ed6838db74e82940",
   "minute_sha256": "36b633b448a0378e6ba05a8993cf23288e44f90e1ba311564c5d1bfaaa6fdfcc",
-  "node_helper_sha256": "3f7a3f7769ef47c751086fc635cdf2b240cccfd65b90bf1388f11eccc4652bba",
+  "node_helper_sha256": "23ec2e96dde090e7865dcdaddb1e77f0039afb121791df80a046f492cd81e283",
   "package_lock_sha256": "74506876532b3d1caf4be740fc42c79e9eb529518770afd05c40a0463c732dee",
   "raw_sha256": [
     "57e40368302748bb33344a4861e69880f03277aad959a03b765cd87f396a1049"

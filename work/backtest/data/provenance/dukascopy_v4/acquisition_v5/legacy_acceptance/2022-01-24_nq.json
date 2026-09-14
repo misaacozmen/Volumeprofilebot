@@ -1,5 +1,5 @@
 {
-  "auditor_sha256": "8f9385def1d1c47f698bf5edb7f7728e7a69b51b8d5a2a3d137aebd2aaf1f82d",
+  "auditor_sha256": "e2db868c94d4be7e7a4b620d81fc0d8dab8910abd22ede90a1ebadaef2dc1ac7",
   "bundle_path": "reacquired_session/2022-01-24_nq",
   "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
   "derived_path": "reacquired_session/2022-01-24_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-01-24_2022-01-25.csv",
@@ -10,7 +10,7 @@
   "minute_path": "reacquired_session/2022-01-24_nq/DUKASCOPY_USATECHIDXUSD, 1m_2022-01-24_2022-01-25.csv",
   "minute_semantic_sha256": "0685dfcabe4a5f2269ee5794b978337027ff1434c2e0a7c6c7b207b324fc5efb",
   "minute_sha256": "10d719e939d7d167ea22a27d902862f77bd22273921e9b796d4636e74beb0d23",
-  "node_helper_sha256": "3f7a3f7769ef47c751086fc635cdf2b240cccfd65b90bf1388f11eccc4652bba",
+  "node_helper_sha256": "23ec2e96dde090e7865dcdaddb1e77f0039afb121791df80a046f492cd81e283",
   "package_lock_sha256": "74506876532b3d1caf4be740fc42c79e9eb529518770afd05c40a0463c732dee",
   "raw_sha256": [
     "b4b45f2a874652eecafc4e7ae2249e04050e255ac6d07a0c6fa7423bfa9a5e16"
