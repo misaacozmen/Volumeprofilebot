@@ -1,1 +1,2 @@
 live_forward/calendars/provenance/v4/raw/* -text
+data/provenance/dukascopy_v4/raw/** -text
