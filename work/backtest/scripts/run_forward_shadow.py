@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import date
 from hashlib import sha256
 import json
@@ -18,13 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from backtest.config import SymbolConfig
 from backtest.data_inspector import infer_symbol_timeframe, normalize_columns, parse_timeframe_minutes
-from backtest.engine_pipeline import (
-    EngineLeg,
-    feed_name,
-    run_canonical_pair_pipeline,
-    source_code_hash,
-    stable_frame_hash,
-)
+from backtest.live_signal_protocol import build_request, evaluate_live_signal_twice, source_code_hash, stable_frame_hash
 from backtest.manual_state import (
     ManualStateConfig,
     context_authority_to_frame,
@@ -34,10 +28,8 @@ from backtest.manual_state import (
     htf_arrays_to_frame,
     liquidity_selections_to_frame,
     premarket_contexts_to_frame,
-    run_manual_state_day,
     thesis_episodes_to_frame,
 )
-from backtest.state_audit import state_snapshot
 
 
 TZ = "America/New_York"
@@ -51,6 +43,10 @@ LEG_ORDER = {"nq": 0, "spx": 1}
 
 class CriticalShadowError(RuntimeError):
     pass
+
+
+def feed_name(symbol: str) -> str:
+    return symbol.split("_", 1)[0] if "_" in symbol else "UNSPECIFIED"
 
 
 def canonical_json(value: object) -> str:
@@ -616,6 +612,8 @@ def prefix_checks(
     configs: dict[str, SymbolConfig],
     state_config: ManualStateConfig,
     trade_date: date,
+    baseline_hash: str,
+    as_of: pd.Timestamp,
 ) -> tuple[int, list[dict[str, object]]]:
     checks = 0
     violations: list[dict[str, object]] = []
@@ -623,18 +621,19 @@ def prefix_checks(
         config = configs[leg_key]
         minutes = int(parse_timeframe_minutes(config.timeframe) or 0)
         duration = pd.Timedelta(minutes=minutes)
-        full = run_manual_state_day(frame, config, trade_date, state_config)
         start = pd.Timestamp(f"{trade_date} {config.trade_window_start}", tz=TZ)
         end = pd.Timestamp(f"{trade_date} {config.trade_window_end}", tz=TZ)
         bar_times = list(pd.date_range(start, end, freq=f"{minutes}min", inclusive="left"))
         for bar_time in bar_times:
             cutoff = bar_time + duration
-            prefix_frame = frame[(frame["time"] + duration) <= cutoff].copy()
-            prefix_config = replace(config, trade_window_end=cutoff.strftime("%H:%M"))
-            prefix_state = replace(state_config, reject_invalid_data=False)
-            prefix = run_manual_state_day(prefix_frame, prefix_config, trade_date, prefix_state)
-            full_snapshot = state_snapshot(full, cutoff)
-            prefix_snapshot = state_snapshot(prefix, cutoff)
+            prefix_frames = dict(frames)
+            prefix_frames[leg_key] = frame[(frame["time"] + duration) <= cutoff].copy()
+            cutoffs = {
+                key: cutoff if key == leg_key else pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ)
+                for key in LEG_ORDER
+            }
+            full_snapshot = sandbox_payload(frames, configs, state_config, trade_date, baseline_hash, as_of, cutoffs)["state_snapshots"][leg_key]
+            prefix_snapshot = sandbox_payload(prefix_frames, configs, state_config, trade_date, baseline_hash, as_of, cutoffs)["state_snapshots"][leg_key]
             checks += 1
             for component in full_snapshot:
                 if full_snapshot[component] != prefix_snapshot[component]:
@@ -648,6 +647,29 @@ def prefix_checks(
                         }
                     )
     return checks, violations
+
+
+def sandbox_payload(
+    frames: dict[str, pd.DataFrame], configs: dict[str, SymbolConfig], state_config: ManualStateConfig,
+    trade_date: date, baseline_hash: str, as_of: pd.Timestamp,
+    cutoffs: dict[str, pd.Timestamp] | None = None,
+) -> dict[str, object]:
+    prepared: dict[str, pd.DataFrame] = {}
+    resolved_cutoffs: dict[str, pd.Timestamp] = {}
+    for key in LEG_ORDER:
+        minutes = int(parse_timeframe_minutes(configs[key].timeframe) or 0)
+        frame = frames[key].copy()
+        frame["known_time"] = frame["time"] + pd.Timedelta(minutes=minutes)
+        frame["source_minute_count"] = minutes
+        prepared[key] = frame[["time", *OHLCV, "known_time", "source_minute_count"]]
+        resolved_cutoffs[key] = (cutoffs or {}).get(key) or pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ)
+    request = build_request(
+        frames=prepared, configs=configs, state_config=state_config, trade_date=trade_date,
+        market_data_asof=as_of, knowledge_asof=as_of, cutoffs=resolved_cutoffs,
+        candidate_artifact_hash=baseline_hash, candidate_file_hash=baseline_hash,
+        calendar_hash=sha256(b"LEGACY_SHADOW_NO_CALENDAR").hexdigest(),
+    )
+    return evaluate_live_signal_twice(request)
 
 
 def engine_payload(
@@ -897,13 +919,10 @@ def run_session(args: argparse.Namespace) -> int:
         prefix_violations: list[dict[str, object]] = []
         invariant_errors: list[str] = []
         if valid_data:
-            legs = [EngineLeg(key, frames[key], configs[key]) for key in ["nq", "spx"]]
-            first = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-            second = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-            first_payload = engine_payload(first, configs)
-            second_payload = engine_payload(second, configs)
-            deterministic = object_hash(first_payload) == object_hash(second_payload)
-            prefix_count, prefix_violations = prefix_checks(frames, configs, state_config, trade_date)
+            final_cutoffs = {key: pd.Timestamp(f"{trade_date} {configs[key].trade_window_end}", tz=TZ) for key in LEG_ORDER}
+            first_payload = sandbox_payload(frames, configs, state_config, trade_date, baseline["baseline_manifest_sha256"], as_of, final_cutoffs)
+            deterministic = True
+            prefix_count, prefix_violations = prefix_checks(frames, configs, state_config, trade_date, baseline["baseline_manifest_sha256"], as_of)
             invariant_errors = decision_invariant_errors(
                 first_payload["decisions"],
                 first_payload["events"],

@@ -112,16 +112,21 @@ def _assign_windows_job(process: subprocess.Popen[bytes], profile: SandboxProfil
     return kernel32, job
 
 
-def run_sandbox(
-    request: Mapping[str, Any], *, profile: str = "offline", environment: Mapping[str, str] | None = None,
+def run_isolated_worker(
+    worker_path: str | Path, request: Mapping[str, Any], *, profile: str,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     limits = PROFILES.get(profile)
     if limits is None:
         raise SandboxError("unknown sandbox profile")
     payload = _canonical_json({**dict(request), "limits": {"output_mb": limits.output_mb}})
-    if len(payload) > 4 * 1024 * 1024:
+    max_payload_bytes = limits.output_mb * 1024 * 1024
+    if len(payload) > max_payload_bytes:
         raise SandboxError("sandbox request is too large")
-    command = [sys.executable, "-I", str(_worker_path())]
+    worker = Path(worker_path).resolve()
+    if not worker.is_file():
+        raise SandboxError("sandbox worker is missing")
+    command = [sys.executable, "-I", str(worker)]
     kwargs: dict[str, Any] = {
         "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
         "shell": False, "env": minimal_subprocess_environment(environment),
@@ -154,7 +159,7 @@ def run_sandbox(
     if process.returncode != 0:
         detail = stderr.decode("utf-8", "replace")[-1000:]
         raise SandboxError(f"sandbox worker failed ({process.returncode}): {detail}")
-    if len(stdout) > 2 * 1024 * 1024:
+    if len(stdout) > max_payload_bytes:
         raise SandboxError("sandbox response is too large")
     try:
         response = json.loads(stdout)
@@ -166,6 +171,12 @@ def run_sandbox(
     if claimed != hashlib.sha256(_canonical_json(response)).hexdigest():
         raise SandboxError("sandbox response hash mismatch")
     return response
+
+
+def run_sandbox(
+    request: Mapping[str, Any], *, profile: str = "offline", environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    return run_isolated_worker(_worker_path(), request, profile=profile, environment=environment)
 
 
 def _validated_files(root: Path, max_bytes: int) -> None:

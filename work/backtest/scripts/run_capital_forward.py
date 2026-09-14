@@ -29,7 +29,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backtest.config import SymbolConfig
-from backtest.engine_pipeline import EngineLeg, run_canonical_pair_pipeline, source_code_hash, stable_frame_hash
+from backtest.live_signal_protocol import (
+    LiveSignalProtocolError, build_request as build_live_signal_request,
+    evaluate_live_signal_twice, source_code_hash, stable_frame_hash,
+)
 from backtest import manual_state as manual_state_module
 from backtest.data_inspector import parse_timeframe_minutes
 from backtest.gaps import find_gap_events
@@ -40,7 +43,6 @@ from backtest.strategy import cluster_swings
 from run_forward_shadow import (
     comparison_rows,
     decision_invariant_errors,
-    engine_payload,
     frozen_config_hash,
     frozen_objects,
     object_hash,
@@ -225,6 +227,36 @@ def live_strategy_objects() -> tuple[dict[str, SymbolConfig], ManualStateConfig,
         "legs": {key: asdict(configs[key]) for key in LEG_ORDER},
     }
     return configs, state_config, live_payload
+
+
+def sandbox_signal_payload(
+    output_root: Path,
+    frames: dict[str, pd.DataFrame],
+    configs: dict[str, SymbolConfig],
+    state_config: ManualStateConfig,
+    trade_date: date,
+    market_data_asof: pd.Timestamp,
+    knowledge_asof: pd.Timestamp,
+    cutoffs: dict[str, pd.Timestamp],
+    runtime: dict[str, Any],
+) -> dict[str, object]:
+    parent = read_json(PARENT_BASELINE)
+    fallback = str(parent.get("baseline_manifest_sha256") or file_hash(RUNTIME_CONFIG))
+    calendar = runtime.get("rth_session_calendar")
+    calendar_hash = str(calendar.get("sha256") if isinstance(calendar, dict) else "") or fallback
+    request = build_live_signal_request(
+        frames=frames, configs=configs, state_config=state_config, trade_date=trade_date,
+        market_data_asof=market_data_asof, knowledge_asof=knowledge_asof, cutoffs=cutoffs,
+        candidate_artifact_hash=str(runtime.get("candidate_artifact_sha256") or fallback),
+        candidate_file_hash=str(runtime.get("candidate_file_sha256") or fallback),
+        calendar_hash=calendar_hash,
+    )
+    try:
+        return evaluate_live_signal_twice(request)
+    except LiveSignalProtocolError as exc:
+        reason = "SIGNAL_SANDBOX_NONDETERMINISTIC" if "NONDETERMINISTIC" in str(exc) else "SIGNAL_SANDBOX_FAILURE"
+        write_fatal_latch(output_root, reason, str(exc))
+        raise CriticalLiveError(reason) from exc
 
 
 def validate_parent_baseline() -> dict[str, Any]:
@@ -1052,26 +1084,12 @@ def run_prefix(
     deterministic = True
     invariant_errors: list[str] = []
     if valid:
-        legs = [EngineLeg(key, frames[key], prefix_configs[key]) for key in LEG_ORDER]
-        first = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-        second = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-        first_payload = engine_payload(first, prefix_configs)
-        second_payload = engine_payload(second, prefix_configs)
-        deterministic = object_hash(first_payload) == object_hash(second_payload)
-        payload = first_payload
+        signal = sandbox_signal_payload(output_root, frames, prefix_configs, state_config, trade_date, market_data_utc, observed_knowledge_asof, cutoffs, runtime)
+        payload = {key: signal[key] for key in ("days", "decisions", "events", "lifecycle")}
+        deterministic = True
         invariant_errors = decision_invariant_errors(payload["decisions"], payload["events"])
-        snapshots = {
-            key: state_snapshot(first.leg_results[key].days[0], cutoffs[key])
-            for key in LEG_ORDER
-        }
-        graph_features = {
-            key: {
-                "swing_touches": causal_swing_touch_evidence(
-                    frames[key], trade_date, prefix_configs[key]
-                )
-            }
-            for key in LEG_ORDER
-        }
+        snapshots = signal["state_snapshots"]
+        graph_features = signal["graph_features"]
     else:
         graph_features = {}
     state = "CRITICAL_STOP" if (not deterministic or invariant_errors) else ("VALID" if valid else "DATA_INVALID")
@@ -1297,19 +1315,22 @@ def finalize_session(
     invariant_errors: list[str] = []
     prefix_violations: list[dict[str, object]] = []
     if valid:
-        legs = [EngineLeg(key, frames[key], configs[key]) for key in LEG_ORDER]
-        first = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-        second = run_canonical_pair_pipeline(legs, [trade_date], state_config=state_config)
-        payload = engine_payload(first, configs)
-        deterministic = object_hash(payload) == object_hash(engine_payload(second, configs))
+        signal = sandbox_signal_payload(output_root, frames, configs, state_config, trade_date, shared_asof, knowledge_utc, required_cutoffs, runtime)
+        payload = {key: signal[key] for key in ("days", "decisions", "events", "lifecycle")}
+        deterministic = True
         invariant_errors = decision_invariant_errors(payload["decisions"], payload["events"])
         for prefix_file in sorted((output_root / "prefix" / str(trade_date)).glob("*.json")):
             prefix = read_json(prefix_file)
             if prefix["state"] != "VALID":
                 continue
+            prefix_cutoffs = {key: pd.Timestamp(prefix["cutoffs"][key]) for key in LEG_ORDER}
+            prefix_signal = sandbox_signal_payload(
+                output_root, frames, configs, state_config, trade_date,
+                shared_asof, knowledge_utc, prefix_cutoffs, runtime,
+            )
             for key in LEG_ORDER:
-                cutoff = pd.Timestamp(prefix["cutoffs"][key])
-                expected = state_snapshot(first.leg_results[key].days[0], cutoff)
+                cutoff = prefix_cutoffs[key]
+                expected = prefix_signal["state_snapshots"][key]
                 observed = prefix["snapshots"].get(key)
                 if not snapshots_equal(expected, observed):
                     prefix_violations.append(
