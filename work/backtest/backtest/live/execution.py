@@ -30,12 +30,15 @@ class Mt5WritePort:
 
     ACCEPTED_RETCODES = frozenset({10008, 10009, 10010})
 
-    def __init__(self, mt5: Any, db_path: str | Path, *, mutex: Callable[[], Any] | None = None) -> None:
+    def __init__(self, mt5: Any, db_path: str | Path, *, mutex: Callable[[], Any] | None = None, binding_verifier: Callable[[], Any] | None = None) -> None:
         self.mt5 = mt5
         self.db_path = Path(db_path)
         self.mutex = mutex or (lambda: nullcontext())
+        self.binding_verifier = binding_verifier
 
     def _physical_send(self, request: Mapping[str, Any]) -> Any:
+        if self.binding_verifier is not None:
+            self.binding_verifier()
         return self.mt5.order_send(dict(request))
 
     @staticmethod

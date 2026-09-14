@@ -30,6 +30,17 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def _runtime_fixture() -> dict[str, object]:
+    value = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    value.update(
+        account_login=12345678,
+        expected_server="fixture-demo-server",
+        expected_company="Fixture Broker Ltd",
+        deployment_binding_required=False,
+    )
+    return value
+
+
 class _TestSuper1Client(MODULE.Super1XmMt5DemoOrderClient):
     """Test-only LIVE_LEASE adapter; production never bypasses its validator."""
 
@@ -188,7 +199,7 @@ def test_super1_contract_binds_runtime_implementation_bytes() -> None:
 
 
 def test_super1_contract_rejects_changed_forward_shadow_adapter(monkeypatch) -> None:
-    runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    runtime = _runtime_fixture()
     real_file_hash = MODULE.core.file_hash
 
     def changed_adapter_hash(path: Path) -> str:
@@ -208,7 +219,8 @@ def test_configure_core_locks_forward_shadow_adapter(monkeypatch) -> None:
         (MODULE.core, "SCRIPT_PATH"),
         (MODULE.core, "HARNESS_PATHS"),
         (MODULE.core, "REQUIRED_ENV"),
-        (MODULE.core, "CapitalDemoClient"),
+            (MODULE.core, "CapitalDemoClient"),
+            (MODULE.core, "runtime_config"),
     ):
         monkeypatch.setattr(owner, name, getattr(owner, name))
     monkeypatch.setattr(MODULE.core, "install_xm_scheduled_gap_integrity", lambda: None)
@@ -241,7 +253,7 @@ def test_reconcile_result_logs_canonical_overlay_deployment_mode(monkeypatch, tm
 
 def test_super1_filter_blocks_only_frozen_rules_and_allows_valid_candidate(monkeypatch) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client._super1_record = record("custom_low", 20004.0)
     monkeypatch.setattr(
         MODULE.core,
@@ -267,7 +279,7 @@ def test_super1_filter_blocks_only_frozen_rules_and_allows_valid_candidate(monke
 
 def test_super1_filter_short_circuits_unmatched_rule_before_broker_feature(monkeypatch) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client._super1_record = record("custom_low", 20030.0)
     monkeypatch.setattr(
         MODULE.core,
@@ -293,7 +305,7 @@ def test_super1_place_candidate_preserves_block_filter_details_without_typeerror
     monkeypatch, tmp_path: Path
 ) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     monkeypatch.setattr(
         client,
         "_filter_state",
@@ -342,7 +354,7 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
             self.pending = []
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == [REDACTED and kwargs["server"] == "XMGlobal-MT5 2"
+            return kwargs["login"] == 12345678 and kwargs["server"] == "fixture-demo-server"
 
         def shutdown(self):
             pass
@@ -352,9 +364,9 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
 
         def account_info(self):
             return SimpleNamespace(
-                login=[REDACTED,
-                server="XMGlobal-MT5 2",
-                company="XM Global Limited",
+                login=12345678,
+                server="fixture-demo-server",
+                company="Fixture Broker Ltd",
                 trade_mode=0,
                 trade_allowed=True,
                 trade_expert=True,
@@ -424,7 +436,7 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
     monkeypatch.setattr(MODULE.core, "RUNTIME_CONFIG", MODULE.RUNTIME_CONFIG)
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
     client.mt5 = OverlayMt5()
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client.login_id = int(client.config["account_login"])
     client.server = client.config["expected_server"]
     client.password = ""
@@ -564,7 +576,7 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
             self.last_request = None
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == [REDACTED and kwargs["server"] == "XMGlobal-MT5 2"
+            return kwargs["login"] == 12345678 and kwargs["server"] == "fixture-demo-server"
 
         def shutdown(self):
             pass
@@ -574,9 +586,9 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
 
         def account_info(self):
             return SimpleNamespace(
-                login=[REDACTED,
-                server="XMGlobal-MT5 2",
-                company="XM Global Limited",
+                login=12345678,
+                server="fixture-demo-server",
+                company="Fixture Broker Ltd",
                 trade_mode=0,
                 trade_allowed=True,
                 trade_expert=True,
@@ -645,7 +657,7 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
             del args, kwargs
             return ()
 
-    config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    config = _runtime_fixture()
     configs = {
         "nq": SimpleNamespace(
             timeframe="3m", symbol="US100Cash", trade_window_start="09:30",
@@ -833,7 +845,7 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
     # Other forward test modules load the shared core with different harness
     # settings during collection; this scenario is explicitly NY-time.
     monkeypatch.setattr(MODULE.core, "TZ", "America/New_York")
-    runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    runtime = _runtime_fixture()
     runtime["history_days"] = 1
     runtime["legs"]["nq"]["epic"] = "US100"
     runtime["legs"]["spx"]["epic"] = "US500"
@@ -975,9 +987,9 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
 
             def account_info(self):
                 return SimpleNamespace(
-                    login=[REDACTED,
-                    server="XMGlobal-MT5 2",
-                    company="XM Global Limited",
+                    login=12345678,
+                    server="fixture-demo-server",
+                    company="Fixture Broker Ltd",
                     trade_mode=0,
                     trade_allowed=True,
                     trade_expert=True,
@@ -1045,7 +1057,7 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
             def history_deals_get(self, *args, **kwargs):
                 return ()
 
-        config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+        config = _runtime_fixture()
         config["legs"]["nq"]["epic"] = "US100"
         config["legs"]["spx"]["epic"] = "US500"
         client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
@@ -1142,16 +1154,16 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
             self.pending = []
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == [REDACTED and kwargs["server"] == "XMGlobal-MT5 2"
+            return kwargs["login"] == 12345678 and kwargs["server"] == "fixture-demo-server"
 
         def shutdown(self):
             pass
 
         def account_info(self):
             return SimpleNamespace(
-                login=[REDACTED,
-                server="XMGlobal-MT5 2",
-                company="XM Global Limited",
+                login=12345678,
+                server="fixture-demo-server",
+                company="Fixture Broker Ltd",
                 trade_mode=0,
                 trade_allowed=True,
                 trade_expert=True,
@@ -1239,7 +1251,7 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
     mt5 = BoundaryMt5()
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
     client.mt5 = mt5
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client.login_id = int(client.config["account_login"])
     client.server = client.config["expected_server"]
     client.password = ""
@@ -1307,7 +1319,7 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
 
 def test_overnight_direction_consumes_verified_adapter_prices(monkeypatch) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     seen = []
 
     def verified_prices(symbol, start, end):
@@ -1335,7 +1347,7 @@ def test_overnight_direction_consumes_verified_adapter_prices(monkeypatch) -> No
 
 def test_overnight_direction_rejects_missing_previous_rth_close(monkeypatch) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client.prices = lambda symbol, start, end: (
         end,
         [
@@ -1359,7 +1371,7 @@ def test_overnight_direction_rejects_missing_previous_rth_close(monkeypatch) -> 
 
 def test_overnight_direction_does_not_fall_back_to_an_older_session(monkeypatch) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client.prices = lambda symbol, start, end: (
         end,
         [
@@ -1393,7 +1405,7 @@ def test_overnight_direction_requires_verified_rth_calendar(monkeypatch) -> None
 
 def _make_filter_client(monkeypatch):
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
-    client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    client.config = _runtime_fixture()
     client.magic = int(client.config["magic_number"])
     client._super1_record = record("custom_low", 20004.0)
     monkeypatch.setattr(
@@ -1564,7 +1576,7 @@ def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
 ) -> None:
     evidence_token = checkpoint_if_enabled(request)
     monkeypatch.setattr(MODULE.core, "TZ", "America/New_York")
-    config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    config = _runtime_fixture()
     configs = {
         "nq": SimpleNamespace(
             timeframe="3m", symbol="US100Cash", trade_window_start="09:30",
@@ -1595,7 +1607,7 @@ def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
 
         def account_info(self):
             return SimpleNamespace(
-                login=[REDACTED, server="XMGlobal-MT5 2", company="XM Global Limited",
+                login=12345678, server="fixture-demo-server", company="Fixture Broker Ltd",
                 trade_mode=0, trade_allowed=True, trade_expert=True, equity=10_000.0,
             )
 

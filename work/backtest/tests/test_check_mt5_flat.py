@@ -17,7 +17,7 @@ def _config() -> dict[str, object]:
     return {
         "account_login": 123,
         "expected_server": "XM-Demo",
-        "expected_company": "XM Global Limited",
+        "expected_company": "Fixture Broker Ltd",
     }
 
 
@@ -25,7 +25,7 @@ def _account(**overrides: object) -> SimpleNamespace:
     values = {
         "login": 123,
         "server": "XM-Demo",
-        "company": "XM Global Limited",
+        "company": "Fixture Broker Ltd",
         "trade_mode": 0,
         "trade_allowed": True,
         "trade_expert": True,

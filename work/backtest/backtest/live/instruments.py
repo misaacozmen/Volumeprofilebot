@@ -185,7 +185,9 @@ class InstrumentRegistry:
         return [candidate for candidate in candidates if str(candidate.get("name") if isinstance(candidate, Mapping) else getattr(candidate, "name", "")) == requested]
 
     @classmethod
-    def from_signed_json(cls, path: str | Path, expected_sha256: str) -> "InstrumentRegistry":
+    def from_signed_json(
+        cls, path: str | Path, expected_sha256: str, *, broker_identity: Mapping[str, str] | None = None
+    ) -> "InstrumentRegistry":
         raw = Path(path).read_bytes()
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise InstrumentContractError("signed instrument registry hash mismatch")
@@ -193,4 +195,13 @@ class InstrumentRegistry:
         rows = payload.get("instruments") if isinstance(payload, Mapping) else None
         if not isinstance(rows, list):
             raise InstrumentContractError("instrument registry must contain instruments")
+        if broker_identity is not None:
+            if not broker_identity.get("server") or not broker_identity.get("company"):
+                raise InstrumentContractError("private broker identity is incomplete")
+            if any("expected_server" in row or "expected_company" in row for row in rows if isinstance(row, Mapping)):
+                raise InstrumentContractError("public instrument registry contains broker account identity")
+            rows = [
+                {**row, "expected_server": broker_identity["server"], "expected_company": broker_identity["company"]}
+                for row in rows
+            ]
         return cls(contract_from_mapping(row) for row in rows)

@@ -8,7 +8,7 @@ from backtest.live.contracts import InstrumentContract
 
 
 def contract() -> InstrumentContract:
-    return InstrumentContract("XM_MT5_US100CASH_SUPER1", "index", "MT5", "XMGlobal-MT5 2", "US100Cash", "America/New_York", "USD", "USD", "USD", 2, .01, .01, 1., .01, 100., .01, .01, "price", 0)
+    return InstrumentContract("XM_MT5_US100CASH_SUPER1", "index", "MT5", "fixture-demo-server", "US100Cash", "America/New_York", "USD", "USD", "USD", 2, .01, .01, 1., .01, 100., .01, .01, "price", 0)
 
 
 def metadata(name: str = "US100Cash") -> dict[str, object]:
@@ -33,7 +33,7 @@ def test_registry_requires_exact_case_sensitive_symbol_and_metadata() -> None:
 
 def test_semantic_metadata_and_economic_probe_fail_closed() -> None:
     expected = replace(
-        contract(), canonical_underlying="NASDAQ_100", expected_company="XM Global Limited",
+        contract(), canonical_underlying="NASDAQ_100", expected_company="Fixture Broker Ltd",
         broker_path_regex=r"^Indices\\US Indices$", broker_description_regex=r"^US100 Cash Index$",
         session_calendar_id="US_EQUITY_RTH", expected_one_tick_value_at_min_volume=0.001,
         economic_value_tolerance=0.0001,

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
+  "status": "HISTORICAL_REDACTED_NON_EXECUTABLE",
   "environment": "XM_MT5_DEMO_ORDER",
   "account_mode": "DEMO_ORDER",
-  "account_login": [REDACTED,
   "feed": "XM_MT5",
   "timezone": "America/New_York",
   "closed_bar_delay_seconds": 8,
@@ -16,8 +16,6 @@
   "authorized_operator_sid": "S-1-5-19",
   "terminal_path": "C:\\Super1\\mt5\\terminal64.exe",
   "portable": false,
-  "expected_company": "XM Global Limited",
-  "expected_server": "XMGlobal-MT5 2",
   "magic_number": 260805101,
   "order_comment_prefix": "SUPER1",
   "target": "LOCAL_WINDOWS_PC",

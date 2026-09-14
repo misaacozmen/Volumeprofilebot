@@ -239,6 +239,7 @@ def sandbox_signal_payload(
     knowledge_asof: pd.Timestamp,
     cutoffs: dict[str, pd.Timestamp],
     runtime: dict[str, Any],
+    gates: dict[str, dict[str, Any]],
 ) -> dict[str, object]:
     parent = read_json(PARENT_BASELINE)
     fallback = str(parent.get("baseline_manifest_sha256") or file_hash(RUNTIME_CONFIG))
@@ -250,6 +251,7 @@ def sandbox_signal_payload(
         candidate_artifact_hash=str(runtime.get("candidate_artifact_sha256") or fallback),
         candidate_file_hash=str(runtime.get("candidate_file_sha256") or fallback),
         calendar_hash=calendar_hash,
+        scheduled_closed_ranges={key: list(gates[key].get("scheduled_closed_ranges") or []) for key in LEG_ORDER},
     )
     try:
         return evaluate_live_signal_twice(request)
@@ -1084,7 +1086,7 @@ def run_prefix(
     deterministic = True
     invariant_errors: list[str] = []
     if valid:
-        signal = sandbox_signal_payload(output_root, frames, prefix_configs, state_config, trade_date, market_data_utc, observed_knowledge_asof, cutoffs, runtime)
+        signal = sandbox_signal_payload(output_root, frames, prefix_configs, state_config, trade_date, market_data_utc, observed_knowledge_asof, cutoffs, runtime, gates)
         payload = {key: signal[key] for key in ("days", "decisions", "events", "lifecycle")}
         deterministic = True
         invariant_errors = decision_invariant_errors(payload["decisions"], payload["events"])

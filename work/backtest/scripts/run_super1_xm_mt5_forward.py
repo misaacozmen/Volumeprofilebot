@@ -19,6 +19,7 @@ from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerEvidence, BrokerSnapshot, InstrumentContract, LiveRiskPolicy, RiskApprovedOrder
 from backtest.live.execution import Mt5WritePort
 from backtest.live.deal_ingestion import TerminalDealIngestor
+from backtest.live.deployment_binding import DeploymentBindingError, load_verified_deployment_binding
 from backtest.market_calendar import MarketCalendarError, load_signed_calendar
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
 from backtest.live.risk_guard import RiskGuard
@@ -48,8 +49,8 @@ from super1_runtime_guard import (
 )
 
 
-RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v3.json"
-SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest_v3.json"
+RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json"
+SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest_v4.json"
 FORWARD_SHADOW_ADAPTER = ROOT / "scripts" / "run_forward_shadow.py"
 DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
 REQUIRED_ENV: tuple[str, ...] = ()
@@ -410,8 +411,8 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise Super1FeatureError("Super1 signal contract path escapes the repository.") from exc
     if (
-        int(contract.get("schema_version", 0)) != 3
-        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V3"
+        int(contract.get("schema_version", 0)) != 4
+        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V4"
         or contract.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or contract.get("execution_scope") != "XM_MT5_DEMO_ONLY"
         or contract.get("deployment_mode") != DEPLOYMENT_MODE
@@ -434,7 +435,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or order_transport_path != Path(xm.__file__).resolve()
         or core.file_hash(order_transport_path) != order_transport.get("sha256")
             or order_transport.get("account_identity_gate")
-            != "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
+            != "DETACHED_SIGNED_PRIVATE_BINDING_EQUALITY"
             or calendar_contract != runtime.get("rth_session_calendar")
             or safety.get("independent_super1_signal_producer_present") is not False
         or safety.get("demo_order_execution_enabled") is not True
@@ -448,6 +449,8 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
             or runtime.get("account_mode") != "DEMO_ORDER"
             or runtime.get("live_order_approval_required") is not True
             or runtime.get("deployment_mode") != DEPLOYMENT_MODE
+            or runtime.get("deployment_binding_required") is not True
+            or any(key in runtime for key in ("account_login", "expected_server", "expected_company"))
     ):
         raise Super1FeatureError("Super1 signal contract is invalid or does not match runtime bytes.")
 
@@ -461,24 +464,18 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         raise Super1FeatureError("Super1 candidate research dataset provenance is not unique.")
     deployment = manifest.get("deployment", {})
     if (
-        manifest.get("name") != "Super1 V3"
+        manifest.get("schema_version") != 4
+        or manifest.get("name") != "Super1 V4"
         or manifest.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or manifest.get("candidate_path") != relative
         or manifest.get("candidate_file_sha256") != expected_file_hash
         or manifest.get("candidate_artifact_sha256") != candidate.get("artifact_sha256")
         or manifest.get("signal_contract_path") != contract_relative
         or manifest.get("signal_contract_sha256") != expected_contract_hash
-        or manifest.get("deployment_mode") != DEPLOYMENT_MODE
         or manifest.get("config_sha256") != core.file_hash(RUNTIME_CONFIG)
-        or manifest.get("overlay_candidate_research_dataset_sha256")
-        != research_inputs[0].get("sha256")
-        or manifest.get("overlay_candidate_research_result_sha256")
-        != candidate.get("full_evaluation_result_sha256")
-        or manifest.get("deployed_pipeline_historical_parity_proven") is not False
-        or "deployed_pipeline_result_sha256" not in manifest
-        or manifest.get("deployed_pipeline_result_sha256") is not None
-        or "data_sha256" in manifest
-        or "result_sha256" in manifest
+        or manifest.get("calendar_sha256") != calendar_contract.get("sha256")
+        or manifest.get("engine_source_sha256") != core.source_code_hash()
+        or manifest.get("account_binding_schema_sha256") != runtime.get("account_binding_schema_sha256")
         or deployment.get("demo_order_execution_enabled") is not True
         or deployment.get("real_money_live_enabled") is not False
         or deployment.get("real_money_execution_allowed") is not False
@@ -493,7 +490,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or core.file_hash(calendar_path) != calendar_contract.get("sha256")
         or core.read_json(calendar_path).get("status") != "UNSIGNED_VALIDATION_ONLY"
     ):
-        raise Super1FeatureError("Unsigned v3 calendar binding is invalid.")
+        raise Super1FeatureError("Unsigned v4 calendar binding is invalid.")
     return candidate
 
 
@@ -564,7 +561,8 @@ class _Super1ProductionSmokeAdapter:
         self.request = dict(request)
         self.contract = contract
         self.entry_writes = 0
-        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+        verifier = client._verify_private_binding if client.config.get("deployment_binding_required") is True else None
+        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex, binding_verifier=verifier)
 
     def wire_request_hash(self, _order: RiskApprovedOrder) -> str:
         return wire_request_hash(self.request)
@@ -626,7 +624,8 @@ class _Super1ProductionAdapter:
         self.contract = contract
         self.last_request: dict[str, object] | None = None
         self.entry_writes = 0
-        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+        verifier = client._verify_private_binding if client.config.get("deployment_binding_required") is True else None
+        self.write_port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex, binding_verifier=verifier)
 
     def request_for_order(self, order: RiskApprovedOrder) -> dict[str, Any]:
         request = {**self.base_request, "volume": float(order.volume)}
@@ -659,7 +658,8 @@ class _Super1AuthorizedMaintenanceAdapter:
     """Stages a typed maintenance operation under the consumed smoke approval."""
 
     def __init__(self, client: "Super1XmMt5DemoOrderClient", output_root: Path, approval_id: str, campaign_id: str, account_key: str) -> None:
-        self.port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex)
+        verifier = client._verify_private_binding if client.config.get("deployment_binding_required") is True else None
+        self.port = Mt5WritePort(client.mt5, client._order_db(output_root), mutex=order_mutex, binding_verifier=verifier)
         self.approval_id = approval_id
         self.campaign_id = campaign_id
         self.account_key = account_key
@@ -727,6 +727,26 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         self._runtime_secrets = dict(secrets)
         self._strict_reconciliation = True
         self._audit_anchor_callback = write_event_log_anchor
+
+    def _verify_private_binding(self) -> None:
+        binding = self.config.get("_verified_deployment_binding")
+        if binding is None:
+            raise AccountBindingMismatchError("private signed deployment binding is unavailable")
+        refreshed = load_verified_deployment_binding(
+            self.config["deployment_binding_path"],
+            self.config["deployment_binding_signature_path"],
+            ROOT / self.config["deployment_binding_public_key_path"],
+        )
+        if refreshed.binding_sha256 != binding.binding_sha256 or refreshed.signature_sha256 != binding.signature_sha256:
+            raise AccountBindingMismatchError("private signed deployment binding changed")
+        account = self._retry_mt5_read("account_info")
+        try:
+            refreshed.assert_broker_account(account)
+        except DeploymentBindingError as exc:
+            raise AccountBindingMismatchError(str(exc)) from exc
+
+    def _account_key(self) -> str:
+        return str(self.config.get("account_key") or self.config.get("account_login") or "")
 
     def _assert_super1_lease(self, output_root: Path, *, for_order: bool = True) -> dict[str, Any]:
         app_root = Path(__file__).resolve().parents[1]
@@ -837,7 +857,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         proposal: dict[str, Any],
     ) -> tuple[ApprovalStore, Any | None, dict[str, Any], dict[str, Any] | None]:
         campaign_id = str(self.config.get("campaign_id") or "")
-        account_key = str(self.config.get("account_login") or "")
+        account_key = self._account_key()
         release_id = str(self.config.get("release_id") or "")
         candidate_hash = str(proposal["candidate_hash"])
         store = self._approval_store(output_root)
@@ -1035,8 +1055,12 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             or str(leg.get("epic") or "") != symbol
         ):
             raise Super1RuntimeError("signed instrument registry binding is incomplete")
+        identity = None
+        if self.config.get("expected_server") and self.config.get("expected_company"):
+            identity = {"server": str(self.config["expected_server"]), "company": str(self.config["expected_company"])}
         registry = InstrumentRegistry.from_signed_json(
-            _safe_repo_file(registry_path, "instrument registry"), registry_hash
+            _safe_repo_file(registry_path, "instrument registry"), registry_hash,
+            broker_identity=identity,
         )
         info = self._retry_mt5_read("symbol_info", symbol)
         if info is None:
@@ -1100,7 +1124,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         return TerminalDealIngestor(
             database,
             read_deals=lambda start, end: self._retry_mt5_read("history_deals_get", start, end),
-            account_key=str(self.config.get("account_login") or ""),
+            account_key=self._account_key(),
             campaign_id=str(self.config.get("campaign_id") or ""),
             candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
             campaign_start=campaign_start.to_pydatetime(), magic=self.magic,
@@ -1198,7 +1222,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             instrument_registry_sha256=registry_hash,
         )
         campaign_id = str(self.config.get("campaign_id") or "")
-        account_key = str(self.config.get("account_login") or "")
+        account_key = self._account_key()
         release_id = str(self.config.get("release_id") or "")
         candidate_hash = str(self.config.get("candidate_artifact_sha256") or "")
         if not all((campaign_id, account_key, release_id, candidate_hash)):
@@ -1391,7 +1415,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 "approval_type": approval_type,
                 "wire_request_hash": request_digest,
                 "campaign_id": str(self.config.get("campaign_id") or ""),
-                "account_key": str(self.config.get("account_login") or ""),
+                "account_key": self._account_key(),
                 "lease_binding": dict(binding),
             }
             self._insert_outbox(connection, order_id, payload)
@@ -1402,7 +1426,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 str(approval.approval_id),
                 proposal=getattr(self, "_active_proposal", {}),
                 campaign_id=str(self.config.get("campaign_id") or ""),
-                account_key=str(self.config.get("account_login") or ""),
+                account_key=self._account_key(),
                 release_id=str(self.config.get("release_id") or ""),
                 candidate_hash=str(getattr(self, "_active_proposal", {}).get("candidate_hash") or self.config.get("candidate_artifact_sha256") or ""),
                 lease_nonce=str(approval.lease_nonce),
@@ -1651,7 +1675,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                     raise core.CriticalLiveError(f"SMOKE broker facts are unknown: {exc}") from exc
 
             campaign_id = str(self.config.get("campaign_id") or "")
-            account_key = str(self.config.get("account_login") or "")
+            account_key = self._account_key()
             release_id = str(self.config.get("release_id") or "")
             candidate_hash = str(self.config.get("candidate_artifact_sha256") or "")
             if not all((campaign_id, account_key, release_id, candidate_hash)):
@@ -2639,8 +2663,26 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
 def configure_core() -> None:
     runtime = core.read_json(RUNTIME_CONFIG)
     validate_super1_candidate(runtime)
-    if runtime.get("expected_server") != load_runtime_config(ROOT)[0].get("expected_server"):
-        raise Super1FeatureError("Super1 runtime config has an unstable broker identity.")
+    if runtime.get("deployment_binding_required") is not True:
+        raise Super1FeatureError("Super1 V4 requires a private signed deployment binding.")
+    def load_bound_runtime() -> dict[str, Any]:
+        try:
+            binding = load_verified_deployment_binding(
+                runtime["deployment_binding_path"],
+                runtime["deployment_binding_signature_path"],
+                ROOT / runtime["deployment_binding_public_key_path"],
+            )
+        except (KeyError, DeploymentBindingError) as exc:
+            raise Super1FeatureError("Private signed deployment binding is unavailable; no-send.") from exc
+        return {
+            **runtime,
+            "account_login": int(binding.binding["account_login"]),
+            "expected_server": str(binding.binding["server"]),
+            "expected_company": str(binding.binding["company"]),
+            "account_key": binding.account_key,
+            "_verified_deployment_binding": binding,
+        }
+    core.runtime_config = load_bound_runtime
     xm.RUNTIME_CONFIG = RUNTIME_CONFIG
     core.RUNTIME_CONFIG = RUNTIME_CONFIG
     core.SCRIPT_PATH = Path(__file__).resolve()
@@ -2659,12 +2701,13 @@ def configure_core() -> None:
         password_holder: dict[str, str | None] = {"value": None}
 
         def provide_credentials() -> dict[str, str]:
+            bound_runtime = load_bound_runtime()
             if password_holder["value"] is None:
                 password_holder["value"] = sys.stdin.readline().rstrip("\r\n")
             if not password_holder["value"]:
                 raise Super1FeatureError("Transient broker credential was not provided on stdin.")
             return {
-                "XM_MT5_SERVER": str(runtime["expected_server"]),
+                "XM_MT5_SERVER": str(bound_runtime["expected_server"]),
                 "XM_MT5_TERMINAL_PATH": str(runtime["terminal_path"]),
                 "XM_MT5_READ_ONLY_PASSWORD": password_holder["value"],
             }

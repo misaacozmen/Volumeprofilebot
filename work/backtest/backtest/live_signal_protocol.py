@@ -24,6 +24,7 @@ REQUEST_FIELDS = frozenset({
     "schema_version", "request_hash", "candidate_artifact_hash", "candidate_file_hash",
     "engine_source_hash", "calendar_hash", "trade_date", "market_data_asof",
     "knowledge_asof", "cutoffs", "configs", "state_config", "legs",
+    "scheduled_closed_ranges",
 })
 RESPONSE_FIELDS = frozenset({
     "schema_version", "request_hash", "decisions", "events", "lifecycle", "days",
@@ -79,6 +80,7 @@ def build_request(
     state_config: ManualStateConfig, trade_date: date, market_data_asof: object,
     knowledge_asof: object, cutoffs: Mapping[str, object], candidate_artifact_hash: str,
     candidate_file_hash: str, calendar_hash: str,
+    scheduled_closed_ranges: Mapping[str, list[Mapping[str, object]]] | None = None,
 ) -> dict[str, object]:
     if set(frames) != set(LEG_KEYS) or set(configs) != set(LEG_KEYS) or set(cutoffs) != set(LEG_KEYS):
         raise LiveSignalProtocolError("live signal request requires exact nq/spx legs")
@@ -95,6 +97,10 @@ def build_request(
         "cutoffs": {key: pd.Timestamp(cutoffs[key]).isoformat() for key in LEG_KEYS},
         "configs": {key: asdict(configs[key]) for key in LEG_KEYS},
         "state_config": asdict(state_config),
+        "scheduled_closed_ranges": {
+            key: [dict(item) for item in (scheduled_closed_ranges or {}).get(key, [])]
+            for key in LEG_KEYS
+        },
         "legs": {key: {
             "bars": records[key],
             "data_hash": stable_frame_hash(pd.DataFrame(records[key])[list(BAR_FIELDS)]),
@@ -127,10 +133,13 @@ def validate_request(request: Mapping[str, object]) -> None:
     if market.tzinfo is None or knowledge.tzinfo is None or market > knowledge:
         raise LiveSignalProtocolError("live signal causal timestamps are invalid")
     configs, state, legs, cutoffs = request["configs"], request["state_config"], request["legs"], request["cutoffs"]
+    closed_ranges = request["scheduled_closed_ranges"]
     if not isinstance(configs, Mapping) or set(configs) != set(LEG_KEYS) or not isinstance(legs, Mapping) or set(legs) != set(LEG_KEYS) or not isinstance(cutoffs, Mapping) or set(cutoffs) != set(LEG_KEYS):
         raise LiveSignalProtocolError("live signal leg maps are invalid")
     if not isinstance(state, Mapping) or set(state) != {field.name for field in fields(ManualStateConfig)}:
         raise LiveSignalProtocolError("state config fields differ from the fixed schema")
+    if not isinstance(closed_ranges, Mapping) or set(closed_ranges) != set(LEG_KEYS):
+        raise LiveSignalProtocolError("scheduled closed-range map is invalid")
     for key in LEG_KEYS:
         config = configs[key]
         leg = legs[key]
@@ -146,6 +155,12 @@ def validate_request(request: Mapping[str, object]) -> None:
         _frame_records(frame)
         if pd.Timestamp(str(cutoffs[key])).date() != trade_date:
             raise LiveSignalProtocolError("live signal cutoff date mismatch")
+        for interval in closed_ranges[key]:
+            if not isinstance(interval, Mapping) or set(interval) != {"bar_count", "first", "last"}:
+                raise LiveSignalProtocolError("scheduled closed-range schema is invalid")
+            first, last = pd.Timestamp(str(interval["first"])), pd.Timestamp(str(interval["last"]))
+            if first.tzinfo is None or last.tzinfo is None or first > last or int(interval["bar_count"]) <= 0:
+                raise LiveSignalProtocolError("scheduled closed range is invalid")
 
 
 def validate_response(response: Mapping[str, object], request_hash: str) -> None:

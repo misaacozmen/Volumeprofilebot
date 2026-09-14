@@ -5,7 +5,7 @@
       "instrument_id": "TEST_US100",
       "asset_class": "index",
       "broker": "MT5",
-      "expected_server": "XMGlobal-MT5 2",
+      "expected_server": "fixture-demo-server",
       "broker_symbol": "US100Cash",
       "timezone": "America/New_York",
       "base_currency": "USD",
@@ -22,7 +22,7 @@
       "cost_unit": "price",
       "trade_calc_mode": 0
       ,"canonical_underlying": "NASDAQ_100"
-      ,"expected_company": "XM Global Limited"
+      ,"expected_company": "Fixture Broker Ltd"
       ,"broker_path_regex": "^Indices\\\\US Indices$"
       ,"broker_description_regex": "^US100 Cash Index$"
       ,"session_calendar_id": "US_EQUITY_RTH"

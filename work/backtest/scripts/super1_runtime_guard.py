@@ -16,6 +16,8 @@ import uuid
 from zoneinfo import ZoneInfo
 from typing import Any, Iterator
 
+from backtest.live.deployment_binding import DeploymentBindingError, load_verified_deployment_binding
+
 
 ORDER_MUTEX_NAME = r"Global\Super1OrderTransport"
 LEASE_FILE_NAME = "session-lease.json"
@@ -47,6 +49,9 @@ LEASE_FIELDS = {
     "revocation_reason",
     "invocation_nonce",
     "release_manifest_sha256",
+    "account_binding_sha256",
+    "account_binding_signature_sha256",
+    "binding_id",
 }
 
 
@@ -142,8 +147,7 @@ def load_runtime_config(app_root: Path) -> tuple[dict[str, Any], Path, str]:
     path = app_root / "live_forward" / "super1_xm_mt5_demo_config.json"
     config = _read_json_object(path)
     required = {
-        "schema_version", "environment", "account_mode", "account_login", "expected_server",
-        "expected_company", "magic_number", "execution", "manual_required", "live_order_approval_required", "authorized_operator_sid", "rth_session_calendar",
+        "schema_version", "environment", "account_mode", "magic_number", "execution", "manual_required", "live_order_approval_required", "authorized_operator_sid", "rth_session_calendar",
         "terminal_path", "target", "isolation_required", "demo_order_execution_enabled",
         "real_money_live_enabled", "real_money_execution_allowed", "daily_manual_start_required",
         "unattended_execution_allowed",
@@ -164,14 +168,38 @@ def load_runtime_config(app_root: Path) -> tuple[dict[str, Any], Path, str]:
         or config.get("real_money_execution_allowed") is not False
         or config.get("daily_manual_start_required") is not True
         or config.get("unattended_execution_allowed") is not False
-        or not isinstance(config.get("account_login"), int)
-        or config.get("account_login", 0) <= 0
-        or not str(config.get("expected_server") or "")
-        or not str(config.get("expected_company") or "")
         or not isinstance(config.get("magic_number"), int)
         or not re.fullmatch(r"S-\d-(?:\d+-)+\d+", str(config.get("authorized_operator_sid") or ""))
     ):
         raise Super1RuntimeError("Signed Super1 runtime config failed the demo-only identity gate.")
+    if config.get("deployment_binding_required") is True:
+        binding_fields = {
+            "deployment_binding_path", "deployment_binding_signature_path", "deployment_binding_public_key_path"
+        }
+        if not binding_fields.issubset(config) or any(key in config for key in ("account_login", "expected_server", "expected_company")):
+            raise Super1RuntimeError("Public Super1 V4 config contains broker identity or lacks binding paths.")
+        try:
+            binding = load_verified_deployment_binding(
+                config["deployment_binding_path"], config["deployment_binding_signature_path"],
+                app_root / str(config["deployment_binding_public_key_path"]),
+            )
+        except DeploymentBindingError as exc:
+            raise Super1RuntimeError("Private signed deployment binding is unavailable.") from exc
+        config = {
+            **config,
+            "account_login": int(binding.binding["account_login"]),
+            "expected_server": str(binding.binding["server"]),
+            "expected_company": str(binding.binding["company"]),
+            "account_key": binding.account_key,
+            "_verified_deployment_binding": binding,
+        }
+    elif (
+        not isinstance(config.get("account_login"), int)
+        or config.get("account_login", 0) <= 0
+        or not str(config.get("expected_server") or "")
+        or not str(config.get("expected_company") or "")
+    ):
+        raise Super1RuntimeError("Historical runtime config has no complete broker identity.")
     return config, path, file_sha256(path)
 
 
@@ -295,12 +323,18 @@ def _validate_lease_payload(
         raise Super1RuntimeError("Session lease hash binding is invalid.")
     if lease.get("mode") != "DEMO_ORDER":
         raise Super1RuntimeError("Session lease mode is not DEMO_ORDER.")
-    expected = {
-        "expected_account_login": config.get("account_login"),
-        "expected_server": config.get("expected_server"),
-        "expected_company": config.get("expected_company"),
-        "magic_number": config.get("magic_number"),
-    }
+    if config.get("deployment_binding_required") is True:
+        binding = config.get("_verified_deployment_binding")
+        if binding is None or any(lease.get(key) != value for key, value in binding.lease_fields().items()):
+            raise AccountBindingMismatchError("Session lease differs from the signed private binding.")
+        expected = {"magic_number": config.get("magic_number")}
+    else:
+        expected = {
+            "expected_account_login": config.get("account_login"),
+            "expected_server": config.get("expected_server"),
+            "expected_company": config.get("expected_company"),
+            "magic_number": config.get("magic_number"),
+        }
     if any(lease.get(key) != value for key, value in expected.items()):
         raise AccountBindingMismatchError("Session lease identity differs from signed config.")
     if str(lease.get("machine_binding")) != machine_binding():

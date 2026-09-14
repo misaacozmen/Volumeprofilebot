@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
+  "status": "HISTORICAL_REDACTED_NON_EXECUTABLE",
   "registry_id": "SUPER1_MT5_INDEX_REGISTRY_V2",
   "instruments": [
     {
       "instrument_id": "XM_MT5_US100CASH_SUPER1",
       "asset_class": "index",
       "broker": "MT5",
-      "expected_server": "XMGlobal-MT5 2",
       "broker_symbol": "US100Cash",
       "timezone": "America/New_York",
       "base_currency": "USD",
@@ -27,7 +27,6 @@
       "instrument_id": "XM_MT5_US500CASH_SUPER1",
       "asset_class": "index",
       "broker": "MT5",
-      "expected_server": "XMGlobal-MT5 2",
       "broker_symbol": "US500Cash",
       "timezone": "America/New_York",
       "base_currency": "USD",

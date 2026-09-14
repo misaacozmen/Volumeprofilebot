@@ -1,0 +1,18 @@
+{
+  "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
+  "candidate_hash": "ead002d792c467686afec2bd5c9883f1390113cbeb74985e36d002fc90a4e852",
+  "closed_trades": 100,
+  "data_manifest_sha256": "c37d875e5fddf56a4eda6abeec7b1bde14adcd6c44e65a4d41fe04c850bab0b8",
+  "drawdown_p95": 1.0,
+  "drawdown_p99": 2.0,
+  "engine_source_sha256": "3749c255ffb724c8ddff72a3848feff3eb671023b417c641fce78a2b496c4431",
+  "locked": true,
+  "rolling_net_r_p05": 0.0,
+  "seed": 7,
+  "valid_sessions": 100,
+  "years": [
+    2022,
+    2023,
+    2024
+  ]
+}

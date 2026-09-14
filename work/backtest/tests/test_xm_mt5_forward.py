@@ -661,7 +661,7 @@ class FakeTradeMt5(FakeMt5):
         return SimpleNamespace(
             login=318413815,
             server="XMGlobal-MT5 7",
-            company="XM Global Limited",
+            company="Fixture Broker Ltd",
             trade_mode=self.trade_mode,
             trade_allowed=True,
             trade_expert=True,

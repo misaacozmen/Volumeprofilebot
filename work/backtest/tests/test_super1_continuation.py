@@ -91,7 +91,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
                 "symbols": {"nq": "NQ", "spx": "SPX"},
                 "timeframes": {"nq": "3m", "spx": "5m", "htf": "15m"},
                 "execution": "MT5_DEMO_ORDERS",
-                "account_login": [REDACTED,
+                "account_login": 12345678,
                 "server": "test-account-server",
             },
             sort_keys=True,
@@ -182,7 +182,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
             },
         },
         "broker_identity_digest": hashlib.sha256(
-            b"[REDACTED|test-account-server"
+            b"12345678|test-account-server"
         ).hexdigest(),
         "state_schema_versions": {name: 1 for name in STATE_ARTIFACTS},
         "allowed_change_list": [
@@ -219,7 +219,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
             "frozen_candidate": "c" * 64,
             "strategy_risk": "d" * 64,
         },
-        broker_identity="[REDACTED|test-account-server",
+        broker_identity="12345678|test-account-server",
         source_snapshot_manifest_sha256=file_hash(manifest),
         state_schema_versions={name: 1 for name in STATE_ARTIFACTS},
         release_root_signature=release_spec,
@@ -508,7 +508,7 @@ def _create_real_state(root: Path) -> None:
             "symbols": {"nq": "NQ", "spx": "SPX"},
             "timeframes": {"nq": "3m", "spx": "5m", "htf": "15m"},
             "execution": "MT5_DEMO_ORDERS",
-            "account_login": [REDACTED,
+            "account_login": 12345678,
             "server": "test-account-server",
             "magic_number": 260805101,
             "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
@@ -534,7 +534,7 @@ def _create_real_state(root: Path) -> None:
     store.close()
     broker_history = {
         "schema_version": 1,
-        "account_login": [REDACTED,
+        "account_login": 12345678,
         "server": "test-account-server",
         "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
         "observed_at": "2026-08-31T14:00:00+00:00",
@@ -561,7 +561,7 @@ def _create_real_state(root: Path) -> None:
     (root / "orders" / "positions.json").write_text(
         json.dumps({
             "schema_version": 1,
-            "account_login": [REDACTED,
+            "account_login": 12345678,
             "server": "test-account-server",
             "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
             "observed_at": "2026-08-31T14:00:00+00:00",

@@ -1,14 +1,20 @@
 {
+  "account_binding_schema_path": "live_forward/account_binding_schema_v4.json",
+  "account_binding_schema_sha256": "ed786e4b3ff33465b871004b067db410372383854e11b69ec6d3177e1f81170d",
   "account_mode": "DEMO_ORDER",
   "authorized_operator_sid": "S-1-5-19",
   "base_risk_percent": 1.0,
-  "campaign_id": "SUPER1_UNSIGNED_CANDIDATE_V3",
-  "candidate_artifact_sha256": "54eb93875651730a34f3add23b001159e1a0183f3543220fe2138db554c1d642",
-  "candidate_file_sha256": "9b58fa2ba74c01d3b997586ec896282758a85682d579659baa31d486ea54bf66",
-  "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v3.json",
+  "campaign_id": "SUPER1_UNSIGNED_CANDIDATE_V4",
+  "candidate_artifact_sha256": "ead002d792c467686afec2bd5c9883f1390113cbeb74985e36d002fc90a4e852",
+  "candidate_file_sha256": "1339ac55467a286c1e4e3209239eff21396d1354676cf066065feac449372e08",
+  "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
   "closed_bar_delay_seconds": 8,
   "daily_manual_start_required": true,
   "demo_order_execution_enabled": true,
+  "deployment_binding_path": "C:\\Super1\\runtime_trust\\account-binding.json",
+  "deployment_binding_public_key_path": "deploy/release-public-key.pem",
+  "deployment_binding_required": true,
+  "deployment_binding_signature_path": "C:\\Super1\\runtime_trust\\account-binding.sig",
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "deviation_points": 20,
   "environment": "XM_MT5_DEMO_ORDER",
@@ -20,15 +26,15 @@
   "legs": {
     "nq": {
       "epic": "US100Cash",
-      "instrument_registry_path": "live_forward/instrument_registry_v3.json",
-      "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+      "instrument_registry_path": "live_forward/instrument_registry_v4.json",
+      "instrument_registry_sha256": "c0c83e674604fdca1d882698958fbb5cc86cb20da4dc3066b6b495de5a6ec00d",
       "symbol": "XM_MT5_US100CASH_SUPER1",
       "timeframe": "3m"
     },
     "spx": {
       "epic": "US500Cash",
-      "instrument_registry_path": "live_forward/instrument_registry_v3.json",
-      "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+      "instrument_registry_path": "live_forward/instrument_registry_v4.json",
+      "instrument_registry_sha256": "c0c83e674604fdca1d882698958fbb5cc86cb20da4dc3066b6b495de5a6ec00d",
       "symbol": "XM_MT5_US500CASH_SUPER1",
       "timeframe": "5m"
     }
@@ -37,7 +43,7 @@
   "live_risk_policy": {
     "daily_loss_cap_r": -1.0,
     "entry_cooldown_seconds": 300,
-    "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+    "instrument_registry_sha256": "c0c83e674604fdca1d882698958fbb5cc86cb20da4dc3066b6b495de5a6ec00d",
     "max_open_positions_by_instrument": 1,
     "max_position_volume_by_instrument": {
       "XM_MT5_US100CASH_SUPER1": 100.0,
@@ -86,11 +92,11 @@
     "terminal_history_days": 365
   },
   "rth_session_calendar": {
-    "calendar_id": "US_EQUITY_RTH_2022_2026_V3",
-    "path": "live_forward/calendars/us_equity_rth_2022_2026_v3.json",
-    "sha256": "9b35b2d611157135653c301d57244ef42d7cda644886a9532e6d741bf22447f3"
+    "calendar_id": "US_EQUITY_RTH_2022_2026_V4",
+    "path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
+    "sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d"
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "setup_rules": [
     {
       "action": "BLOCK",
@@ -107,14 +113,17 @@
       }
     }
   ],
-  "signal_contract_path": "research_candidates/super1/super1_signal_contract_v3.json",
-  "signal_contract_sha256": "c7f16f4e604b56dd63e69d5c6ac195deaca4699ec05b8820cc163531c1d93bb4",
-  "status": "HISTORICAL_REDACTED_NON_EXECUTABLE",
+  "signal_contract_path": "research_candidates/super1/super1_signal_contract_v4.json",
+  "signal_contract_sha256": "b25f01156631f1bf7c53e13ac0d39ecbea1aafbce11158ed5e19a56224de4127",
+  "status": "UNSIGNED_VALIDATION_ONLY",
   "strategy_health_baseline": {
-    "candidate_hash": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
+    "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
+    "candidate_hash": "ead002d792c467686afec2bd5c9883f1390113cbeb74985e36d002fc90a4e852",
     "closed_trades": 100,
+    "data_manifest_sha256": "c37d875e5fddf56a4eda6abeec7b1bde14adcd6c44e65a4d41fe04c850bab0b8",
     "drawdown_p95": 1.0,
     "drawdown_p99": 2.0,
+    "engine_source_sha256": "3749c255ffb724c8ddff72a3848feff3eb671023b417c641fce78a2b496c4431",
     "locked": true,
     "rolling_net_r_p05": 0.0,
     "seed": 7,
@@ -125,6 +134,8 @@
       2024
     ]
   },
+  "strategy_health_baseline_path": "research_candidates/super1/super1_locked_oos_baseline_v4.json",
+  "strategy_health_baseline_sha256": "e56764756aa4e059a7dc4d2bcf765243b1780c52ec15a199eb8503f381e2a1c1",
   "target": "LOCAL_WINDOWS_PC",
   "terminal_path": "C:\\Super1\\mt5\\terminal64.exe",
   "timezone": "America/New_York",

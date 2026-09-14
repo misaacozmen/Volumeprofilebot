@@ -55,7 +55,7 @@ class FakeSmokeMt5:
 
     def account_info(self) -> SimpleNamespace:
         return SimpleNamespace(
-            login=[REDACTED, server=self.server, company="XM Global Limited", trade_mode=0,
+            login=12345678, server=self.server, company="Fixture Broker Ltd", trade_mode=0,
             trade_allowed=True, trade_expert=True, equity=10_000.0, margin_free=5_000.0, leverage=2.0,
         )
 

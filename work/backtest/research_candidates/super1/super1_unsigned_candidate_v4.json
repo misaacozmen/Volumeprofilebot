@@ -1,0 +1,135 @@
+{
+  "artifact_id": "super1_unsigned_candidate_v4",
+  "artifact_sha256": "ead002d792c467686afec2bd5c9883f1390113cbeb74985e36d002fc90a4e852",
+  "artifact_type": "strategy_candidate",
+  "checks": {
+    "criteria_pass": true,
+    "data_invalid_excluded": true,
+    "deterministic": true,
+    "development_prefix_matches_frozen_result": true,
+    "graph_evidence_pass": true,
+    "rolling_all_dd_at_most_13": true,
+    "rolling_all_positive": true,
+    "rolling_windows": 18
+  },
+  "criteria": {
+    "development_max_drawdown_9_13": true,
+    "development_net_r_above_263_baseline": true,
+    "development_retention_at_least_70pct": true,
+    "development_win_rate_40_45": true
+  },
+  "development_result_sha256": "2f346bbb20184f0989e5539984b7c79054aa92aa703f05a8e57b0493fec9e284",
+  "fresh_forward_required": true,
+  "full_evaluation_result_sha256": "29e1e327240adbda26fd3cbb845bd7f118102cbb46efae2b0c594bf1a35a145a",
+  "live_enabled": false,
+  "name": "SUPER1_UNSIGNED_CANDIDATE_V4",
+  "promotion_bindings": {
+    "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
+    "data_manifest_sha256": "c37d875e5fddf56a4eda6abeec7b1bde14adcd6c44e65a4d41fe04c850bab0b8",
+    "engine_source_sha256": "3749c255ffb724c8ddff72a3848feff3eb671023b417c641fce78a2b496c4431"
+  },
+  "proven": false,
+  "provenance": {
+    "environment": {
+      "dependencies": {
+        "pandas": "3.0.3",
+        "pytest": "9.1.1"
+      },
+      "git_commit": null,
+      "python_implementation": "CPython",
+      "python_version": "3.14.5"
+    },
+    "inputs": [
+      {
+        "bytes": 340042,
+        "path": "outputs/reports/strategy_improvement_loop_v2/body_plus_classic_quota_day1_v1/audit/trade_evidence_index.csv",
+        "role": "trade_evidence",
+        "sha256": "4c6c9024ab5676099ec22b863be482d1977b7fa45f3500673a485677d3942a3c"
+      },
+      {
+        "bytes": 821586,
+        "path": "outputs/reports/strategy_improvement_loop_v2/body_plus_classic_quota_day1_v1/selected_trades.csv",
+        "role": "research_dataset",
+        "sha256": "5162bde26ad62a1481691cf96d58980de0a1f8c8874a07f7d7e45695bd745483"
+      },
+      {
+        "bytes": 652268,
+        "path": "outputs/reports/strategy_improvement_loop_v4/iteration_096/locked_conservative_rolling_v1/selected_trades_pre2025.csv",
+        "role": "frozen_development_result",
+        "sha256": "782d8c0d3f2f403b20889c605e396e9535877ce71c13f57e35311b6e906e40e6"
+      },
+      {
+        "bytes": 10828,
+        "path": "scripts/candidate_artifact.py",
+        "role": "artifact_code",
+        "sha256": "26e08cafc94df9c89400677881c66b855f37ad32552abdb8841a907ab570ac5a"
+      },
+      {
+        "bytes": 6012,
+        "path": "scripts/evaluate_conservative_rolling_candidate_v4.py",
+        "role": "evaluator_code",
+        "sha256": "82f4912dd863ce5f39a5ab65a7d0ff284564fe5173db1a114133b9a17af12af5"
+      },
+      {
+        "bytes": 11185,
+        "path": "scripts/finalize_strategy_improvement_loop_v4.py",
+        "role": "finalizer_code",
+        "sha256": "f19624b255b0e09f5cb829667cd2851456a94fdd8161cf8a8d32938260d0f9f0"
+      },
+      {
+        "bytes": 4892,
+        "path": "scripts/freeze_conservative_rolling_state_v4.py",
+        "role": "risk_config_code",
+        "sha256": "2904d7e05b540ef7471aeaea6ed2b1177653a3f3d91ea25bdadfd2629cbb0272"
+      },
+      {
+        "bytes": 4735,
+        "path": "scripts/freeze_risk_overlay_v4.py",
+        "role": "metric_code",
+        "sha256": "0fcc3b6eb35f7af89f8ff85726eceb0ef8d78c2dd74e40d35a2e716d0ed66630"
+      },
+      {
+        "bytes": 6285,
+        "path": "scripts/freeze_strategy_improvement_loop_v4.py",
+        "role": "selector_code",
+        "sha256": "0453b5f4e5663eddf2d33dff6bbb0ea16cb1749099562cfcb3de914fcdf165c7"
+      },
+      {
+        "bytes": 24377,
+        "path": "scripts/run_strategy_improvement_loop_v4.py",
+        "role": "strategy_code",
+        "sha256": "cfd0a5a493d171ba6a8ca8b6518eb35dd5bda7d0cc3b7018b0f792c2a0266db1"
+      }
+    ]
+  },
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "schema_version": 2,
+  "selection_protocol": {
+    "development_period": "2016-2024",
+    "final_holdout_period": "2025-2026",
+    "final_holdout_used_for_publication": false,
+    "final_holdout_used_for_selection": false
+  },
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "unsigned": true
+}

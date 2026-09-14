@@ -57,7 +57,7 @@ def _staged(proposal: SignalProposal) -> dict[str, object]:
 
 def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_path: Path) -> None:
     proposal = _proposal()
-    campaign_id, account_key, release_id = "campaign-1", "[REDACTED", "release-1"
+    campaign_id, account_key, release_id = "campaign-1", "12345678", "release-1"
     approvals = ApprovalStore(tmp_path / "approvals.sqlite3", now=lambda: NOW)
     lease = {
         "state": "ACTIVE", "lease_id": "lease-1", "invocation_nonce": "nonce-1",

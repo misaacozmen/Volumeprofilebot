@@ -16,6 +16,8 @@ import pandas as pd
 from backtest.config import SymbolConfig
 from backtest.data_inspector import parse_timeframe_minutes
 from backtest.engine_pipeline import EngineLeg, run_canonical_pair_pipeline
+from backtest.integrity import DayDataIntegrity, assess_manual_state_day as baseline_assess, find_gap_events
+import backtest.manual_state as manual_state_module
 from backtest.live_signal_protocol import LEG_KEYS, SCHEMA_VERSION, canonical_hash, canonical_json_bytes, validate_request
 from backtest.manual_state import (
     ManualStateConfig, cisd_qualifications_to_frame, context_authority_to_frame,
@@ -126,6 +128,34 @@ def evaluate(request: dict[str, object]) -> dict[str, object]:
         frame["known_time"] = pd.to_datetime(frame["known_time"], utc=True).dt.tz_convert("America/New_York")
         frames[key] = frame
     trade_date = pd.Timestamp(request["trade_date"]).date()
+    allowed_by_timeframe = {
+        configs[key].timeframe: [
+            (pd.Timestamp(item["first"]), pd.Timestamp(item["last"]))
+            for item in request["scheduled_closed_ranges"][key]
+        ]
+        for key in LEG_KEYS
+    }
+
+    def scheduled_assess(frame, day, timeframe, profile_start, trade_end):
+        result = baseline_assess(frame, day, timeframe, profile_start, trade_end)
+        if result.valid:
+            return result
+        minutes = int(parse_timeframe_minutes(timeframe) or 5)
+        relevant = frame[(frame["time"] >= profile_start) & (frame["time"] <= trade_end)]
+        gaps = {event.time.isoformat(): event for event in find_gap_events(relevant, expected_minutes=minutes)}
+        ranges = allowed_by_timeframe.get(timeframe, [])
+        retained = []
+        for issue in result.issues:
+            event = gaps.get(issue.time)
+            if issue.code != "MISSING_BARS" or event is None:
+                retained.append(issue)
+                continue
+            missing = pd.date_range(event.prev_time + pd.Timedelta(minutes=minutes), event.time - pd.Timedelta(minutes=minutes), freq=f"{minutes}min")
+            if not len(missing) or not all(any(first <= timestamp <= last for first, last in ranges) for timestamp in missing):
+                retained.append(issue)
+        return DayDataIntegrity(result.trade_date, not retained, tuple(retained))
+
+    manual_state_module.assess_manual_state_day = scheduled_assess
     result = run_canonical_pair_pipeline([EngineLeg(key, frames[key], configs[key]) for key in LEG_KEYS], [trade_date], state_config=state)
     lifecycle: dict[str, object] = {}
     days: list[dict[str, object]] = []

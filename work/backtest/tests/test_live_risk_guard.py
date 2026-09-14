@@ -13,7 +13,7 @@ NOW = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
 
 def contract() -> InstrumentContract:
     return InstrumentContract(
-        "XM_MT5_US100CASH_SUPER1", "index", "MT5", "XMGlobal-MT5 2", "US100Cash",
+        "XM_MT5_US100CASH_SUPER1", "index", "MT5", "fixture-demo-server", "US100Cash",
         "America/New_York", "USD", "USD", "USD", 2, 0.01, 0.01, 1.0,
         0.01, 100.0, 0.01, 0.01, "price", 0,
     )
