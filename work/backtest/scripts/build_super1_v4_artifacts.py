@@ -33,10 +33,7 @@ def canonical_hash(value: object) -> str:
 def main() -> None:
     calendar = ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v4.json"
     data_root = ROOT / "data/provenance/dukascopy_v4"
-    manifest_paths = sorted({
-        *data_root.glob("reacquired/**/*.manifest.json"),
-        *data_root.glob("reacquired_session/**/*.manifest.json"),
-    })
+    manifest_paths = sorted(data_root.glob("reacquired_session/**/*.manifest.json"))
     data_manifest = {
         "schema_version": 4,
         "provider": "Dukascopy",

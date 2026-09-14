@@ -8,9 +8,9 @@
   "execution_scope": "XM_MT5_DEMO_ONLY",
   "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V4",
   "overlay_candidate": {
-    "artifact_sha256": "dbe19565ed2b65c3fd007a980fcb675036798fe0cbf349a9f725f86a70d8caf9",
+    "artifact_sha256": "953db9d6d0aa55031204a62899b8eaf256715b6682cf895abbb5c07f3c0db362",
     "defines_base_signals": false,
-    "file_sha256": "c9952a452fef0937df72af45c7a16f0c9c7f1248d8fd0a1cc9160c3bf622417c",
+    "file_sha256": "d7cc26a43ca205c95f99b086202e6485bdb186bbfd2dc24e1c41ef246dd05641",
     "path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
