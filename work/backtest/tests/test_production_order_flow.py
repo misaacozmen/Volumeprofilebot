@@ -116,6 +116,7 @@ def test_actual_super1_production_flow_sends_once_then_reconciles_fake_mt5(tmp_p
             tmp_path / "approvals.sqlite3", read_deals=lambda _start, _end: (),
             account_key=account_key, campaign_id=campaign_id, candidate_hash="c" * 64,
             campaign_start=NOW - timedelta(days=1), magic=1, now=lambda: NOW,
+            private_terminal_binding_hash="b" * 63 + "c",
         ),
     )
 

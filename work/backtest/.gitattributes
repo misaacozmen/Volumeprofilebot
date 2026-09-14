@@ -2,5 +2,6 @@
 *.md text eol=lf
 *.py text eol=lf
 live_forward/calendars/provenance/v4/raw/** -text -diff
-data/provenance/dukascopy_v4/raw/** -text
+data/provenance/dukascopy_v4/raw/** -text -diff
 data/provenance/dukascopy_v4/acquisition_v5/http_cas/** -text -diff
+data/provenance/dukascopy_v4/acquisition_v5/bundles/** -text -diff

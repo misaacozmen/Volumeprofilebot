@@ -742,6 +742,19 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         self._strict_reconciliation = True
         self._audit_anchor_callback = write_event_log_anchor
 
+    def _terminal_binding_hash(self) -> str:
+        configured = str(self.config.get("account_binding_schema_sha256") or "").lower()
+        if len(configured) == 64 and all(char in "0123456789abcdef" for char in configured):
+            return configured
+        if self.config.get("deployment_binding_required") is True:
+            raise Super1RuntimeError("private terminal account binding hash is unavailable")
+        fixture_identity = {
+            "account_login": self.config.get("account_login"),
+            "expected_server": self.config.get("expected_server"),
+            "expected_company": self.config.get("expected_company"),
+        }
+        return hashlib.sha256(json.dumps(fixture_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
     def _verify_private_binding(self) -> None:
         binding = self.config.get("_verified_deployment_binding")
         if binding is None:
@@ -1127,10 +1140,11 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             self._emergency_flatten(output_root, "BROKER_FACTS_UNKNOWN")
             raise xm.BrokerStateUnknownError(str(exc)) from exc
 
-    def _terminal_query_batch(self, output_root: Path, start: object, end: object, queried_at: object):
+    def _terminal_query_batch(self, output_root: Path, start: object, end: object, queried_at: object | None = None):
         """Read and attest one closed range before allowing deal ingestion to commit."""
+        # This order is part of the attestation contract.  The second range
+        # query is deliberately the final broker query in the window.
         first = self._retry_mt5_read("history_deals_get", start, end)
-        repeated = self._retry_mt5_read("history_deals_get", start, end)
         orders = self._retry_mt5_read("history_orders_get", start, end)
         order_rows = tuple(orders)
         tickets = {
@@ -1154,27 +1168,42 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             for deal in tuple(self._retry_mt5_read("history_deals_get", position=position))
         )
         local_intents: list[tuple[object, ...]] = []
+        local_snapshot: dict[str, object] = {"counts": {}, "hashes": {}}
         database = self._order_db(output_root)
         if database.is_file():
             connection = sqlite3.connect(database)
             try:
-                table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intents'"
-                ).fetchone()
-                if table:
-                    local_intents = connection.execute(
-                        "SELECT order_id,status FROM order_intents "
-                        "WHERE created_at >= ? AND created_at < ? "
-                        "AND status IN ('WRITE_CLAIMED','SUBMITTED','UNKNOWN','ACCEPTED')",
-                        (pd.Timestamp(start).tz_convert("UTC").isoformat(), pd.Timestamp(end).tz_convert("UTC").isoformat()),
-                    ).fetchall()
+                tables = ("order_intents", "entry_risk_intents", "daily_risk_slots", "broker_order_bindings", "position_entry_allocations")
+                for table_name in tables:
+                    exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone()
+                    if not exists:
+                        continue
+                    rows = connection.execute(f"SELECT * FROM {table_name} ORDER BY rowid").fetchall()
+                    encoded = [tuple(row) for row in rows]
+                    local_snapshot["counts"][table_name] = len(encoded)
+                    local_snapshot["hashes"][table_name] = hashlib.sha256(json.dumps(encoded, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
+                    if table_name == "order_intents":
+                        local_intents = [(row[0], row[1]) for row in rows]
             finally:
                 connection.close()
+        repeated = self._retry_mt5_read("history_deals_get", start, end)
+        queried_at = pd.Timestamp.now(tz="UTC").to_pydatetime()
         return build_terminal_query_batch(
             rows=tuple(first), repeated_rows=tuple(repeated), orders=order_rows,
             ticket_deals=ticket_deals, position_deals=position_deals,
-            local_intents=local_intents, start_utc=pd.Timestamp(start).to_pydatetime(),
-            end_utc=pd.Timestamp(end).to_pydatetime(), queried_at_utc=pd.Timestamp(queried_at).to_pydatetime(),
+            local_intents=local_intents, local_snapshot=local_snapshot,
+            query_context={
+                "account_key": self._account_key(),
+                "campaign_id": str(self.config.get("campaign_id") or ""),
+                "candidate_hash": str(self.config.get("candidate_artifact_sha256") or ""),
+                "magic": self.magic,
+                "comment_prefix": str(self.config.get("order_comment_prefix") or ""),
+                "private_terminal_binding_hash": self._terminal_binding_hash(),
+                "query_method_contract_version": "TERMINAL_DEAL_QUERY_V5",
+                "reconciliation_type": "FULL",
+            },
+            start_utc=pd.Timestamp(start).to_pydatetime(),
+            end_utc=pd.Timestamp(end).to_pydatetime(), queried_at_utc=queried_at,
         )
 
     def _terminal_deal_ingestor(self, output_root: Path, now: pd.Timestamp) -> TerminalDealIngestor:
@@ -1187,18 +1216,20 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             row = connection.execute("SELECT MIN(created_at) FROM order_intents").fetchone() if table else None
         finally:
             connection.close()
-        campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC") - pd.Timedelta(milliseconds=1)
+        campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC") - pd.Timedelta(days=365)
         if campaign_start >= now.tz_convert("UTC"):
-            campaign_start = now.tz_convert("UTC") - pd.Timedelta(milliseconds=1)
+            campaign_start = now.tz_convert("UTC") - pd.Timedelta(days=365)
         return TerminalDealIngestor(
             database,
-            read_deals=lambda start, end: self._terminal_query_batch(output_root, start, end, now),
+            read_deals=lambda start, end: self._terminal_query_batch(output_root, start, end),
             account_key=self._account_key(),
             campaign_id=str(self.config.get("campaign_id") or ""),
             candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
             campaign_start=campaign_start.to_pydatetime(), magic=self.magic,
             comment_prefix=str(self.config.get("order_comment_prefix") or ""),
             now=lambda: now.to_pydatetime(),
+            terminal_history_days=365,
+            private_terminal_binding_hash=self._terminal_binding_hash(),
         )
 
     def _emergency_flatten(self, output_root: Path, reason: str) -> dict[str, Any]:

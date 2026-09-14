@@ -1,0 +1,24 @@
+{
+  "auditor_sha256": "8f9385def1d1c47f698bf5edb7f7728e7a69b51b8d5a2a3d137aebd2aaf1f82d",
+  "bundle_path": "reacquired_session/2022-04-06_nq",
+  "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
+  "derived_path": "reacquired_session/2022-04-06_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-04-06_2022-04-07.csv",
+  "derived_semantic_sha256": "53c009c6e7fac9b389f624461a786f56d54604f7354d1cc80b239ec807923e53",
+  "derived_sha256": "8808992d790c7196a49593a27a03c2e0293ecb707f8800ff681803d3b87cc84e",
+  "manifest_path": "reacquired_session/2022-04-06_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-04-06_2022-04-07.csv.manifest.json",
+  "manifest_sha256": "3dd93b0d923ced8004f1fb0fb293cb46373eef296de79bb2c3154d1dac6b10e0",
+  "minute_path": "reacquired_session/2022-04-06_nq/DUKASCOPY_USATECHIDXUSD, 1m_2022-04-06_2022-04-07.csv",
+  "minute_semantic_sha256": "f0c1231c3d210737a941f894ca3d6e065b64cafd564c6aa3b0d29a154689cc5d",
+  "minute_sha256": "0b9443a2a3300917b0a7bad5eb4a4976655083b9f0e2621d9a3920f939a15010",
+  "node_helper_sha256": "3f7a3f7769ef47c751086fc635cdf2b240cccfd65b90bf1388f11eccc4652bba",
+  "package_lock_sha256": "74506876532b3d1caf4be740fc42c79e9eb529518770afd05c40a0463c732dee",
+  "raw_sha256": [
+    "22151adb8b9932a2c4eebf9296cf10674e179f2fe7417914b18c21a7f3bc1c29"
+  ],
+  "schema_version": 1,
+  "target": {
+    "date": "2022-04-06",
+    "leg": "nq",
+    "timeframe": "3m"
+  }
+}

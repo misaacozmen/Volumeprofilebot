@@ -7,7 +7,11 @@ import sqlite3
 
 import pytest
 
-from backtest.live.deal_ingestion import TerminalDealIngestionError, TerminalDealIngestor, TerminalQueryBatch
+from backtest.live.deal_ingestion import (
+    TerminalDealIngestionError,
+    TerminalDealIngestor,
+    build_terminal_query_batch,
+)
 
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
@@ -25,12 +29,21 @@ def deal(ticket: int, entry: str, volume: str, profit: str, *, order: int = 101,
 
 def ingestor(tmp_path, rows):
     def read(start, end):
-        return TerminalQueryBatch(tuple(rows), True, start, end, NOW, "1" * 64, "2" * 64)
+        selected = tuple(item for item in rows if start <= datetime.fromtimestamp(int(item["time_msc"]) / 1000, tz=timezone.utc) <= end)
+        return build_terminal_query_batch(
+            rows=selected, repeated_rows=selected, orders=(), ticket_deals=(), position_deals=(),
+            local_snapshot={"counts": {}, "hashes": {}},
+            query_context={
+                "account_key": "account-hash", "campaign_id": "campaign", "candidate_hash": "c" * 64,
+                "magic": 77, "comment_prefix": "S1:", "private_terminal_binding_hash": "b" * 63 + "c",
+            }, start_utc=start, end_utc=end, queried_at_utc=NOW,
+        )
 
     return TerminalDealIngestor(
         tmp_path / "orders.sqlite3", read_deals=read,
         account_key="account-hash", campaign_id="campaign", candidate_hash="c" * 64,
         campaign_start=NOW - timedelta(days=30), magic=77, comment_prefix="S1:", now=lambda: NOW,
+        private_terminal_binding_hash="b" * 63 + "c",
     )
 
 
@@ -75,7 +88,7 @@ def test_read_failure_does_not_create_or_advance_cursor(tmp_path) -> None:
     store = TerminalDealIngestor(
         tmp_path / "orders.sqlite3", read_deals=fail, account_key="account-hash",
         campaign_id="campaign", candidate_hash="c" * 64,
-        campaign_start=NOW - timedelta(days=1), magic=77, now=lambda: NOW,
+        campaign_start=NOW - timedelta(days=1), magic=77, now=lambda: NOW, private_terminal_binding_hash="b" * 63 + "c",
     )
     with pytest.raises(TerminalDealIngestionError, match="cursor was not advanced"):
         store.ingest()
@@ -87,7 +100,7 @@ def test_plain_list_is_not_a_complete_terminal_query_batch(tmp_path) -> None:
     store = TerminalDealIngestor(
         tmp_path / "orders.sqlite3", read_deals=lambda _start, _end: [], account_key="account-hash",
         campaign_id="campaign", candidate_hash="c" * 64,
-        campaign_start=NOW - timedelta(days=1), magic=77, now=lambda: NOW,
+        campaign_start=NOW - timedelta(days=1), magic=77, now=lambda: NOW, private_terminal_binding_hash="b" * 63 + "c",
     )
     with pytest.raises(TerminalDealIngestionError, match="cursor was not advanced"):
         store.ingest()

@@ -1,11 +1,11 @@
 {
   "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
-  "candidate_hash": "819edd0e138cfc0fd2bdaf599a55d75f8bb78b607234c24184c076791a81817b",
+  "candidate_hash": "dc42f51b53f2d036a6d76374c03a530aa28394500aee348dd03ff9b21be73aeb",
   "closed_trades": 100,
   "data_manifest_sha256": "97c7f0f8d3fce09dab54ea2f6ba3234b58ce14bb4533962862355c0f1c0fc9c1",
   "drawdown_p95": 1.0,
   "drawdown_p99": 2.0,
-  "engine_source_sha256": "3b894450270145438de9b734dd8cdf02dde14105d6951a45a85ec54b93a43655",
+  "engine_source_sha256": "5014525ee259b4b6f59e95b54a4b9bdb7d30d4c6476d72e7ae50b66e5637eee8",
   "locked": true,
   "rolling_net_r_p05": 0.0,
   "seed": 7,

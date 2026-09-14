@@ -31,11 +31,13 @@ from backtest.evaluation_window import classify_sessions, coverage_report
 from backtest.market_calendar import signed_calendar_contract, signed_market_dates
 from backtest.numeric_contracts import finite_float
 from backtest.risk_xray import build_risk_xray, write_risk_xray
+from backtest.reacquisition_contract import apply_verified_reacquisitions as apply_manifest_reacquisitions, validate_final_manifest
 
 
 DEFAULT_REPORT_DIR = ROOT / "outputs" / "reports" / "canonical_production_full_history_research"
 DEFAULT_GAP_INVENTORY = ROOT / "data" / "provenance" / "dukascopy_v4" / "frozen_invalid_leg_days_v4.csv"
-DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired_session"
+DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "acquisition_v5" / "bundles"
+DEFAULT_LEGACY_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired_session"
 DEFAULT_REACQUISITION_MANIFEST = ROOT / "data" / "provenance" / "dukascopy_v4" / "acquisition_v5" / "reacquisition_manifest_v5.json"
 GAP_INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
 _ACTIVE_STAGING: Path | None = None
@@ -98,63 +100,10 @@ def apply_verified_reacquisitions(
     loaded: dict[tuple[str, str], pd.DataFrame],
     inventory_path: Path,
     reacquired_root: Path,
+    manifest_path: Path = DEFAULT_REACQUISITION_MANIFEST,
 ) -> dict[tuple[str, str], pd.DataFrame]:
-    if sha256(inventory_path.read_bytes()).hexdigest() != GAP_INVENTORY_SHA256:
-        raise ValueError("invalid-leg inventory hash does not match the frozen source report")
-    inventory = pd.read_csv(inventory_path)
-    selected = inventory
-    if selected.empty:
-        raise ValueError("frozen invalid-leg inventory contains no actual missing intervals")
-    result = {key: frame.copy() for key, frame in loaded.items()}
-    seen: set[tuple[str, str]] = set()
-    for row in selected.itertuples(index=False):
-        leg = str(row.leg)
-        date = str(row.date)
-        symbol, timeframe = comparison.SYMBOLS[leg]
-        marker = (date, leg)
-        if marker in seen:
-            raise ValueError(f"duplicate reacquisition target: {date}/{leg}")
-        seen.add(marker)
-        directory = reacquired_root / f"{date}_{leg}"
-        paths = sorted(directory.glob(f"*, {timeframe}_*.csv"))
-        if len(paths) != 1:
-            raise ValueError(f"expected exactly one reacquired dataset for {date}/{leg}")
-        path = paths[0]
-        manifest_path = path.with_suffix(path.suffix + ".manifest.json")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (
-            manifest.get("provider") != "Dukascopy"
-            or manifest.get("side") != "BID"
-            or manifest.get("source_granularity") != "M1"
-            or manifest.get("resampling", {}).get("timeframe") != timeframe
-            or manifest.get("session_context_hours") != 6
-            or manifest.get("request_range") != {"start": date, "end_exclusive": (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")}
-        ):
-            raise ValueError(f"reacquisition manifest contract mismatch: {date}/{leg}")
-        for raw in manifest.get("raw_chunks", []):
-            raw_path = ROOT / str(raw["raw_path"])
-            if sha256(raw_path.read_bytes()).hexdigest() != raw["raw_sha256"]:
-                raise ValueError(f"raw reacquisition hash mismatch: {date}/{leg}")
-        fresh = filters.load_ohlcv([path]).frame
-        if reacquired_frame_hash(fresh) != manifest.get("derived_sha256"):
-            raise ValueError(f"derived reacquisition hash mismatch: {date}/{leg}")
-        session_start = pd.Timestamp(date, tz="America/New_York") - pd.Timedelta(hours=6)
-        session_end = pd.Timestamp(date, tz="America/New_York") + pd.Timedelta(hours=12)
-        replacement = fresh.loc[(fresh["time"] >= session_start) & (fresh["time"] < session_end)]
-        if replacement.empty:
-            raise ValueError(f"reacquisition returned no bars for {date}/{leg}")
-        current = result[(symbol, timeframe)]
-        keep = (current["time"] < session_start) | (current["time"] >= session_end)
-        result[(symbol, timeframe)] = (
-            pd.concat([current.loc[keep], replacement], ignore_index=True)
-            .sort_values("time", kind="mergesort")
-            .drop_duplicates("time", keep="last")
-            .reset_index(drop=True)
-        )
-    expected = {(str(row.date), str(row.leg)) for row in selected.itertuples(index=False)}
-    if seen != expected:
-        raise ValueError("not every actual invalid leg-day was reacquired")
-    return result
+    manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=inventory_path)
+    return apply_manifest_reacquisitions(loaded, manifest, provenance_root=ROOT / "data/provenance/dukascopy_v4", frame_loader=lambda path: filters.load_ohlcv([path]).frame)
 
 
 def checkpoint_paths(report_dir: Path, year: int) -> dict[str, Path]:
@@ -398,6 +347,7 @@ def _main_impl() -> None:
         args.gap_inventory.resolve(),
         args.reacquired_root.resolve(),
         (ROOT / "outputs/reports/dukascopy_reacquisition_v5").resolve(),
+        legacy_root=DEFAULT_LEGACY_REACQUIRED_ROOT,
     )
     if preflight["residual_count"] != 0:
         raise ValueError(f"V5 reacquisition preflight has {preflight['residual_count']} residual targets")
@@ -407,16 +357,14 @@ def _main_impl() -> None:
     manifest_path = args.reacquisition_manifest.resolve()
     if not manifest_path.is_file():
         raise ValueError("exact V5 reacquisition manifest is required")
-    reacquisition_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if reacquisition_manifest.get("inventory_sha256") != GAP_INVENTORY_SHA256 or reacquisition_manifest.get("target_count") != 113 or reacquisition_manifest.get("residual_count") != 0:
-        raise ValueError("V5 reacquisition manifest is not the exact zero-residual authoritative manifest")
+    reacquisition_manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=args.gap_inventory.resolve())
     report_dir = args.report_dir.resolve()
     report_parent = report_dir.parent
     report_parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{report_dir.name}.", dir=report_parent))
     _ACTIVE_STAGING = staging_dir
     loaded = apply_verified_reacquisitions(
-        filters.load_data(), args.gap_inventory.resolve(), args.reacquired_root.resolve()
+        filters.load_data(), args.gap_inventory.resolve(), args.reacquired_root.resolve(), manifest_path=manifest_path
     )
     configs = comparison.build_active_configs(loaded)
     state_config = ManualStateConfig()

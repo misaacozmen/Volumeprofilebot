@@ -4,6 +4,7 @@ from dataclasses import asdict
 import argparse
 import json
 import os
+from hashlib import sha256
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,12 +26,14 @@ from backtest.evaluation_window import classify_sessions, coverage_report
 from backtest.market_calendar import signed_market_dates
 from backtest.manual_state import ManualStateConfig, build_independent_htf_frame
 from backtest.risk_xray import build_risk_xray, write_risk_xray
+from backtest.reacquisition_contract import apply_verified_reacquisitions, validate_final_manifest
 from backtest.state_audit import pipeline_records, prefix_invariance_violations
 
 
 REPORT_DIR = ROOT / "outputs" / "reports" / "engine_reliability_audit_2025_feb_mar"
 FROZEN_INVENTORY = ROOT / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv"
 REACQUISITION_MANIFEST = ROOT / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
+REACQUISITION_ROOT = ROOT / "data/provenance/dukascopy_v4/acquisition_v5/bundles"
 
 
 def main(
@@ -39,23 +42,18 @@ def main(
     reacquisition_manifest: Path | None = None,
 ) -> bool:
     started = time.perf_counter()
-    if inventory_path is not None or reacquisition_manifest is not None:
-        from audit_dukascopy_reacquisition_v5 import audit_inventory
-
-        inventory = (inventory_path or FROZEN_INVENTORY).resolve()
-        preflight = audit_inventory(
-            inventory,
-            ROOT / "data/provenance/dukascopy_v4/reacquired_session",
-            ROOT / "outputs/reports/dukascopy_reacquisition_v5",
-        )
-        if preflight["residual_count"] != 0:
-            raise RuntimeError(f"reacquisition residual is {preflight['residual_count']}; reliability audit is blocked")
-        manifest_path = (reacquisition_manifest or REACQUISITION_MANIFEST).resolve()
-        if not manifest_path.is_file():
-            raise RuntimeError("exact V5 reacquisition manifest is missing")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("target_count") != 113 or manifest.get("residual_count") != 0:
-            raise RuntimeError("exact V5 reacquisition manifest is not zero-residual")
+    from audit_dukascopy_reacquisition_v5 import audit_inventory
+    inventory = (inventory_path or FROZEN_INVENTORY).resolve()
+    manifest_path = (reacquisition_manifest or REACQUISITION_MANIFEST).resolve()
+    preflight = audit_inventory(
+        inventory,
+        REACQUISITION_ROOT,
+        ROOT / "outputs/reports/dukascopy_reacquisition_v5",
+        legacy_root=ROOT / "data/provenance/dukascopy_v4/reacquired_session",
+    )
+    if preflight["residual_count"] != 0:
+        raise RuntimeError(f"reacquisition residual is {preflight['residual_count']}; reliability audit is blocked")
+    manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=inventory)
     target_report_dir = (report_dir or REPORT_DIR).resolve()
     target_report_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{target_report_dir.name}.", dir=target_report_dir.parent))
@@ -64,6 +62,7 @@ def main(
         shutil.copy2(baseline, staging_dir / baseline.name)
 
     loaded = filters.load_data()
+    loaded = apply_verified_reacquisitions(loaded, manifest, provenance_root=ROOT / "data/provenance/dukascopy_v4", frame_loader=lambda path: filters.load_ohlcv([path]).frame)
     configs = comparison.build_active_configs(loaded)
     dates = signed_market_dates(comparison.START_DATE, comparison.END_DATE)
     legs = [
@@ -76,8 +75,17 @@ def main(
     ]
     state_config = ManualStateConfig()
 
+    determinism_root_a = Path(tempfile.mkdtemp(prefix="reliability-determinism-a-", dir=staging_dir))
+    determinism_root_b = Path(tempfile.mkdtemp(prefix="reliability-determinism-b-", dir=staging_dir))
+    previous_stage = os.environ.get("OTOBT_RELIABILITY_STAGING_ROOT")
+    os.environ["OTOBT_RELIABILITY_STAGING_ROOT"] = str(determinism_root_a)
     first = run_canonical_pair_pipeline(legs, dates, state_config=state_config)
+    os.environ["OTOBT_RELIABILITY_STAGING_ROOT"] = str(determinism_root_b)
     second = run_canonical_pair_pipeline(legs, dates, state_config=state_config)
+    if previous_stage is None:
+        os.environ.pop("OTOBT_RELIABILITY_STAGING_ROOT", None)
+    else:
+        os.environ["OTOBT_RELIABILITY_STAGING_ROOT"] = previous_stage
     deterministic = first.manifest["result_hash"] == second.manifest["result_hash"]
 
     first.decisions.to_csv(staging_dir / "canonical_decisions.csv", index=False)
@@ -219,7 +227,14 @@ def main(
     )
     (staging_dir / "run_manifest.json").write_text(
         json.dumps(
-            {**first.manifest, "coverage": coverage, "forward_shadow_ready": forward_shadow_ready},
+            {
+                **first.manifest,
+                "coverage": coverage,
+                "forward_shadow_ready": forward_shadow_ready,
+                "reacquisition_manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
+                "reacquisition_semantic_root_sha256": manifest["semantic_root_sha256"],
+                "determinism_staging_roots": [determinism_root_a.name, determinism_root_b.name],
+            },
             indent=2,
             sort_keys=True,
             default=str,

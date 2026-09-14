@@ -17,6 +17,16 @@ class CandidateValidationError(ValueError):
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 INDEPENDENT_BASE_CODE_HASH = "bb333e7a5790b2b9d18e933707cc8f310d1ba55bff91ff611778c63da2bab42b"
+V4_REQUIRED_BINDING_PATHS = frozenset({
+    "config_path", "calendar_path", "data_manifest_path", "signal_contract_path",
+    "instrument_registry_path", "locked_oos_baseline_path", "account_binding_schema_path",
+    "sandbox_protocol_path", "deal_schema_path", "candidate_path",
+})
+V4_REQUIRED_BINDING_HASHES = frozenset({
+    "candidate_file_sha256", "config_sha256", "calendar_sha256", "data_manifest_sha256", "signal_contract_sha256",
+    "instrument_registry_sha256", "locked_oos_baseline_sha256", "account_binding_schema_sha256",
+    "sandbox_protocol_sha256", "deal_schema_sha256", "engine_source_sha256", "risk_policy_sha256",
+})
 
 
 def _file(root: Path, relative: str, label: str) -> Path:
@@ -183,14 +193,25 @@ def validate_super1_v4_candidate(
     if not isinstance(binding, Mapping):
         raise CandidateValidationError("V4 manifest promotion bindings are missing")
     candidate_binding = candidate.get("promotion_bindings")
-    if not isinstance(candidate_binding, Mapping) or dict(candidate_binding) != dict(binding):
-        raise CandidateValidationError("candidate promotion_bindings differ from the V4 manifest")
+    if not isinstance(candidate_binding, Mapping):
+        raise CandidateValidationError("candidate promotion_bindings are missing")
+    if set(binding) != V4_REQUIRED_BINDING_PATHS | V4_REQUIRED_BINDING_HASHES | {"candidate_artifact_sha256"}:
+        raise CandidateValidationError("V4 promotion binding key set is incomplete or contains unexpected fields")
+    if set(candidate_binding) != V4_REQUIRED_BINDING_PATHS:
+        raise CandidateValidationError("V4 candidate static binding key set is incomplete")
+    for required in V4_REQUIRED_BINDING_PATHS:
+        if required not in candidate_binding or not candidate_binding.get(required):
+            raise CandidateValidationError(f"V4 required promotion binding is missing: {required}")
+        if candidate_binding[required] != binding.get(required):
+            raise CandidateValidationError(f"V4 candidate static binding differs from manifest: {required}")
 
     checked: dict[str, str] = {}
     for key, value in binding.items():
         if not key.endswith("_path"):
             continue
-        digest_key = "candidate_file_sha256" if key == "candidate_path" else key[:-5] + "_sha256"
+        if key == "candidate_path":
+            continue
+        digest_key = key[:-5] + "_sha256"
         relative = str(value or "")
         file_path = _file(root_path, relative, f"V4 binding {key}")
         observed = sha256(file_path.read_bytes()).hexdigest()
@@ -222,10 +243,7 @@ def validate_super1_v4_candidate(
     candidate_relative = candidate_path.relative_to(root_path).as_posix()
     if binding.get("candidate_path") != candidate_relative:
         raise CandidateValidationError("V4 manifest candidate path is invalid")
-    candidate_file_hash = _require_hash(
-        binding.get("candidate_file_sha256", manifest.get("candidate_file_sha256")),
-        "V4 candidate_file_sha256",
-    )
+    candidate_file_hash = _require_hash(manifest.get("candidate_file_sha256"), "V4 candidate_file_sha256")
     if candidate_file_hash != sha256(candidate_path.read_bytes()).hexdigest():
         raise CandidateValidationError("V4 candidate file hash mismatch")
     candidate_artifact_hash = _require_hash(
@@ -241,32 +259,52 @@ def validate_super1_v4_candidate(
     data_hash = _require_hash(binding.get("data_manifest_sha256"), "V4 data_manifest_sha256")
     if sha256(data_path.read_bytes()).hexdigest() != data_hash:
         raise CandidateValidationError("V4 data manifest hash mismatch")
-    if candidate.get("promotion_bindings", {}).get("data_manifest_sha256") != data_hash:
-        raise CandidateValidationError("V4 candidate data binding is invalid")
+    if binding.get("data_manifest_sha256") != data_hash:
+        raise CandidateValidationError("V4 manifest data binding is invalid")
     risk_payload = {
         "risk_limits": config.get("risk_limits"),
         "live_risk_policy": config.get("live_risk_policy"),
         "risk_rule": config.get("risk_rule"),
     }
     risk_hash = sha256(json.dumps(risk_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
-    if binding.get("risk_policy_sha256", manifest.get("risk_policy_sha256")) != risk_hash:
+    if binding.get("risk_policy_sha256") != risk_hash:
         raise CandidateValidationError("V4 risk policy hash mismatch")
 
     if require_promotable:
         coverage = data_manifest.get("coverage")
-        if manifest.get("promotion_blocker") not in (None, ""):
+        blockers = manifest.get("promotion_blockers")
+        if not isinstance(blockers, list) or blockers:
             raise CandidateValidationError("V4 promotion blocker is active")
         if data_manifest.get("promotion_status") not in {"VERIFIED_COMPLETE", "COMPLETE"}:
             raise CandidateValidationError("V4 data manifest is not complete")
         if not isinstance(coverage, Mapping) or int(coverage.get("invalid_sessions", -1)) != 0 or int(coverage.get("missing_sessions", -1)) != 0:
             raise CandidateValidationError("V4 promotion requires zero invalid/missing coverage")
+        evidence = manifest.get("promotion_evidence")
+        if not isinstance(evidence, Mapping):
+            raise CandidateValidationError("V4 fresh promotion evidence is missing")
+        for field in ("reacquisition_manifest_sha256", "reacquisition_semantic_root_sha256", "full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256"):
+            _require_hash(evidence.get(field), f"V4 promotion evidence {field}")
+        reacquisition_path = root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
+        if not reacquisition_path.is_file() or sha256(reacquisition_path.read_bytes()).hexdigest() != str(evidence["reacquisition_manifest_sha256"]).lower():
+            raise CandidateValidationError("V4 reacquisition promotion evidence is not bound to the final manifest bytes")
+        try:
+            from .reacquisition_contract import validate_final_manifest
+            reacquisition = validate_final_manifest(
+                reacquisition_path,
+                provenance_root=root_path / "data/provenance/dukascopy_v4",
+                inventory_path=root_path / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv",
+            )
+        except Exception as exc:
+            raise CandidateValidationError("V4 reacquisition promotion evidence is not a strict verified manifest") from exc
+        if reacquisition["semantic_root_sha256"] != evidence["reacquisition_semantic_root_sha256"]:
+            raise CandidateValidationError("V4 reacquisition semantic root evidence differs")
     return {
         "candidate_path": candidate_relative,
         "manifest_path": manifest_path.relative_to(root_path).as_posix(),
         "candidate_artifact_sha256": artifact,
         "config_sha256": config_hash,
         "data_manifest_sha256": data_hash,
-        "promotion_blocker": manifest.get("promotion_blocker"),
+        "promotion_blockers": list(manifest.get("promotion_blockers", [])),
         "promotable": bool(require_promotable),
         "checked_paths": checked,
     }

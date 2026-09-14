@@ -33,12 +33,12 @@ def test_429_delay_is_header_max_base_plus_deterministic_positive_jitter() -> No
 
 def test_persisted_circuit_defers_and_half_open_success_resets(tmp_path) -> None:
     controller = RateLimitController(tmp_path / "state.json", rng=lambda: 1)
-    item = controller.record_429("datafeed.dukascopy.com", None, now=NOW)
+    item = controller.record_429("datafeed.dukascopy.com", None, now=NOW, transport_fixture=True)
     with pytest.raises(AcquisitionDeferred):
-        controller.before_request("datafeed.dukascopy.com", now=NOW)
+        controller.before_request("datafeed.dukascopy.com", now=NOW, transport_fixture=True)
     later = datetime.fromisoformat(item["next_retry_at_utc"].replace("Z", "+00:00"))
-    controller.before_request("datafeed.dukascopy.com", now=later)
-    controller.record_success("datafeed.dukascopy.com", now=later)
+    controller.before_request("datafeed.dukascopy.com", now=later, transport_fixture=True)
+    controller.record_success("datafeed.dukascopy.com", now=later, transport_fixture=True)
     assert controller.store.read()["hosts"]["datafeed.dukascopy.com"]["circuit"] == "CLOSED"
 
 

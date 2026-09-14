@@ -231,6 +231,67 @@ def test_configure_core_locks_forward_shadow_adapter(monkeypatch) -> None:
     assert MODULE.xm.RUNTIME_CONFIG == MODULE.RUNTIME_CONFIG
 
 
+def test_super1_production_adapter_fake_mt5_sends_once_and_requires_exact_readback(tmp_path: Path) -> None:
+    class FakeMt5:
+        TRADE_RETCODE_PLACED = 10008
+
+        def __init__(self) -> None:
+            self.sent = 0
+            self.pending: list[SimpleNamespace] = []
+
+        def order_send(self, request: dict[str, object]) -> SimpleNamespace:
+            self.sent += 1
+            ticket = 700 + self.sent
+            self.pending = [SimpleNamespace(
+                ticket=ticket, symbol=request["symbol"], type=request["type"],
+                volume_initial=request["volume"], price_open=request["price"],
+                sl=request["sl"], tp=request["tp"], magic=request["magic"], comment=request["comment"],
+            )]
+            return SimpleNamespace(retcode=self.TRADE_RETCODE_PLACED, order=ticket, deal=0)
+
+    fake = FakeMt5()
+    client = SimpleNamespace(
+        mt5=fake,
+        config={"deployment_binding_required": False},
+        _order_db=lambda _root: tmp_path / "orders.sqlite3",
+        _verify_private_binding=lambda: None,
+        _retry_mt5_read=lambda operation, *_args, **_kwargs: SimpleNamespace(retcode=0) if operation == "order_check" else None,
+        _mt5_collection=lambda operation, **_kwargs: tuple(fake.pending) if operation == "orders_get" else (),
+        _broker_request_matches=lambda item, request: all([
+            int(item.ticket) > 0,
+            item.symbol == request["symbol"], item.type == request["type"],
+            item.volume_initial == request["volume"], item.price_open == request["price"],
+            item.sl == request["sl"], item.tp == request["tp"],
+            item.magic == request["magic"], item.comment == request["comment"],
+        ]),
+    )
+    contract = MODULE.InstrumentContract(
+        instrument_id="fixture", asset_class="INDEX", broker="XM", expected_server="fixture",
+        broker_symbol="US100Cash", timezone="UTC", base_currency="USD", profit_currency="USD",
+        margin_currency="USD", digits=2, point=0.01, tick_size=0.01, contract_size=1.0,
+        volume_min=0.1, volume_max=1.0, volume_step=0.1, pip_size=0.01, cost_unit="USD", trade_calc_mode=0,
+    )
+    request = {"action": 5, "type": 2, "price": 100.0, "sl": 99.0, "tp": 103.0, "magic": 77, "comment": "SUPER1"}
+    adapter = MODULE._Super1ProductionAdapter(client, tmp_path, request, contract)
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    order = MODULE.RiskApprovedOrder(
+        proposal=MODULE.SignalProposal(
+            proposal_id="proposal", candidate_hash="c" * 64, instrument_id="fixture", direction="long",
+            entry_price=100.0, stop_price=99.0, target_price=103.0,
+            decision_time=now, expires_at=now + timedelta(minutes=5), evidence_hash="e" * 64,
+            broker_symbol="US100Cash",
+        ), volume=0.1, risk_cash=10.0, stop_risk=1.0, margin_required=1.0,
+        approved_at=now, persisted=True,
+    )
+    adapter.validate_request(order)
+    adapter.write_port = SimpleNamespace(send=lambda _proposal_id: fake.order_send(adapter.request_for_order(order)))
+    response = adapter.send(order)
+    evidence = adapter.reconcile(response, order)
+    assert fake.sent == 1
+    assert adapter.entry_writes == 1
+    assert evidence.broker_state == "READBACK_CONFIRMED"
+
+
 def test_reconcile_result_logs_canonical_overlay_deployment_mode(monkeypatch, tmp_path: Path) -> None:
     client = object.__new__(MODULE.Super1XmMt5DemoOrderClient)
     client.config = {"deployment_mode": MODULE.DEPLOYMENT_MODE}

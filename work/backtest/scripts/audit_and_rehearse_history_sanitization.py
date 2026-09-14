@@ -17,6 +17,34 @@ def git(repo: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     ).stdout
 
 
+def _commit_shape(repo: Path) -> dict[str, object]:
+    rows = git(repo, "rev-list", "--all", "--topo-order", "--reverse", "--parents").decode("ascii", "replace").splitlines()
+    ordered = [row.split()[0] for row in rows if row.strip()]
+    positions = {value: index for index, value in enumerate(ordered)}
+    shapes: list[dict[str, object]] = []
+    for row in rows:
+        parts = row.split()
+        if not parts:
+            continue
+        commit = git(repo, "cat-file", "commit", parts[0]).decode("utf-8", "replace")
+        headers, _, _ = commit.partition("\n\n")
+        author = next((line.removeprefix("author ") for line in headers.splitlines() if line.startswith("author ")), "")
+        committer = next((line.removeprefix("committer ") for line in headers.splitlines() if line.startswith("committer ")), "")
+        shapes.append({
+            "parents": [positions[parent] for parent in parts[1:] if parent in positions],
+            "author": author,
+            "committer": committer,
+        })
+    refs = git(repo, "for-each-ref", "--format=%(refname)").decode("utf-8", "replace").splitlines()
+    ref_tips = git(repo, "for-each-ref", "--format=%(refname) %(objectname)").decode("ascii", "replace").splitlines()
+    return {
+        "ref_names": sorted(refs),
+        "ref_tip_positions": {row.split(" ", 1)[0]: positions.get(row.split(" ", 1)[1]) for row in ref_tips if " " in row},
+        "commit_count": len(ordered),
+        "commits": shapes,
+    }
+
+
 def secrets(path: Path) -> list[bytes]:
     value = json.loads(path.read_text(encoding="utf-8"))
     rows = value.get("denylist") if isinstance(value, dict) else None
@@ -84,11 +112,24 @@ def _working_tree_match_count(repo: Path, deny: list[bytes]) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--denylist", type=Path, required=True)
+    parser.add_argument("--denylist", type=Path)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     source = args.source.resolve()
     started = datetime.now(timezone.utc)
+    if args.denylist is not None:
+        try:
+            args.denylist.resolve().relative_to(source)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("private denylist must be outside the source repository")
+    if args.denylist is None or not args.denylist.resolve().is_file():
+        finished = datetime.now(timezone.utc)
+        payload = {"schema_version": 3, "status": "UNASSESSED_MISSING_DENYLIST", "source_head": git(source, "rev-parse", "HEAD").decode().strip(), "working_tree_match_count": None, "reachable_history_match_count": None, "sanitized_mirror_match_count": None, "private_denylist_sha256": None, "source_unchanged": True, "origin_unchanged": True, "started_at_utc": started.isoformat().replace("+00:00", "Z"), "finished_at_utc": finished.isoformat().replace("+00:00", "Z"), "rehearsal_only": True}
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        raise SystemExit(2)
     deny = secrets(args.denylist.resolve())
     denylist_sha256 = sha256(args.denylist.resolve().read_bytes()).hexdigest()
     source_head = git(source, "rev-parse", "HEAD").decode().strip()
@@ -110,11 +151,20 @@ def main() -> None:
         subprocess.run(["git", "-C", str(sanitized), "fast-import", "--quiet"], input=exported, check=True, capture_output=True)
         sanitized_matches = scan(sanitized, deny)
         sanitized_metrics = _metrics(sanitized)
+        source_shape = _commit_shape(source)
+        sanitized_shape = _commit_shape(sanitized)
+        topology_checks = {
+            "ref_name_set_preserved": source_shape["ref_names"] == sanitized_shape["ref_names"],
+            "commit_count_preserved": source_shape["commit_count"] == sanitized_shape["commit_count"],
+            "parent_topology_preserved": [row["parents"] for row in source_shape["commits"]] == [row["parents"] for row in sanitized_shape["commits"]],
+            "author_committer_timestamp_preserved": [({"author": row["author"], "committer": row["committer"]}) for row in source_shape["commits"]] == [({"author": row["author"], "committer": row["committer"]}) for row in sanitized_shape["commits"]],
+        }
     if git(source, "rev-parse", "HEAD").decode().strip() != source_head or git(source, "remote", "get-url", "origin").decode().strip() != source_origin:
         raise RuntimeError("source repository or origin changed during disposable rehearsal")
     finished = datetime.now(timezone.utc)
     payload = {
         "schema_version": 2,
+        "status": "REHEARSAL_PASSED_NOT_REMOTE_REMEDIATED" if not sanitized_matches and all(topology_checks.values()) else "REHEARSAL_FAILED",
         "source_head": source_head,
         "all_ref_tips": ref_tips,
         **source_metrics,
@@ -128,6 +178,9 @@ def main() -> None:
         "source_matches": source_matches,
         "sanitized_match_count": sum(int(row["match_count"]) for row in sanitized_matches),
         "sanitized_matches": sanitized_matches,
+        "topology_checks": topology_checks,
+        "source_ref_tip_positions": source_shape["ref_tip_positions"],
+        "sanitized_ref_tip_positions": sanitized_shape["ref_tip_positions"],
         "source_unchanged": True,
         "origin_unchanged": True,
         "started_at_utc": started.isoformat().replace("+00:00", "Z"),
@@ -136,6 +189,10 @@ def main() -> None:
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    if sanitized_matches:
+        raise SystemExit("sanitized mirror still contains denylist occurrences")
+    if not all(topology_checks.values()):
+        raise SystemExit("sanitized mirror topology or metadata differs from source")
 
 
 if __name__ == "__main__":

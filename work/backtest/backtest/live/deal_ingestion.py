@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -55,10 +56,13 @@ def _row_mapping(row: Any) -> dict[str, object]:
 
 def _row_identity(row: Any) -> tuple[object, ...]:
     values = _row_mapping(row)
-    return tuple(
-        values.get(name)
-        for name in ("deal_id", "ticket", "order", "position_id", "symbol", "time_msc", "volume", "price", "entry")
-    )
+    canonical_ticket = values.get("ticket")
+    if canonical_ticket in (None, "", 0):
+        canonical_ticket = values.get("deal_id")
+    # Keep the canonical ticket explicit while retaining every provider field
+    # so an auxiliary query cannot attest a different immutable deal row.
+    values["_canonical_ticket"] = canonical_ticket
+    return (_canonical_json(values),)
 
 
 def _multiset_hash(rows: Iterable[Any]) -> str:
@@ -77,19 +81,28 @@ def _parse_utc(value: datetime | str, label: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-@dataclass(frozen=True, slots=True)
 class TerminalQueryBatch:
     """Complete, attested result for one closed terminal history window."""
 
-    rows: tuple[Any, ...] | list[Any]
-    complete: bool
-    start_utc: datetime | str
-    end_utc: datetime | str
-    queried_at_utc: datetime | str
-    query_fingerprint: str
-    attestation_fingerprint: str
+    __slots__ = ("rows", "complete", "start_utc", "end_utc", "queried_at_utc", "query_fingerprint", "attestation_fingerprint", "evidence")
 
-    def __post_init__(self) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if kwargs.pop("_factory_token", None) is not _TERMINAL_BATCH_FACTORY_TOKEN:
+            raise TypeError("TerminalQueryBatch must be created by build_terminal_query_batch")
+        names = ("rows", "complete", "start_utc", "end_utc", "queried_at_utc", "query_fingerprint", "attestation_fingerprint", "evidence")
+        values = dict(zip(names, args))
+        values.update(kwargs)
+        self.rows = tuple(values["rows"])
+        self.complete = values["complete"]
+        self.start_utc = values["start_utc"]
+        self.end_utc = values["end_utc"]
+        self.queried_at_utc = values["queried_at_utc"]
+        self.query_fingerprint = values["query_fingerprint"]
+        self.attestation_fingerprint = values["attestation_fingerprint"]
+        self.evidence = dict(values.get("evidence") or {})
+        self._validate()
+
+    def _validate(self) -> None:
         if self.complete is not True:
             raise TerminalDealIngestionError("terminal query batch is not complete")
         object.__setattr__(self, "rows", tuple(self.rows))
@@ -99,9 +112,15 @@ class TerminalQueryBatch:
             raise TerminalDealIngestionError("terminal query batch has an invalid range")
         for name in ("query_fingerprint", "attestation_fingerprint"):
             value = str(getattr(self, name) or "")
-            if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", value) or len(set(value.lower())) == 1:
                 raise TerminalDealIngestionError(f"{name} is not a SHA-256 digest")
-            object.__setattr__(self, name, value.lower())
+            setattr(self, name, value.lower())
+        expected_query = _hash(self.evidence.get("query_context", {}))
+        if self.evidence and expected_query != self.query_fingerprint:
+            raise TerminalDealIngestionError("terminal query fingerprint does not match evidence")
+        expected_attestation = _hash(self.evidence.get("attestation", {}))
+        if self.evidence and expected_attestation != self.attestation_fingerprint:
+            raise TerminalDealIngestionError("terminal attestation fingerprint does not match evidence")
 
     def assert_range(self, start: datetime, end: datetime) -> None:
         if self.start_utc != _parse_utc(start, "requested start") or self.end_utc != _parse_utc(end, "requested end"):
@@ -116,6 +135,8 @@ def build_terminal_query_batch(
     ticket_deals: Iterable[Any],
     position_deals: Iterable[Any],
     local_intents: Iterable[Any] | bool = (),
+    local_snapshot: Mapping[str, Any] | None = None,
+    query_context: Mapping[str, Any] | None = None,
     start_utc: datetime,
     end_utc: datetime,
     queried_at_utc: datetime,
@@ -126,36 +147,62 @@ def build_terminal_query_batch(
     order_rows = tuple(orders)
     ticket_rows = tuple(ticket_deals)
     position_rows = tuple(position_deals)
+    start = _parse_utc(start_utc, "start_utc")
+    end = _parse_utc(end_utc, "end_utc")
+    if start >= end:
+        raise TerminalDealIngestionError("terminal query batch has an invalid range")
+    for collection in (first, second, ticket_rows, position_rows):
+        for item in collection:
+            timestamp = _row_mapping(item).get("time_msc")
+            if timestamp in (None, ""):
+                continue
+            try:
+                observed_time = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+            except (TypeError, ValueError, OverflowError, OSError) as exc:
+                raise TerminalDealIngestionError("terminal query row has an invalid time_msc") from exc
+            if not start <= observed_time <= end:
+                raise TerminalDealIngestionError("terminal query row is outside its attested range")
     first_hash = _multiset_hash(first)
     second_hash = _multiset_hash(second)
     if first_hash != second_hash:
         raise TerminalDealIngestionError("terminal history range changed between repeated queries")
-    range_counts: dict[tuple[object, ...], int] = {}
-    for item in first:
-        key = _row_identity(item)
-        range_counts[key] = range_counts.get(key, 0) + 1
-    for item in (*ticket_rows, *position_rows):
-        key = _row_identity(item)
-        if range_counts.get(key, 0) <= 0:
-            raise TerminalDealIngestionError("ticket/position deal is absent from the attested range")
-        range_counts[key] -= 1
-    has_local_intents = bool(local_intents) if isinstance(local_intents, bool) else bool(tuple(local_intents))
-    if not first and (second or order_rows or has_local_intents):
+    range_counts = Counter(_row_identity(item) for item in first)
+    for collection in (ticket_rows, position_rows):
+        remaining = Counter(range_counts)
+        for item in collection:
+            key = _row_identity(item)
+            if remaining[key] <= 0:
+                raise TerminalDealIngestionError("ticket/position deal is absent from the attested range")
+            remaining[key] -= 1
+    local_rows = tuple(local_intents) if not isinstance(local_intents, bool) else ()
+    snapshot = dict(local_snapshot or {"counts": {}, "hashes": {}})
+    has_local_intents = bool(local_intents) if isinstance(local_intents, bool) else bool(local_rows)
+    active_snapshot = any(int(value) > 0 for value in dict(snapshot.get("counts") or {}).values())
+    if not first and (second or order_rows or has_local_intents or active_snapshot):
         raise TerminalDealIngestionError("empty terminal range conflicts with orders or local risk intent")
-    start = _parse_utc(start_utc, "start_utc")
-    end = _parse_utc(end_utc, "end_utc")
     queried = _parse_utc(queried_at_utc, "queried_at_utc")
-    query_fingerprint = _hash({"start_utc": start.isoformat(), "end_utc": end.isoformat()})
-    attestation_fingerprint = _hash({
-        "query_fingerprint": query_fingerprint,
+    context = dict(query_context or {})
+    context.setdefault("query_method_contract_version", "TERMINAL_DEAL_QUERY_V5")
+    context.update({"start_utc": start.isoformat(), "end_utc": end.isoformat(), "reconciliation_type": context.get("reconciliation_type", "FULL"), "account_key": context.get("account_key", "unknown"), "campaign_id": context.get("campaign_id", "unknown"), "candidate_hash": context.get("candidate_hash", "unknown"), "magic": context.get("magic", 0), "comment_prefix": context.get("comment_prefix", ""), "private_terminal_binding_hash": context.get("private_terminal_binding_hash", "unknown")})
+    query_fingerprint = _hash(context)
+    evidence = {
+        "query_context": context,
+        "attestation": {
+            "query_fingerprint": query_fingerprint,
         "range_hash": first_hash,
         "repeated_range_hash": second_hash,
         "orders_hash": _multiset_hash(order_rows),
         "ticket_deals_hash": _multiset_hash(ticket_rows),
         "position_deals_hash": _multiset_hash(position_rows),
         "local_intents": has_local_intents,
-    })
-    return TerminalQueryBatch(first, True, start, end, queried, query_fingerprint, attestation_fingerprint)
+            "local_snapshot": snapshot,
+        },
+    }
+    attestation_fingerprint = _hash(evidence["attestation"])
+    return TerminalQueryBatch(first, True, start, end, queried, query_fingerprint, attestation_fingerprint, evidence, _factory_token=_TERMINAL_BATCH_FACTORY_TOKEN)
+
+
+_TERMINAL_BATCH_FACTORY_TOKEN = object()
 
 
 def _value(row: Mapping[str, Any] | object, name: str, default: Any = None) -> Any:
@@ -217,6 +264,7 @@ class TerminalDealIngestor:
         self, path: str | Path, *, read_deals: Callable[[datetime, datetime], Iterable[Any]],
         account_key: str, campaign_id: str, candidate_hash: str, campaign_start: datetime,
         magic: int, comment_prefix: str = "", now: Callable[[], datetime] | None = None,
+        terminal_history_days: int = 365, private_terminal_binding_hash: str = "unknown",
     ) -> None:
         self.path = Path(path)
         self.read_deals = read_deals
@@ -226,6 +274,12 @@ class TerminalDealIngestor:
         self.campaign_start = self._utc(campaign_start)
         self.magic = _integer(magic, "magic")
         self.comment_prefix = str(comment_prefix)
+        self.terminal_history_days = int(terminal_history_days)
+        self.private_terminal_binding_hash = str(private_terminal_binding_hash)
+        if self.terminal_history_days < 365:
+            raise TerminalDealIngestionError("terminal history must cover at least 365 days")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.private_terminal_binding_hash) or len(set(self.private_terminal_binding_hash.lower())) == 1:
+            raise TerminalDealIngestionError("private terminal binding hash is incomplete")
         self.now = now or (lambda: datetime.now(timezone.utc))
         if not self.account_key or not self.campaign_id or len(self.candidate_hash) != 64:
             raise TerminalDealIngestionError("terminal ingestion identity binding is incomplete")
@@ -439,12 +493,15 @@ class TerminalDealIngestor:
             connection.execute("UPDATE daily_risk_slots SET state=?,updated_at_utc=? WHERE account_key=? AND proposal_id=?", (state, self._utc(self.now()).isoformat(), self.account_key, proposal_id))
             connection.commit()
 
-    def _windows(self, observed: datetime, cursor: sqlite3.Row | None) -> tuple[list[tuple[datetime, datetime]], bool]:
+    def _windows(self, observed: datetime, cursor: sqlite3.Row | None, earliest_local_intent: datetime | None = None) -> tuple[list[tuple[datetime, datetime]], bool]:
         full = cursor is None
         if cursor is not None:
-            last_full = datetime.fromisoformat(str(cursor[2]))
+            last_full_text = str(cursor[2] or "")
+            last_full = datetime.fromisoformat(last_full_text) if last_full_text else observed
             full = observed - last_full >= timedelta(hours=24)
-        start = self.campaign_start if full else max(self.campaign_start, datetime.fromtimestamp(int(cursor[0]) / 1000, tz=timezone.utc) - timedelta(days=7))
+        current_ny_start = observed.astimezone(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        required_start = min(earliest_local_intent or observed, observed - timedelta(days=self.terminal_history_days), current_ny_start)
+        start = required_start if full else max(required_start, datetime.fromtimestamp(int(cursor[0]) / 1000, tz=timezone.utc) - timedelta(days=7))
         windows = []
         point = start
         while point < observed:
@@ -468,7 +525,11 @@ class TerminalDealIngestor:
         row = {
             "account_key": self.account_key, "campaign_id": self.campaign_id,
             "candidate_hash": self.candidate_hash,
-            "deal_ticket": _integer(_value(item, "deal_id", _value(item, "ticket")), "deal ticket", positive=True),
+            "deal_ticket": _integer(
+                _value(item, "ticket") if _value(item, "ticket") not in (None, "", 0) else _value(item, "deal_id"),
+                "deal ticket",
+                positive=True,
+            ),
             "order_ticket": _integer(_value(item, "order"), "deal order ticket", positive=True),
             "position_id": str(_value(item, "position_id") or "").strip(),
             "symbol": str(_value(item, "symbol") or "").strip(),
@@ -487,7 +548,9 @@ class TerminalDealIngestor:
         observed = self._utc(observed_at or self.now())
         with self._connect() as probe:
             cursor = probe.execute("SELECT high_water_time_msc,high_water_ticket,last_full_reconciliation_utc,last_attestation_fingerprint FROM terminal_ingestion_cursor WHERE account_key=?", (self.account_key,)).fetchone()
-        windows, full = self._windows(observed, cursor)
+            intent_row = probe.execute("SELECT MIN(created_at_utc) FROM entry_risk_intents WHERE account_key=? AND campaign_id=? AND candidate_hash=?", (self.account_key, self.campaign_id, self.candidate_hash)).fetchone()
+        earliest_intent = self._utc(datetime.fromisoformat(str(intent_row[0]))) if intent_row and intent_row[0] else None
+        windows, full = self._windows(observed, cursor, earliest_intent)
         batches: list[tuple[datetime, datetime, TerminalQueryBatch]] = []
         for start, end in windows:
             try:
@@ -495,9 +558,22 @@ class TerminalDealIngestor:
                 if not isinstance(result, TerminalQueryBatch):
                     raise TerminalDealIngestionError("terminal deal query must return TerminalQueryBatch")
                 result.assert_range(start, end)
+                if result.evidence:
+                    if _hash(result.evidence.get("query_context", {})) != result.query_fingerprint or _hash(result.evidence.get("attestation", {})) != result.attestation_fingerprint:
+                        raise TerminalDealIngestionError("terminal query evidence fingerprint mismatch")
+                    context = result.evidence.get("query_context", {})
+                    if (
+                        context.get("account_key") != self.account_key
+                        or context.get("campaign_id") != self.campaign_id
+                        or context.get("candidate_hash") != self.candidate_hash
+                        or int(context.get("magic", self.magic)) != self.magic
+                        or context.get("comment_prefix") != self.comment_prefix
+                        or context.get("private_terminal_binding_hash") != self.private_terminal_binding_hash
+                    ):
+                        raise TerminalDealIngestionError("terminal query identity binding mismatch")
                 batches.append((start, end, result))
             except Exception as exc:
-                raise TerminalDealIngestionError("terminal deal query failed; cursor was not advanced") from exc
+                    raise TerminalDealIngestionError(f"terminal deal query failed; cursor was not advanced: {exc}") from exc
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")

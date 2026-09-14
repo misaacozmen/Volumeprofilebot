@@ -55,6 +55,7 @@
         "backtest/dukascopy_acquisition.py",
         "backtest/calibration.py",
         "backtest/candidate_validation.py",
+        "backtest/reacquisition_contract.py",
         "backtest/cli.py",
         "backtest/config.py",
         "backtest/data_inspector.py",

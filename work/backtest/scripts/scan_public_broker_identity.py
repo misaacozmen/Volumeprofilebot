@@ -8,7 +8,6 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
-import time
 
 
 PUBLIC_PREFIXES = ("live_forward/", "research_candidates/", "forward_shadow/", "deploy/")
@@ -25,7 +24,7 @@ def concrete_paths(value: object, prefix: str = "$") -> list[str]:
     if isinstance(value, dict):
         for key, item in value.items():
             path = f"{prefix}.{key}"
-            if key == "account_login" and isinstance(item, int) and not isinstance(item, bool) and item > 0:
+            if key == "account_login" and ((isinstance(item, int) and not isinstance(item, bool) and item > 0) or (isinstance(item, str) and item.isascii() and item.isdigit() and int(item) > 0)):
                 found.append(path)
             if key in IDENTITY_KEYS and isinstance(item, str) and item.strip():
                 found.append(path)
@@ -76,30 +75,54 @@ def _deny_values(denylist: Path | None) -> tuple[list[bytes], str | None]:
 
 def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, object]], dict[str, int]]:
     rows = _git(root, "rev-list", "--objects", "--all").decode("utf-8", "replace").splitlines()
-    matches: list[dict[str, object]] = []
-    counts = {"commit_count": int(_git(root, "rev-list", "--all", "--count").decode().strip() or 0), "blob_count": 0, "object_count": 0, "scanned_bytes": 0}
-    seen: set[str] = set()
+    object_paths: dict[str, str] = {}
     for row in rows:
         object_id, _, path = row.partition(" ")
-        if object_id in seen:
-            continue
-        seen.add(object_id)
-        kind = _git(root, "cat-file", "-t", object_id).strip()
+        object_paths.setdefault(object_id, path)
+    matches: list[dict[str, object]] = []
+    counts = {"commit_count": int(_git(root, "rev-list", "--all", "--count").decode().strip() or 0), "blob_count": 0, "object_count": 0, "scanned_bytes": 0, "denylist_occurrence_count": 0, "denylist_unique_object_count": 0}
+    object_ids = list(object_paths)
+    batch = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input=("\n".join(object_ids) + "\n").encode("ascii"),
+        check=True,
+        capture_output=True,
+    ).stdout
+    offset = 0
+    for object_id in object_ids:
+        end_header = batch.find(b"\n", offset)
+        if end_header < 0:
+            raise RuntimeError("git cat-file batch output is truncated")
+        header = batch[offset:end_header].split()
+        offset = end_header + 1
+        if len(header) != 3:
+            raise RuntimeError("git cat-file batch header is invalid")
+        kind = header[1]
+        size = int(header[2])
+        blob = batch[offset:offset + size]
+        offset += size
+        if offset < len(batch) and batch[offset:offset + 1] == b"\n":
+            offset += 1
         counts["object_count"] += 1
         if kind != b"blob":
             continue
         counts["blob_count"] += 1
-        blob = _git(root, "cat-file", "blob", object_id)
         counts["scanned_bytes"] += len(blob)
+        path = object_paths[object_id]
         denied_count = sum(blob.count(item) for item in denied)
         fields: list[str] = []
-        if path.startswith(PUBLIC_PREFIXES) and path.endswith(".json"):
+        if path.endswith(".json"):
             try:
                 fields = concrete_paths(json.loads(blob.decode("utf-8")))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 pass
         if fields or denied_count:
             matches.append({"object": object_id, "path": path or "<unmapped>", "field_paths": fields, "denylist_match_count": denied_count, "blob_sha256": sha256(blob).hexdigest()})
+        counts["denylist_occurrence_count"] += denied_count
+        if denied_count:
+            counts["denylist_unique_object_count"] += 1
+    counts["denylist_unique_file_count"] = len({row.get("path") for row in matches if int(row.get("denylist_match_count", 0))})
+    counts["denylist_match_count"] = sum(int(row.get("denylist_match_count", 0)) for row in matches)
     return matches, counts
 
 
@@ -115,9 +138,10 @@ def main() -> None:
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
+    git_prefix = _git(root, "rev-parse", "--show-prefix").decode("utf-8", "replace").strip().replace("\\", "/")
     denylist = args.denylist.resolve() if args.denylist else None
     started = datetime.now(timezone.utc)
-    matches = scan(root, denylist)
+    matches = scan(root, denylist) if denylist is not None else []
     denied, denylist_sha256 = _deny_values(denylist)
     history_matches, counts = _history_scan(root, denied)
     before_head = _git(root, "rev-parse", "HEAD").decode().strip()
@@ -128,13 +152,21 @@ def main() -> None:
     scanner_hash = sha256(Path(__file__).read_bytes()).hexdigest()
     payload = {
         "schema_version": 2,
+        "git_prefix": git_prefix,
         "source_head": before_head,
         "all_ref_tips": _ref_tips(root),
         **counts,
         "scanner_source_sha256": scanner_hash,
         "private_denylist_sha256": denylist_sha256,
-        "working_tree_match_count": len(matches),
-        "reachable_history_match_count": len(history_matches),
+        "status": "ASSESSED" if denylist is not None else "UNASSESSED_MISSING_DENYLIST",
+        "working_tree_unique_file_count": len(matches) if denylist is not None else None,
+        "working_tree_unique_object_count": len(matches) if denylist is not None else None,
+        "working_tree_occurrence_count": sum(int(row.get("denylist_match_count", 0)) for row in matches) if denylist is not None else None,
+        "reachable_history_unique_object_count": counts.get("denylist_unique_object_count") if denylist is not None else None,
+        "reachable_history_unique_file_count": counts.get("denylist_unique_file_count") if denylist is not None else None,
+        "reachable_history_occurrence_count": counts.get("denylist_occurrence_count") if denylist is not None else None,
+        "working_tree_match_count": len(matches) if denylist is not None else None,
+        "reachable_history_match_count": len(history_matches) if denylist is not None else None,
         "sanitized_mirror_match_count": None,
         "source_unchanged": before_head == after_head,
         "origin_unchanged": before_origin == after_origin,
@@ -149,7 +181,9 @@ def main() -> None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(encoded, encoding="utf-8", newline="\n")
     print(encoded, end="")
-    raise SystemExit(1 if matches else 0)
+    if denylist is None:
+        raise SystemExit(2)
+    raise SystemExit(1 if matches or history_matches else 0)
 
 
 if __name__ == "__main__":

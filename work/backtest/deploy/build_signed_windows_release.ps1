@@ -170,6 +170,16 @@ if ($LASTEXITCODE -ne 0 -or -not $gitCommit) {
 }
 $gitDirty = [bool]($gitStatus -or $repoGitStatus)
 
+# Promotion is a prerequisite for every Super1 release mode, including
+# ValidateOnly. Keep this before environment checks, staging, and signing.
+if ($Profile -eq "super1") {
+    $promotionValidationCommand = "from pathlib import Path; from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(Path(r'$SourceRoot') / 'research_candidates' / 'super1' / 'super1_unsigned_candidate_v4.json', Path(r'$SourceRoot'), True)"
+    $promotionValidationOutput = & $Python -E -B -c $promotionValidationCommand 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Super1 promotion gate failed: $($promotionValidationOutput -join ' ')"
+    }
+}
+
 # 2. CPython 3.11 check
 $pyCheck = (& $Python -c "import sys, platform; print(f'{sys.version_info.major}.{sys.version_info.minor}|{platform.python_implementation()}|{sys.version}')")
 if ($LASTEXITCODE -ne 0 -or -not $pyCheck) {
@@ -226,18 +236,10 @@ $postTestGitStatus = (& git -C $RepoRoot status --porcelain)
 if ((@($postTestGitStatus | Sort-Object) -join "`n") -cne (@($initialRepoGitStatus | Sort-Object) -join "`n")) {
     throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
 }
-if ($Profile -eq "super1") {
-    $runtimeValidationCommand = "import sys; from pathlib import Path; sys.path.insert(0, r'$SourceRoot\\scripts'); from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(Path(r'$SourceRoot') / 'research_candidates' / 'super1' / 'super1_unsigned_candidate_v4.json', Path(r'$SourceRoot'), False)"
-    $runtimeValidationOutput = & $Python -E -B -c $runtimeValidationCommand 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Super1 runtime/candidate validation failed: $($runtimeValidationOutput -join ' ')"
-    }
-}
-
 # 4. Fresh reliability attestation. A release must never reuse the checked-in
 # report: run the audit in the build temp root and require every gate.
 $FreshAuditRoot = Join-Path $TempRoot "fresh-reliability-audit"
-$freshAuditOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_engine_reliability_audit.py") --report-dir $FreshAuditRoot 2>&1
+$freshAuditOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_engine_reliability_audit.py") --report-dir $FreshAuditRoot --frozen-inventory (Join-Path $SourceRoot "data\provenance\dukascopy_v4\frozen_invalid_leg_days_v4.csv") --reacquisition-manifest (Join-Path $SourceRoot "data\provenance\dukascopy_v4\acquisition_v5\reacquisition_manifest_v5.json") 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "Fresh engine reliability audit failed: $($freshAuditOutput -join ' ')"
 }
@@ -282,7 +284,7 @@ if (-not (Test-TrueValue $freshRow.core_tests_passed) -or
     throw "Fresh engine reliability audit did not pass the 56/7/8.5R, determinism, prefix, core-test, or coverage gates."
 }
 $FreshHistoryRoot = Join-Path $TempRoot "fresh-canonical-full-history"
-$freshHistoryOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_canonical_production_full_history.py") --report-dir $FreshHistoryRoot --gap-inventory (Join-Path $SourceRoot "data\provenance\dukascopy_v4\frozen_invalid_leg_days_v4.csv") --reacquired-root (Join-Path $SourceRoot "data\provenance\dukascopy_v4\reacquired_session") --reacquisition-manifest (Join-Path $SourceRoot "data\provenance\dukascopy_v4\acquisition_v5\reacquisition_manifest_v5.json") 2>&1
+$freshHistoryOutput = & $Python -E -B (Join-Path $SourceRoot "scripts\run_canonical_production_full_history.py") --report-dir $FreshHistoryRoot --gap-inventory (Join-Path $SourceRoot "data\provenance\dukascopy_v4\frozen_invalid_leg_days_v4.csv") --reacquired-root (Join-Path $SourceRoot "data\provenance\dukascopy_v4\acquisition_v5\bundles") --reacquisition-manifest (Join-Path $SourceRoot "data\provenance\dukascopy_v4\acquisition_v5\reacquisition_manifest_v5.json") 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "Fresh canonical full-history gate failed closed: $($freshHistoryOutput -join ' ')"
 }
@@ -466,7 +468,7 @@ try {
     }
     if ($Profile -eq "super1") {
         $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v4.json"
-        $requirePromotable = if ($ValidateOnly) { "False" } else { "True" }
+        $requirePromotable = "True"
         $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(r'$candidatePath', root=r'$Stage', require_promotable=$requirePromotable)" 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Unsigned Super1 candidate validation failed: $($candidateValidationOutput -join ' ')"
