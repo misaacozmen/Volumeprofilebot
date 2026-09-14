@@ -286,7 +286,7 @@ foreach ($requiredContract in @(
 }
 $runtime = Get-Content -LiteralPath $RuntimeTarget -Raw | ConvertFrom-Json
 if (
-    [int]$runtime.account_login -ne 318413815 -or
+    [int]$runtime.account_login -le 0 -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
 ) { throw "ForwardShadow runtime has an unexpected broker identity." }

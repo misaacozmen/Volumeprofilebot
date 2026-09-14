@@ -1,0 +1,27 @@
+{
+  "binding_id": {
+    "bits": 128,
+    "encoding": "lowercase_hex"
+  },
+  "nonce": {
+    "bits": 128,
+    "encoding": "lowercase_hex"
+  },
+  "private": true,
+  "required": [
+    "schema_version",
+    "binding_id",
+    "nonce",
+    "account_login",
+    "server",
+    "company",
+    "issued_at_utc"
+  ],
+  "schema_version": 1,
+  "signature": {
+    "algorithm": "RSA-PSS-SHA256",
+    "detached": true,
+    "trust_root": "deploy/release-public-key.pem"
+  },
+  "title": "Super1 private deployment binding V4"
+}

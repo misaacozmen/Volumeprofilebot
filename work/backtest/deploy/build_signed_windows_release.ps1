@@ -296,22 +296,6 @@ if ([bool]$freshHistoryManifest.promotable -ne $true -or
     [int]$freshHistoryManifest.coverage.invalid_sessions -ne 0) {
     throw "Fresh canonical full-history data coverage is incomplete; no release is permitted."
 }
-if ($ValidateOnly) {
-    [ordered]@{
-        validation = "PASSED"
-        profile = $Profile
-        signed = $false
-        archive_created = $false
-        full_test_count = $pytestPassedCount
-        full_test_nodeid_sha256 = $pytestNodeIdSha256
-        fresh_audit_manifest_sha256 = (Get-FileHash -LiteralPath $freshAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        fresh_history_manifest_sha256 = (Get-FileHash -LiteralPath $freshHistoryManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    } | ConvertTo-Json
-    if (Test-Path -LiteralPath $TempRoot) {
-        Remove-Item -LiteralPath $TempRoot -Recurse -Force
-    }
-    return
-}
 $inputDatasetSha256 = Get-Utf8Sha256 (($freshAuditManifest.data_hashes | ConvertTo-Json -Compress -Depth 20))
 $freshAuditManifestSha256 = (Get-FileHash -LiteralPath $freshAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -481,13 +465,48 @@ try {
         }
     }
     if ($Profile -eq "super1") {
-        $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v2.json"
+        $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v4.json"
         $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_promotable_candidate; validate_promotable_candidate(r'$candidatePath', root=r'$Stage')" 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Unsigned Super1 candidate validation failed: $($candidateValidationOutput -join ' ')"
         }
     }
 
+    if ($Profile -eq "super1") {
+        $isolatedCheck = @"
+import sys
+sys.path.insert(0, r'$Stage')
+import scripts.run_super1_xm_mt5_forward as runner
+runner.validate_super1_candidate(runner.core.read_json(runner.RUNTIME_CONFIG))
+runner.configure_core()
+try:
+    runner.core.runtime_config()
+except Exception as exc:
+    assert 'no-send' in str(exc).lower()
+else:
+    raise AssertionError('dry-start reached a bound runtime without private binding')
+assert 'MetaTrader5' not in sys.modules
+"@
+        $isolatedOutput = & $Python -I -E -B -c $isolatedCheck 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Isolated Super1 staged-tree import/no-send failed: $($isolatedOutput -join ' ')" }
+        $v2Active = @(Get-ChildItem -LiteralPath $Stage -Recurse -File | Where-Object { $_.Name -match '(?i)super1.*v2|instrument_registry_v2|2022_2026_v2' })
+        if ($v2Active.Count -ne 0) { throw "Super1 staging contains an active V2 artifact." }
+    }
+    if ($ValidateOnly) {
+        [ordered]@{
+            validation = "PASSED"
+            profile = $Profile
+            signed = $false
+            archive_created = $false
+            staged_tree_import = "PASSED"
+            private_binding_no_send = "PASSED"
+            full_test_count = $pytestPassedCount
+            full_test_nodeid_sha256 = $pytestNodeIdSha256
+            fresh_audit_manifest_sha256 = (Get-FileHash -LiteralPath $freshAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            fresh_history_manifest_sha256 = (Get-FileHash -LiteralPath $freshHistoryManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        } | ConvertTo-Json
+        return
+    }
     if (Test-Path -LiteralPath $Archive) {
         throw "Output archive already exists; refusing to overwrite: $Archive"
     }
@@ -542,7 +561,7 @@ try {
             ForEach-Object { "$($_.path)=$($_.sha256)" }
     ) -join "`n"
     $enginePackageHash = Get-Utf8Sha256 $enginePackageDescriptor
-    $calendarPath = Join-Path $Stage "live_forward\calendars\us_equity_rth_2022_2026_v2.json"
+    $calendarPath = Join-Path $Stage "live_forward\calendars\us_equity_rth_2022_2026_v4.json"
     $calendarArtifactHash = (Get-FileHash -LiteralPath $calendarPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifestPath = [IO.Path]::ChangeExtension($Archive, ".manifest.json")
     $signaturePath = [IO.Path]::ChangeExtension($Archive, ".manifest.sig")

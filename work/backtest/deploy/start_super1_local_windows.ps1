@@ -146,8 +146,8 @@ if ([string]$release.release_id -cne [string]$signedRelease.release_id) {
     throw "Installed release manifest does not match the signed release archive."
 }
 foreach ($sealedPath in @(
-    "live_forward/super1_xm_mt5_demo_config.json",
-    "research_candidates/super1/super1_manifest.json"
+    "live_forward/super1_xm_mt5_demo_config_v4.json",
+    "research_candidates/super1/super1_manifest_v4.json"
 )) {
     $entry = @($signedRelease.files | Where-Object { [string]$_.path -ceq $sealedPath })
     $localPath = Get-Super1RuntimeAppPath -RelativePath $sealedPath
@@ -157,13 +157,22 @@ foreach ($sealedPath in @(
 }
 if ([string]$runtime.environment -cne "XM_MT5_DEMO_ORDER" -or
     [string]$runtime.account_mode -cne "DEMO_ORDER" -or
-    [string]$runtime.expected_server -eq "" -or
-    [string]$runtime.expected_company -eq "" -or
+    -not [bool]$runtime.deployment_binding_required -or
+    @($runtime.PSObject.Properties.Name | Where-Object { $_ -in @("account_login", "expected_server", "expected_company") }).Count -ne 0 -or
     [bool]$runtime.manual_required -ne $false -or
     -not [bool]$runtime.live_order_approval_required -or
     [string]$runtime.authorized_operator_sid -notmatch '^S-\d-(?:\d+-)+\d+$') {
     throw "Super1 signed config is not an exact XM demo config."
 }
+$bindingJson = & ([string]$Contract.python) -I -E -B -c @"
+import json,sys
+sys.path.insert(0, sys.argv[1])
+from backtest.live.deployment_binding import load_verified_deployment_binding
+b=load_verified_deployment_binding(sys.argv[2],sys.argv[3],sys.argv[4])
+print(json.dumps(b.lease_fields(),sort_keys=True))
+"@ $app ([string]$runtime.deployment_binding_path) ([string]$runtime.deployment_binding_signature_path) (Get-Super1RuntimeAppPath -RelativePath ([string]$runtime.deployment_binding_public_key_path))
+if ($LASTEXITCODE -ne 0) { throw "Private signed deployment binding verification failed." }
+$privateBinding = ($bindingJson -join "`n") | ConvertFrom-Json
 if ([string]$manifest.deployment.target -cne "LOCAL_WINDOWS_PC" -or
     -not [bool]$manifest.deployment.isolation_required -or
     -not [bool]$manifest.deployment.demo_order_execution_enabled -or
@@ -268,9 +277,9 @@ try {
         runner_sid = [string]$runnerSid
         authorized_operator_sid = [string]$runtime.authorized_operator_sid
         machine_binding = $env:COMPUTERNAME.ToUpperInvariant()
-        expected_account_login = [int]$runtime.account_login
-        expected_server = [string]$runtime.expected_server
-        expected_company = [string]$runtime.expected_company
+        account_binding_sha256 = [string]$privateBinding.account_binding_sha256
+        account_binding_signature_sha256 = [string]$privateBinding.account_binding_signature_sha256
+        binding_id = [string]$privateBinding.binding_id
         magic_number = [int]$runtime.magic_number
         mode = "DEMO_ORDER"
         state = "ACTIVE"
