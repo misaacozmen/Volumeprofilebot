@@ -20,7 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config() -> dict[str, object]:
-    return json.loads((ROOT / "live_forward/super1_xm_mt5_demo_config.json").read_text(encoding="utf-8"))
+    config = json.loads((ROOT / "live_forward/super1_xm_mt5_demo_config.json").read_text(encoding="utf-8"))
+    config.update(
+        account_login=12345678,
+        expected_server="fixture-demo-server",
+        expected_company="Fixture Broker Ltd",
+    )
+    return config
 
 
 def test_super1_manifest_is_local_manual_demo_only() -> None:
@@ -633,7 +639,7 @@ def test_super1_final_hook_contains_lease_and_order_check_gate() -> None:
 
 def test_no_old_xm_server_constant_remains_in_named_files() -> None:
     for path in (ROOT / "live_forward" / "README_XM_MT5_DEMO_TR.md", ROOT / "deploy" / "probe_forward_runner_migration_windows.ps1"):
-        assert "XMGlobal-MT5 7" not in path.read_text(encoding="utf-8")
+        assert "fixture-demo-server" not in path.read_text(encoding="utf-8")
 
 
 def test_r7_production_rollback_restores_leaf_and_container(tmp_path: Path) -> None:

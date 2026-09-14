@@ -46,6 +46,11 @@ def test_super1_normal_constructor_owns_the_single_live_entry(monkeypatch: pytes
     import scripts.run_super1_xm_mt5_forward as super1
 
     config = json.loads((ROOT / "live_forward/super1_xm_mt5_demo_config.json").read_text(encoding="utf-8"))
+    config.update(
+        account_login=12345678,
+        expected_server="fixture-demo-server",
+        expected_company="Fixture Broker Ltd",
+    )
     monkeypatch.setitem(sys.modules, "MetaTrader5", types.ModuleType("MetaTrader5"))
     client = super1.Super1XmMt5DemoOrderClient(
         config,

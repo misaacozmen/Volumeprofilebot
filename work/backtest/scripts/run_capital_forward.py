@@ -1317,7 +1317,18 @@ def finalize_session(
     invariant_errors: list[str] = []
     prefix_violations: list[dict[str, object]] = []
     if valid:
-        signal = sandbox_signal_payload(output_root, frames, configs, state_config, trade_date, shared_asof, knowledge_utc, required_cutoffs, runtime)
+        signal = sandbox_signal_payload(
+            output_root,
+            frames,
+            configs,
+            state_config,
+            trade_date,
+            shared_asof,
+            knowledge_utc,
+            required_cutoffs,
+            runtime,
+            gates,
+        )
         payload = {key: signal[key] for key in ("days", "decisions", "events", "lifecycle")}
         deterministic = True
         invariant_errors = decision_invariant_errors(payload["decisions"], payload["events"])

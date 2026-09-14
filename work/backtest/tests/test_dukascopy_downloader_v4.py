@@ -17,6 +17,8 @@ def _args(tmp_path) -> Namespace:
         provenance_root=tmp_path / "provenance",
         raw_dir=tmp_path / "derived",
         price_type="bid",
+        session_context_hours=0,
+        request_pause_seconds=0.0,
     )
 
 

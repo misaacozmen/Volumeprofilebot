@@ -136,7 +136,13 @@ class FakeSmokeMt5:
 def smoke_config() -> dict[str, object]:
     config = json.loads((ROOT / "live_forward/super1_xm_mt5_demo_config.json").read_text(encoding="utf-8"))
     registry_path = ROOT / "tests/fixtures/super1_smoke_instrument_registry.json"
-    config.update({"campaign_id": "smoke-campaign", "release_id": "smoke-release"})
+    config.update({
+        "campaign_id": "smoke-campaign",
+        "release_id": "smoke-release",
+        "account_login": 12345678,
+        "expected_server": "fixture-demo-server",
+        "expected_company": "Fixture Broker Ltd",
+    })
     config["base_risk_percent"] = 1.0
     config["risk_limits"] = {
         "daily_loss_cap_r": -1.0,

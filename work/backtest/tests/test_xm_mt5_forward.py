@@ -38,8 +38,9 @@ def test_optional_mt5_password_reaches_client_from_environment(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "MetaTrader5", SimpleNamespace())
     monkeypatch.setenv("XM_MT5_READ_ONLY_PASSWORD", "secret-value")
     config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    config.update(expected_server="fixture-demo-server")
 
-    client = MODULE.XmMt5ReadOnlyClient(config, {"XM_MT5_SERVER": "XMGlobal-MT5 7"})
+    client = MODULE.XmMt5ReadOnlyClient(config, {"XM_MT5_SERVER": "fixture-demo-server"})
 
     assert client.password == "secret-value"
 
@@ -47,8 +48,8 @@ def test_optional_mt5_password_reaches_client_from_environment(monkeypatch) -> N
 def _login_client(mt5, *, password="", terminal_path="", portable=False):
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = mt5
-    client.login_id = 318413815
-    client.server = "XMGlobal-MT5 7"
+    client.login_id = 12345678
+    client.server = "fixture-demo-server"
     client.password = password
     client.terminal_path = terminal_path
     client.portable = portable
@@ -71,7 +72,7 @@ def test_mt5_login_primary_success_does_not_use_fallback() -> None:
             return True
 
         def account_info(self):
-            return SimpleNamespace(login=318413815, server="XMGlobal-MT5 7", trade_mode=0)
+            return SimpleNamespace(login=12345678, server="fixture-demo-server", trade_mode=0)
 
         def shutdown(self):
             raise AssertionError("a valid primary session must remain connected")
@@ -81,7 +82,7 @@ def test_mt5_login_primary_success_does_not_use_fallback() -> None:
 
     result = client.login()
 
-    assert result["login"] == 318413815
+    assert result["login"] == 12345678
     assert len(mt5.initialize_calls) == 1
     assert mt5.initialize_calls[0][0] == ("C:/MT5/terminal64.exe",)
     assert mt5.initialize_calls[0][1]["portable"] is True
@@ -105,7 +106,7 @@ def test_mt5_login_primary_failure_uses_saved_session_fallback() -> None:
             return True
 
         def account_info(self):
-            return SimpleNamespace(login=318413815, server="XMGlobal-MT5 7", trade_mode=0)
+            return SimpleNamespace(login=12345678, server="fixture-demo-server", trade_mode=0)
 
         def shutdown(self):
             self.shutdown_count += 1
@@ -118,14 +119,14 @@ def test_mt5_login_primary_failure_uses_saved_session_fallback() -> None:
 
     result = client.login()
 
-    assert result["server"] == "XMGlobal-MT5 7"
+    assert result["server"] == "fixture-demo-server"
     assert mt5.shutdown_count == 1
     assert len(mt5.initialize_calls) == 2
     assert "login" in mt5.initialize_calls[0][1]
     assert "login" not in mt5.initialize_calls[1][1]
     assert mt5.initialize_calls[1][1]["portable"] is True
     assert mt5.login_calls == [
-        ((318413815,), {"server": "XMGlobal-MT5 7", "timeout": 60_000})
+        ((12345678,), {"server": "fixture-demo-server", "timeout": 60_000})
     ]
 
 
@@ -143,7 +144,7 @@ def test_mt5_login_fallback_wrong_identity_fails_closed_and_shuts_down() -> None
             return True
 
         def account_info(self):
-            return SimpleNamespace(login=999, server="XMGlobal-MT5 7", trade_mode=0)
+            return SimpleNamespace(login=999, server="fixture-demo-server", trade_mode=0)
 
         def shutdown(self):
             self.shutdown_count += 1
@@ -361,10 +362,10 @@ class FakeMt5:
         self.shutdown_called = False
 
     def initialize(self, **kwargs):
-        return kwargs["login"] == 318413815 and kwargs["server"] == "XM-DEMO"
+        return kwargs["login"] == 12345678 and kwargs["server"] == "fixture-demo-server"
 
     def account_info(self):
-        return SimpleNamespace(login=318413815, server="XM-DEMO", trade_mode=0)
+        return SimpleNamespace(login=12345678, server="fixture-demo-server", trade_mode=0)
 
     def copy_rates_range(self, symbol, timeframe, start, end):
         assert symbol == "US100Cash"
@@ -655,12 +656,12 @@ class FakeTradeMt5(FakeMt5):
         self.terminal_trade_allowed = terminal_trade_allowed
 
     def initialize(self, **kwargs):
-        return kwargs["login"] == 318413815 and kwargs["server"] == "XMGlobal-MT5 7"
+        return kwargs["login"] == 12345678 and kwargs["server"] == "fixture-demo-server"
 
     def account_info(self):
         return SimpleNamespace(
-            login=318413815,
-            server="XMGlobal-MT5 7",
+            login=12345678,
+            server="fixture-demo-server",
             company="Fixture Broker Ltd",
             trade_mode=self.trade_mode,
             trade_allowed=True,
@@ -776,8 +777,8 @@ class NoConflictStore:
 def test_mt5_adapter_emits_canonical_minute_bar_without_order_api() -> None:
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = FakeMt5()
-    client.login_id = 318413815
-    client.server = "XM-DEMO"
+    client.login_id = 12345678
+    client.server = "fixture-demo-server"
     client.password = "secret"
     client.terminal_path = ""
     client.connected = False
@@ -823,8 +824,8 @@ def test_mt5_adapter_excludes_the_still_open_minute(monkeypatch) -> None:
 
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = PartialMinuteMt5()
-    client.login_id = 318413815
-    client.server = "XM-DEMO"
+    client.login_id = 12345678
+    client.server = "fixture-demo-server"
     client.password = "secret"
     client.terminal_path = ""
     client.closed_bar_delay_seconds = 8
@@ -1092,7 +1093,7 @@ class _CanonicalTestWriteAdapter:
                     release_id,candidate_hash,reason,wire_request_hash)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (approval_id, "CONSUMED", "test-lease", "test-nonce", "S-1-5-21-2",
-                 "test-campaign", "318413815", operation_id, request_hash, operation_type,
+                 "test-campaign", "12345678", operation_id, request_hash, operation_type,
                  "2026-01-01T00:00:00+00:00", "2099-01-01T00:00:00+00:00",
                  "test-release", "f" * 64, "", request_hash),
             )
@@ -1105,7 +1106,7 @@ class _CanonicalTestWriteAdapter:
             request=request,
             approval_id=approval_id,
             campaign_id="test-campaign",
-            account_key="318413815",
+            account_key="12345678",
             final_snapshot_hash="1" * 64,
             final_policy_hash="2" * 64,
             final_risk_expires_at="2099-01-01T00:00:00+00:00",
@@ -1127,12 +1128,17 @@ class _CanonicalTestWriteAdapter:
 def demo_client(fake_mt5: FakeTradeMt5) -> object:
     client = object.__new__(MODULE.XmMt5DemoOrderClient)
     client.mt5 = fake_mt5
-    client.login_id = 318413815
-    client.server = "XMGlobal-MT5 7"
+    client.login_id = 12345678
+    client.server = "fixture-demo-server"
     client.password = ""
     client.terminal_path = ""
     client.connected = False
     client.config = MODULE.core.runtime_config()
+    client.config.update(
+        account_login=12345678,
+        expected_server="fixture-demo-server",
+        expected_company="Fixture Broker Ltd",
+    )
     client.magic = int(client.config["magic_number"])
     client.demo_verified = False
     client.account = None

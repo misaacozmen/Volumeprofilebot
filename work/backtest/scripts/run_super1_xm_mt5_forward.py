@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 from typing import Any, Mapping
@@ -221,7 +222,9 @@ def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
     reference = runtime.get("rth_session_calendar")
     if not isinstance(reference, dict):
         raise Super1FeatureError("Verified RTH calendar reference is missing.")
-    if reference.get("calendar_id") in {"US_EQUITY_RTH_2022_2026_V2", "US_EQUITY_RTH_2022_2026_V3", "US_EQUITY_RTH_2022_2026_V4"}:
+    if reference.get("calendar_id") in {"US_EQUITY_RTH_2022_2026_V2", "US_EQUITY_RTH_2022_2026_V3"}:
+        raise Super1FeatureError("canonical RTH calendar raw source bytes are not sealed")
+    if reference.get("calendar_id") == "US_EQUITY_RTH_2022_2026_V4":
         return _load_canonical_rth_calendar(runtime, reference)
     if (
         reference.get("path") != RTH_CALENDAR_RELATIVE
@@ -1117,7 +1120,10 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         database = self._order_db(output_root)
         connection = sqlite3.connect(database, timeout=30.0)
         try:
-            row = connection.execute("SELECT MIN(created_at) FROM order_intents").fetchone()
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'order_intents'"
+            ).fetchone()
+            row = connection.execute("SELECT MIN(created_at) FROM order_intents").fetchone() if table else None
         finally:
             connection.close()
         campaign_start = pd.Timestamp(row[0]).tz_convert("UTC") if row and row[0] else now.tz_convert("UTC")

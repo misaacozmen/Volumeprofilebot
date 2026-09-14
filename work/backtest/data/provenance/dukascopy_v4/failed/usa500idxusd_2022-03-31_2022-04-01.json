@@ -1,0 +1,9 @@
+{
+  "failed_attempts": [
+    {
+      "from": "2022-04-01",
+      "instrument": "usa500idxusd",
+      "to": "2022-04-02"
+    }
+  ]
+}

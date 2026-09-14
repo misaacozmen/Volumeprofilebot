@@ -155,6 +155,7 @@
         "requirements-windows.lock",
         "research_candidates/super1/super1_locked_oos_baseline_v4.json",
         "research_candidates/super1/super1_manifest_v4.json",
+        "research_candidates/super1/super1_signal_contract.json",
         "research_candidates/super1/super1_signal_contract_v4.json",
         "research_candidates/super1/super1_unsigned_candidate_v4.json",
         "scripts/build_verified_market_calendar.py",

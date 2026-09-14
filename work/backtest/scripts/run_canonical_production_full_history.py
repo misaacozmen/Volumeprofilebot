@@ -35,7 +35,7 @@ from backtest.risk_xray import build_risk_xray, write_risk_xray
 
 DEFAULT_REPORT_DIR = ROOT / "outputs" / "reports" / "canonical_production_full_history_research"
 DEFAULT_GAP_INVENTORY = ROOT / "outputs" / "reports" / ".canonical_full_history_corrected_20260908_v2.h1dqbpdj" / "invalid_leg_days.csv"
-DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired"
+DEFAULT_REACQUIRED_ROOT = ROOT / "data" / "provenance" / "dukascopy_v4" / "reacquired_session"
 GAP_INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
 _ACTIVE_STAGING: Path | None = None
 
@@ -99,7 +99,7 @@ def apply_verified_reacquisitions(
     if sha256(inventory_path.read_bytes()).hexdigest() != GAP_INVENTORY_SHA256:
         raise ValueError("invalid-leg inventory hash does not match the frozen source report")
     inventory = pd.read_csv(inventory_path)
-    selected = inventory.loc[inventory["missing_intervals"].map(lambda value: bool(json.loads(value)))]
+    selected = inventory
     if selected.empty:
         raise ValueError("frozen invalid-leg inventory contains no actual missing intervals")
     result = {key: frame.copy() for key, frame in loaded.items()}
@@ -124,6 +124,7 @@ def apply_verified_reacquisitions(
             or manifest.get("side") != "BID"
             or manifest.get("source_granularity") != "M1"
             or manifest.get("resampling", {}).get("timeframe") != timeframe
+            or manifest.get("session_context_hours") != 6
             or manifest.get("request_range") != {"start": date, "end_exclusive": (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")}
         ):
             raise ValueError(f"reacquisition manifest contract mismatch: {date}/{leg}")
@@ -134,14 +135,15 @@ def apply_verified_reacquisitions(
         fresh = filters.load_ohlcv([path]).frame
         if reacquired_frame_hash(fresh) != manifest.get("derived_sha256"):
             raise ValueError(f"derived reacquisition hash mismatch: {date}/{leg}")
-        fresh_dates = fresh["time"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
-        replacement = fresh.loc[fresh_dates == date]
+        session_start = pd.Timestamp(date, tz="America/New_York") - pd.Timedelta(hours=6)
+        session_end = pd.Timestamp(date, tz="America/New_York") + pd.Timedelta(hours=12)
+        replacement = fresh.loc[(fresh["time"] >= session_start) & (fresh["time"] < session_end)]
         if replacement.empty:
             raise ValueError(f"reacquisition returned no bars for {date}/{leg}")
         current = result[(symbol, timeframe)]
-        current_dates = current["time"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
+        keep = (current["time"] < session_start) | (current["time"] >= session_end)
         result[(symbol, timeframe)] = (
-            pd.concat([current.loc[current_dates != date], replacement], ignore_index=True)
+            pd.concat([current.loc[keep], replacement], ignore_index=True)
             .sort_values("time", kind="mergesort")
             .drop_duplicates("time", keep="last")
             .reset_index(drop=True)
@@ -352,7 +354,7 @@ def invalid_leg_inventory(
         config = configs[leg]
         minutes = int(str(timeframe).removesuffix("m"))
         day = pd.Timestamp(str(row.date)).date()
-        required_start = pd.Timestamp(day).tz_localize("America/New_York") + pd.Timedelta(hours=3, minutes=30)
+        required_start = pd.Timestamp(day).tz_localize("America/New_York") - pd.Timedelta(hours=6)
         required_end = pd.Timestamp(day).tz_localize("America/New_York") + pd.Timedelta(
             hours=int(str(config.trade_window_end).split(":")[0]),
             minutes=int(str(config.trade_window_end).split(":")[1]),

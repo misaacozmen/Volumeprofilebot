@@ -1,6 +1,6 @@
 {
   "artifact_id": "super1_unsigned_candidate_v4",
-  "artifact_sha256": "ead002d792c467686afec2bd5c9883f1390113cbeb74985e36d002fc90a4e852",
+  "artifact_sha256": "dbe19565ed2b65c3fd007a980fcb675036798fe0cbf349a9f725f86a70d8caf9",
   "artifact_type": "strategy_candidate",
   "checks": {
     "criteria_pass": true,
@@ -25,7 +25,7 @@
   "name": "SUPER1_UNSIGNED_CANDIDATE_V4",
   "promotion_bindings": {
     "calendar_sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d",
-    "data_manifest_sha256": "c37d875e5fddf56a4eda6abeec7b1bde14adcd6c44e65a4d41fe04c850bab0b8",
+    "data_manifest_sha256": "47660fd476c1b36ff10014080aef76104aab8b6cc83f9d8ee7fe38db77255acd",
     "engine_source_sha256": "3749c255ffb724c8ddff72a3848feff3eb671023b417c641fce78a2b496c4431"
   },
   "proven": false,

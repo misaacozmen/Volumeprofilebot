@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -39,9 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-dir", type=Path, default=Path("data/provenance/dukascopy_v4/derived"))
     parser.add_argument("--provenance-root", type=Path, default=Path("data/provenance/dukascopy_v4"))
     parser.add_argument("--keep-1m", action="store_true", help="Also write normalized 1m CSV.")
+    parser.add_argument("--session-context-hours", type=int, default=0, help="Include this many local hours before --from-date in normalized output.")
     parser.add_argument("--batch-size", default="20")
     parser.add_argument("--batch-pause", default="1000")
     parser.add_argument("--chunk-days", type=int, default=60, help="Download range in chunks to avoid large request failures.")
+    parser.add_argument(
+        "--request-pause-seconds",
+        type=float,
+        default=0.0,
+        help="Minimum pause between provider requests, including recursively split chunks.",
+    )
     parser.add_argument(
         "--chunk-timeout-seconds",
         type=int,
@@ -111,7 +119,11 @@ def parse_timeframes(value: str) -> list[str]:
 def download_m1(args: argparse.Namespace, instrument: str) -> pd.DataFrame:
     with tempfile.TemporaryDirectory(prefix="dukascopy_") as tmp_dir:
         download_from = (pd.Timestamp(args.from_date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        download_to = (pd.Timestamp(args.to_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        download_to = (
+            pd.Timestamp(args.to_date)
+            if args.session_context_hours
+            else pd.Timestamp(args.to_date) + pd.Timedelta(days=1)
+        ).strftime("%Y-%m-%d")
         chunk_ranges = build_chunk_ranges(download_from, download_to, args.chunk_days)
         frames: list[pd.DataFrame] = []
         failed_chunks: list[dict[str, str]] = []
@@ -130,15 +142,18 @@ def download_m1(args: argparse.Namespace, instrument: str) -> pd.DataFrame:
                 if not frame.empty:
                     frames.append(frame)
         if failed_chunks:
-            failed_path = args.provenance_root / "failed" / f"{instrument}_{args.from_date}_{args.to_date}.json"
-            write_new_bytes(failed_path, canonical_bytes({"failed_attempts": failed_chunks}))
+            failed_bytes = canonical_bytes({"failed_attempts": failed_chunks})
+            failed_hash = sha256(failed_bytes).hexdigest()
+            failed_path = args.provenance_root / "failed" / f"{instrument}_{args.from_date}_{args.to_date}_{failed_hash}.json"
+            if not failed_path.exists():
+                write_new_bytes(failed_path, failed_bytes)
             raise SystemExit(f"{len(failed_chunks)} Dukascopy chunks failed; derived publication aborted")
         if not frames:
             return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
         frame = pd.concat(frames, ignore_index=True)
         frame = frame.sort_values("time").drop_duplicates(subset=["time"], keep="last")
-        first = filter_new_york_range(frame, args.from_date, args.to_date)
-        second = filter_new_york_range(pd.concat([normalize_download(path) for path in sealed_paths], ignore_index=True).sort_values("time").drop_duplicates("time", keep="last"), args.from_date, args.to_date)
+        first = filter_new_york_range(frame, args.from_date, args.to_date, args.session_context_hours)
+        second = filter_new_york_range(pd.concat([normalize_download(path) for path in sealed_paths], ignore_index=True).sort_values("time").drop_duplicates("time", keep="last"), args.from_date, args.to_date, args.session_context_hours)
         if canonical_frame_hash(first) != canonical_frame_hash(second):
             raise SystemExit("locked raw bytes produced non-deterministic normalization")
         args.raw_records = raw_records
@@ -233,6 +248,12 @@ def run_dukascopy_cli(
         "-rp",
         "2000",
     ]
+    last_request = getattr(args, "_last_request_monotonic", None)
+    if last_request is not None:
+        remaining = args.request_pause_seconds - (time.monotonic() - last_request)
+        if remaining > 0:
+            time.sleep(remaining)
+    args._last_request_monotonic = time.monotonic()
     process = subprocess.Popen(command)
     try:
         return_code = process.wait(timeout=args.chunk_timeout_seconds)
@@ -281,8 +302,10 @@ def normalize_download(path: Path) -> pd.DataFrame:
     return frame[columns].reset_index(drop=True)
 
 
-def filter_new_york_range(frame: pd.DataFrame, from_date: str, to_date: str) -> pd.DataFrame:
-    start = pd.Timestamp(from_date, tz="America/New_York")
+def filter_new_york_range(frame: pd.DataFrame, from_date: str, to_date: str, context_hours: int = 0) -> pd.DataFrame:
+    if context_hours < 0 or context_hours > 24:
+        raise ValueError("session context hours must be between 0 and 24")
+    start = pd.Timestamp(from_date, tz="America/New_York") - pd.Timedelta(hours=context_hours)
     end = pd.Timestamp(to_date, tz="America/New_York")
     filtered = frame[(frame["time"] >= start) & (frame["time"] < end)].copy()
     return filtered.reset_index(drop=True)
@@ -365,6 +388,7 @@ def publication_manifest(args: argparse.Namespace, instrument: str, symbol: str,
         "schema_version": 4, "provider": "Dukascopy", "instrument": instrument,
         "symbol": symbol, "side": args.price_type.upper(), "source_granularity": "M1",
         "request_range": {"start": args.from_date, "end_exclusive": args.to_date},
+        "session_context_hours": args.session_context_hours,
         "timezone": "America/New_York", "downloader": {"package": "dukascopy-node", "version": LOCKED_VERSION, "integrity": LOCKED_INTEGRITY, "lockfile_sha256": sha256((LOCK_ROOT / "package-lock.json").read_bytes()).hexdigest()},
         "raw_chunks": list(args.raw_records), "raw_row_bounds": {"first": minute["time"].min().isoformat(), "last": minute["time"].max().isoformat(), "rows": len(minute)},
         "duplicates": duplicate_count, "gaps_over_one_minute": int((gaps > pd.Timedelta(minutes=1)).sum()),

@@ -107,6 +107,74 @@
     {
       "path": "data/provenance/dukascopy_v4/reacquired/2026-06-17_spx/DUKASCOPY_USA500IDXUSD, 5m_2026-06-17_2026-06-18.csv.manifest.json",
       "sha256": "05ac6c9a116074640f4420a188637d5bc3a1165ea30f1e75b9ab1521b747c553"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-01-24_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-01-24_2022-01-25.csv.manifest.json",
+      "sha256": "a42910aaccda2df940acb66d01f5ec097d6424791d8ea767594a797c71381906"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-03-10_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-03-10_2022-03-11.csv.manifest.json",
+      "sha256": "01592164abfd94c6e9849f017c157a16c1fd9908db5e9196eed7ca5eabe4def6"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-03-31_spx/DUKASCOPY_USA500IDXUSD, 5m_2022-03-31_2022-04-01.csv.manifest.json",
+      "sha256": "8c63616f3bc0d70d96705ee7d6e949392fb0d23d5ebea3faa2f69612449f3b8f"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-04-06_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-04-06_2022-04-07.csv.manifest.json",
+      "sha256": "3dd93b0d923ced8004f1fb0fb293cb46373eef296de79bb2c3154d1dac6b10e0"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-05-26_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-05-26_2022-05-27.csv.manifest.json",
+      "sha256": "22b80f73fd28420b2378d6c1a153dc519f2e222739ad6b2d4bf25e7ffe0732d4"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-08-17_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-08-17_2022-08-18.csv.manifest.json",
+      "sha256": "a62e9bd8fd26d6dcbb09f0cf4cb7aa0b1b8fd94ed53a56f88ac1031ddfd4262e"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-10-27_spx/DUKASCOPY_USA500IDXUSD, 5m_2022-10-27_2022-10-28.csv.manifest.json",
+      "sha256": "78e1fed2d081f687c7b4bc81aeb15c17e5f6e95e5e94f670eaedcf60a1a4b0a3"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-11-11_nq/DUKASCOPY_USATECHIDXUSD, 3m_2022-11-11_2022-11-12.csv.manifest.json",
+      "sha256": "48e764e1e999216bcb630682ae3621353cc50e5c822965b155d66b9322c1dab8"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2022-11-15_spx/DUKASCOPY_USA500IDXUSD, 5m_2022-11-15_2022-11-16.csv.manifest.json",
+      "sha256": "f793dc7781fa519af6d380edb370ce4bb3bacb7a9fdd2986f2d1766196580f66"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-01-27_nq/DUKASCOPY_USATECHIDXUSD, 3m_2023-01-27_2023-01-28.csv.manifest.json",
+      "sha256": "f15010d415a55af609e8cfd9aaf10af870b3cb79708d03ed9133b733c457f159"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-05-18_nq/DUKASCOPY_USATECHIDXUSD, 3m_2023-05-18_2023-05-19.csv.manifest.json",
+      "sha256": "de0cd28c9194245d847fde091bb1aaf5ba09d593ea847b69a21d1d590bd75357"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-06-09_spx/DUKASCOPY_USA500IDXUSD, 5m_2023-06-09_2023-06-10.csv.manifest.json",
+      "sha256": "ffc83c8eab1006bf594bdf8ef839a45a345fe32474d3854fedf39eede8903e9f"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-06-20_nq/DUKASCOPY_USATECHIDXUSD, 3m_2023-06-20_2023-06-21.csv.manifest.json",
+      "sha256": "b6ca38bef7433c980fa9a6f800e97e99b16404b49933369f24da7c4ee9030444"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-07-18_spx/DUKASCOPY_USA500IDXUSD, 5m_2023-07-18_2023-07-19.csv.manifest.json",
+      "sha256": "e97a8162e2b5fb9fb40351167913b8e740aae4ef2a8198168724410bda84fc4f"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-08-07_nq/DUKASCOPY_USATECHIDXUSD, 3m_2023-08-07_2023-08-08.csv.manifest.json",
+      "sha256": "523d87748ba55e9b0ed80e97821a8ab361203b4fd6c9c99501dbf8eff3682036"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-08-08_spx/DUKASCOPY_USA500IDXUSD, 5m_2023-08-08_2023-08-09.csv.manifest.json",
+      "sha256": "b5c8c38891a6c5cd50bfaca9ef810d9351a04c54c8468ed6794a4700034b1025"
+    },
+    {
+      "path": "data/provenance/dukascopy_v4/reacquired_session/2023-08-09_nq/DUKASCOPY_USATECHIDXUSD, 3m_2023-08-09_2023-08-10.csv.manifest.json",
+      "sha256": "6186785ef42768d669cd222a8f13366f052cb77807658bdc7bc5c7ef3aeb4a24"
     }
   ],
   "frozen_invalid_leg_inventory_sha256": "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075",

@@ -176,7 +176,7 @@ def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None
 
     assert "legacy order/data/broker files" in source
     super1_files = allowlist["profiles"]["super1"]["files"]
-    assert "research_candidates/super1/super1_unsigned_candidate_v2.json" in super1_files
+    assert "research_candidates/super1/super1_unsigned_candidate_v4.json" in super1_files
     assert "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json" not in super1_files
     assert any(item["path"].startswith("outputs/reports/") for item in candidate["provenance"]["inputs"])
 
