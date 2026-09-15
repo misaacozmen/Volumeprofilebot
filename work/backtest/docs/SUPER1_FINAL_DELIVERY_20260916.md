@@ -40,6 +40,8 @@ Satır numaraları test edilen implementation ref’lerindendir. `PASS_CODE`, ya
 | 21 | `scripts/run_super1_owner_acceptance.py:64,86,99,106`; `scripts/owner_replay_ledger.py:106,139` | signed exact push lease (remote/ref/eski-yeni OID/expiry/nonce), owner rotation ve replay receipt yok; push yapılmadı | `BLOCKED_EXTERNAL_ACCEPTANCE` |
 | 22 | `scripts/mt5_read_only_acceptance.py:97`; `scripts/run_xm_mt5_forward.py:1860` | `tests/test_super1_final_remediation_cli.py:106`, `tests/test_xm_mt5_forward.py:3006`; eski binding revoke + yeni DEMO binding + gerçek credentialsiz read-only probe/order_send=0 için owner-imzalı dış kanıt yok; live order yok | `BLOCKED_EXTERNAL_ACCEPTANCE` |
 
+Not: Bu iki branch’te `process_tree.py` adlı dosya yoktur. Madde 11’in process-tree uygulaması, gerçek child lifecycle’ı için `scripts/windows_appcontainer_launcher.py` ve `backtest/sandbox.py` içindeki eşdeğer launcher yoludur; bu nedenle rapor bu gerçek dosya/fonksiyonları referanslar.
+
 ## Test ve artifact kanıtı
 
 - Promotion full: `789 passed, 3 skipped`; JUnit `outputs/reports/pytest_promotion_full_20260916_final.xml`, SHA-256 `0EBB41752811AC8394876C7F96D2C54FF18C9FAAFB54BFA26C5CCC5FAAE5E28`.
