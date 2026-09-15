@@ -260,8 +260,8 @@ def validate_super1_v5_candidate(
         raise CandidateValidationError("V5 source commit/tree must be Git object IDs")
     if (root_path / ".git").exists():
         try:
-            from scripts.git_provenance import validate_commit_tree
-            validate_commit_tree(root_path, source_commit, source_tree)
+            from scripts.git_provenance import validate_production_source_binding
+            validate_production_source_binding(root_path, source_commit, source_tree)
         except (OSError, ValueError) as exc:
             raise CandidateValidationError("V5 source commit/tree is not a real Git binding") from exc
     signal_source = signal.get("signal_source")

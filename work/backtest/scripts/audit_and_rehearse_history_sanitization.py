@@ -138,6 +138,7 @@ def main() -> None:
     parser.add_argument("--denylist", type=Path)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--sanitized-mirror", type=Path)
+    parser.add_argument("--phase", choices=("pre-push", "post-push"), default="pre-push")
     args = parser.parse_args()
     source = args.source.resolve()
     started = datetime.now(timezone.utc)
@@ -154,6 +155,8 @@ def main() -> None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         raise SystemExit(2)
+    if args.phase == "post-push" and args.sanitized_mirror is None:
+        raise SystemExit("post-push remote rescan requires --sanitized-mirror")
     deny = secrets(args.denylist.resolve())
     denylist_sha256 = sha256(args.denylist.resolve().read_bytes()).hexdigest()
     source_head = git(source, "rev-parse", "HEAD").decode().strip()
@@ -200,7 +203,8 @@ def main() -> None:
     finished = datetime.now(timezone.utc)
     payload = {
         "schema_version": 2,
-        "status": "SANITIZED_MIRROR_READY" if args.sanitized_mirror is not None and not sanitized_mirror_matches and not sanitized_matches and all(topology_checks.values()) else ("REHEARSAL_PASSED_NOT_REMOTE_REMEDIATED" if not sanitized_matches and all(topology_checks.values()) else "REHEARSAL_FAILED"),
+        "status": ("POST_PUSH_REMOTE_RESCAN_CLEAN" if args.phase == "post-push" and args.sanitized_mirror is not None and not sanitized_mirror_matches and not sanitized_matches and all(topology_checks.values()) else ("PRE_PUSH_CLEAN" if args.phase == "pre-push" and args.sanitized_mirror is not None and not sanitized_mirror_matches and not sanitized_matches and all(topology_checks.values()) else ("REHEARSAL_PASSED_NOT_REMOTE_REMEDIATED" if not sanitized_matches and all(topology_checks.values()) else "REHEARSAL_FAILED"))),
+        "phase": args.phase,
         "source_head": source_head,
         "all_ref_tips": ref_tips,
         **source_metrics,
@@ -215,7 +219,7 @@ def main() -> None:
         "sanitized_match_count": sum(int(row["match_count"]) for row in sanitized_matches),
         "sanitized_matches": sanitized_matches,
         "sanitized_mirror_path": sanitized_mirror_path,
-        "sanitized_mirror_match_count": len(sanitized_mirror_matches) if args.sanitized_mirror is not None else sum(int(row["match_count"]) for row in sanitized_matches),
+        "remote_quarantine_match_count": len(sanitized_mirror_matches),
         "topology_checks": topology_checks,
         "source_ref_tip_positions": source_shape["ref_tip_positions"],
         "sanitized_ref_tip_positions": sanitized_shape["ref_tip_positions"],

@@ -117,7 +117,7 @@
     }
   ],
   "signal_contract_path": "research_candidates/super1/super1_signal_contract_v5.json",
-  "signal_contract_sha256": "fc0b184ee9ca44b3e9bec917564f74e9108d2e943eb93e6be91860e0525b9618",
+  "signal_contract_sha256": "c58958730549426426394ddce13c070c5188032f8d3309c12d1c54633adef8d4",
   "status": "UNSIGNED_VALIDATION_ONLY",
   "strategy_health_baseline": {
     "candidate_hash": "3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440",

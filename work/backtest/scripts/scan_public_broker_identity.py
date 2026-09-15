@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -36,6 +37,16 @@ def untracked_files(root: Path) -> list[Path]:
     return paths
 
 
+def ignored_files(root: Path) -> list[Path]:
+    output = subprocess.run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return [root / item.decode("utf-8") for item in output.split(b"\0") if item and (root / item.decode("utf-8")).is_file()]
+
+
 def concrete_paths(value: object, prefix: str = "$") -> list[str]:
     found: list[str] = []
     if isinstance(value, dict):
@@ -59,7 +70,11 @@ def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
         denied = [str(item).encode() for item in payload.get("denylist", []) if str(item)]
     matches: list[dict[str, object]] = []
     seen: set[Path] = set()
-    files = [(path, "tracked") for path in tracked_files(root)] + [(path, "untracked") for path in untracked_files(root)]
+    files = (
+        [(path, "tracked") for path in tracked_files(root)]
+        + [(path, "untracked") for path in untracked_files(root)]
+        + ([(path, "ignored") for path in ignored_files(root)] if denylist is not None else [])
+    )
     for path, scope in files:
         if path in seen or not path.is_file():
             continue
@@ -177,34 +192,58 @@ def _quarantine_scan(quarantine_root: Path | None, denied: list[bytes], *, repos
     root = quarantine_root.resolve()
     if not root.is_dir():
         raise ValueError("quarantine object directory is missing")
-    if repository_root is not None:
-        git_dir = (repository_root.resolve() / ".git").resolve()
-        objects = git_dir / "objects"
-        environment = {**__import__("os").environ, "GIT_OBJECT_DIRECTORY": str(root), "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)}
-        result = subprocess.run(["git", "-C", str(repository_root.resolve()), "cat-file", "--batch-all-objects", "--batch"], input=b"", capture_output=True, check=False, env=environment)
-        if result.returncode == 0:
-            data = result.stdout
-            offset = 0
-            total = 0
-            while offset < len(data):
-                newline = data.find(b"\n", offset)
-                if newline < 0:
-                    break
-                header = data[offset:newline].split()
-                offset = newline + 1
-                if len(header) != 3:
-                    break
-                try:
-                    size = int(header[2])
-                except ValueError:
-                    break
-                body = data[offset:offset + size]
-                offset += size
-                if offset < len(data) and data[offset:offset + 1] == b"\n":
-                    offset += 1
-                total += sum(body.count(value) for value in denied)
-            return total
-    return sum(sum(path.read_bytes().count(value) for value in denied) for path in root.rglob("*") if path.is_file())
+    if repository_root is None:
+        raise ValueError("quarantine scan requires a Git repository for object verification")
+    git_root = repository_root.resolve()
+    git_dir = (git_root / ".git").resolve()
+    objects = git_dir / "objects"
+    environment = {**os.environ, "GIT_OBJECT_DIRECTORY": str(root), "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)}
+    listed = subprocess.run(
+        ["git", "-C", str(git_root), "cat-file", "--batch-all-objects", "--batch-check"],
+        capture_output=True, check=False, env=environment,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError("quarantine Git object read failed; raw pack bytes are not clean evidence")
+    object_ids: list[str] = []
+    for line in listed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3 or len(fields[0]) != 40 or any(char not in b"0123456789abcdef" for char in fields[0]):
+            raise RuntimeError("quarantine Git object listing is malformed; raw pack bytes are not clean evidence")
+        object_ids.append(fields[0].decode("ascii"))
+    if not object_ids:
+        return 0
+    read = subprocess.run(
+        ["git", "-C", str(git_root), "cat-file", "--batch"],
+        input=("\n".join(object_ids) + "\n").encode("ascii"), capture_output=True, check=False, env=environment,
+    )
+    if read.returncode != 0:
+        raise RuntimeError("quarantine Git object read failed; raw pack bytes are not clean evidence")
+    data = read.stdout
+    offset = 0
+    total = 0
+    for object_id in object_ids:
+        newline = data.find(b"\n", offset)
+        if newline < 0:
+            raise RuntimeError("quarantine Git object stream is truncated; raw pack bytes are not clean evidence")
+        header = data[offset:newline].split()
+        offset = newline + 1
+        if len(header) != 3 or header[0].decode("ascii", "ignore") != object_id or header[1] == b"missing":
+            raise RuntimeError("quarantine Git object stream is malformed; raw pack bytes are not clean evidence")
+        try:
+            size = int(header[2])
+        except ValueError as exc:
+            raise RuntimeError("quarantine Git object size is invalid; raw pack bytes are not clean evidence") from exc
+        body = data[offset:offset + size]
+        if len(body) != size:
+            raise RuntimeError("quarantine Git object body is truncated; raw pack bytes are not clean evidence")
+        offset += size
+        if offset >= len(data) or data[offset:offset + 1] != b"\n":
+            raise RuntimeError("quarantine Git object delimiter is missing; raw pack bytes are not clean evidence")
+        offset += 1
+        total += sum(body.count(value) for value in denied)
+    if offset != len(data):
+        raise RuntimeError("quarantine Git object stream has trailing bytes; raw pack bytes are not clean evidence")
+    return total
 
 
 def _ref_tips(root: Path) -> list[dict[str, str]]:

@@ -258,19 +258,23 @@ def run_provider_process(command: list[str], timeout_seconds: int) -> tuple[int,
         from scripts.process_tree import run_bounded
     except ModuleNotFoundError:
         from process_tree import run_bounded
-    return run_bounded(command, timeout_seconds=timeout_seconds)
+    try:
+        return run_bounded(command, timeout_seconds=timeout_seconds)
+    except RuntimeError as exc:
+        # Job setup failure is already fail-closed: process_tree.py has killed
+        # the suspended child.  Preserve the bounded-run error contract for
+        # callers; this is not a taskkill or detached-process fallback.
+        raise subprocess.CalledProcessError(
+            returncode=-1,
+            cmd=command,
+            output=b"Timed out after " + str(timeout_seconds).encode("ascii") + b" seconds; job setup failed closed",
+            stderr=str(exc).encode("utf-8", "replace"),
+        ) from exc
 
 
 def terminate_process_tree(process_id: int) -> None:
-    if shutil.which("taskkill"):
-        subprocess.run(
-            ["taskkill", "/PID", str(process_id), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return
-    subprocess.run(["kill", "-TERM", str(process_id)], check=False)
+    del process_id
+    raise RuntimeError("process-tree cleanup requires the assigned Job Object; taskkill is not a security fallback")
 
 
 def normalize_download(path: Path) -> pd.DataFrame:

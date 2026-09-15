@@ -173,123 +173,63 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
     state["target_count"] = TARGET_COUNT
     state["provider_call_count"] = int(state.get("provider_call_count", 0))
     controller._write(state)
-    cas = HttpCas(args.cas_root.resolve())
-    ledger = AcquisitionRunLedger(args.ledger_path.resolve())
     from scripts.git_provenance import current_commit_tree
     source = current_commit_tree(ROOT)
-    ledger.start_run(run_id, source_commit=source["source_commit"], source_tree_sha256=source["source_tree_sha256"], repository_root=ROOT)
-    for target in targets:
-        key = "|".join(target_key(target))
-        plan_fd, plan_name = tempfile.mkstemp(prefix="dukascopy-plan-", suffix=".json")
-        os.close(plan_fd)
-        plan_path = Path(plan_name)
+    def provider_fetch(item: dict[str, object]) -> dict[str, object]:
+        url = str(item["url"])
+        evidence = _run_node("fetch-one", "--plan", str(item["plan_path"]), "--index", str(item["plan_index"]), "--url-sha256", str(item["url_sha256"]), "--stage-root", str(ACQUISITION_ROOT / "staging"))
+        raw_body_path = str(evidence.get("staging_path") or "")
+        body_path = Path(raw_body_path) if raw_body_path else None
         try:
-            start, end = _envelope(str(target["date"]))
-            plan = _run_node("plan", "--instrument", _instrument(str(target["leg"])), "--start", start.isoformat(), "--end", end.isoformat(), "--timeframe", "m1", "--price-type", "bid", "--output", str(plan_path))
-            cas_items = []
-            for index, url in enumerate(plan["urls"]):
-                url_hash = str(plan["url_sha256"][index])
-                artifact_id = f"{key}|{index}"
-                ledger_record = ledger.artifact(run_id, artifact_id)
-                if isinstance(ledger_record, dict) and ledger_record.get("state") == "COMMITTED" and ledger_record.get("request_url") == url and ledger_record.get("request_url_sha256") == url_hash:
-                    try:
-                        cas_path = cas.path_for(str(ledger_record["body_sha256"]))
-                        if cas_path.is_file() and cas_path.stat().st_size == int(ledger_record["body_bytes"]) and sha256_bytes(cas_path.read_bytes()) == str(ledger_record["body_sha256"]):
-                            cas_items.append({"url": url, "url_sha256": url_hash, "sha256": ledger_record["body_sha256"], "byte_count": ledger_record["body_bytes"], "cas_path": str(cas_path)})
-                            continue
-                    except (KeyError, ValueError, TypeError):
-                        pass
-                retry_index = 0
-                while True:
-                    if isinstance(ledger_record, dict) and ledger_record.get("state") == "COMMITTED":
-                        if ledger_record.get("request_url") != url or ledger_record.get("request_url_sha256") != url_hash:
-                            raise RuntimeError("persisted acquisition request binding differs")
-                        committed_sha = str(ledger_record.get("body_sha256") or "")
-                        committed_bytes = int(ledger_record.get("body_bytes", -1))
-                        committed_path = cas.path_for(committed_sha)
-                        if not committed_path.is_file() or committed_path.stat().st_size != committed_bytes or sha256_bytes(committed_path.read_bytes()) != committed_sha:
-                            raise RuntimeError("persisted committed CAS evidence is invalid")
-                        cas_items.append({"url": url, "url_sha256": url_hash, "sha256": committed_sha, "byte_count": committed_bytes, "cas_path": str(committed_path)})
-                        break
-                    try:
-                        request = controller.before_request(HOST, run_id=run_id, artifact_id=artifact_id)
-                    except AcquisitionDeferred as deferred:
-                        if deferred.reason != "DEFERRED_PROVIDER_SPACING":
-                            raise
-                        remaining = max(0.0, parse_utc(deferred.next_retry_at_utc).timestamp() - utc_now().timestamp())
-                        wall_time.sleep(min(60.0, remaining))
-                        continue
-                    stage_root = ACQUISITION_ROOT / "staging"
-                    body_path: Path | None = None
-                    try:
-                        ledger.reserve_artifact(run_id, artifact_id, "provider", request_url=url, request_url_sha256=url_hash)
-                        evidence = _run_node("fetch-one", "--plan", str(plan_path), "--index", str(index), "--url-sha256", url_hash, "--stage-root", str(stage_root))
-                        status = int(evidence.get("status", 0))
-                        body_path = Path(str(evidence["staging_path"]))
-                        body = body_path.read_bytes()
-                        body_sha, cas_path = cas.put(body)
-                        if str(evidence.get("url_sha256")) != url_hash or str(evidence.get("body_sha256")) != body_sha or str(evidence.get("buffer_sha256")) != body_sha:
-                            raise RuntimeError("provider body or URL evidence binding mismatch")
-                        ledger.complete_artifact(run_id, artifact_id, body_sha256=body_sha, body_bytes=len(body))
-                        body_path.unlink(missing_ok=True)
-                        controller.finish_request(request, status=status, body_sha256=body_sha, body_byte_count=len(body), headers=evidence.get("headers") if isinstance(evidence.get("headers"), dict) else {}, endpoint=str(evidence.get("endpoint") or ""), request_url_sha256=url_hash)
-                    except (subprocess.TimeoutExpired, TimeoutError) as exc:
-                        controller.finish_request(request, error_code="TRANSPORT_TIMEOUT", endpoint="https://datafeed.dukascopy.com", request_url_sha256=url_hash)
-                        if retry_index >= len(RETRY_DELAYS_SECONDS):
-                            controller.record_terminal(HOST, "TRANSPORT_RETRY_EXHAUSTED")
-                            raise RuntimeError("provider transport retry budget exhausted") from exc
-                        retry_index += 1
-                        wall_time.sleep(retry_delay_for_attempt(retry_index))
-                        continue
-                    except RuntimeError as exc:
-                        controller.finish_request(request, error_code="TRANSPORT_ERROR", endpoint="https://datafeed.dukascopy.com", request_url_sha256=url_hash)
-                        if retry_index >= len(RETRY_DELAYS_SECONDS) or "timeout" not in str(exc).lower():
-                            controller.record_terminal(HOST, "TRANSPORT_ERROR")
-                            raise
-                        retry_index += 1
-                        wall_time.sleep(retry_delay_for_attempt(retry_index))
-                        continue
-                    finally:
-                        if body_path is not None:
-                            body_path.unlink(missing_ok=True)
-                    controller.record_http_status(status)
-                    if status == 429:
-                        controller.record_429(HOST, (evidence.get("headers") or {}).get("retry-after"))
-                        raise AcquisitionDeferred(controller._load()["hosts"][HOST]["next_retry_at_utc"])
-                    if status in {404, 410}:
-                        controller.record_terminal(HOST, "SOURCE_ARTIFACT_MISSING")
-                        raise RuntimeError("SOURCE_ARTIFACT_MISSING")
-                    if status in RETRYABLE_STATUS:
-                        if retry_index >= 4:
-                            controller.record_terminal(HOST, f"HTTP_{status}_RETRY_EXHAUSTED")
-                            raise RuntimeError(f"provider HTTP status {status}; retry budget exhausted")
-                        retry_index += 1
-                        wall_time.sleep(retry_delay_for_attempt(retry_index))
-                        continue
-                    if status not in {200, 206}:
-                        controller.record_terminal(HOST, f"HTTP_{status}")
-                        raise RuntimeError(f"provider HTTP status {status}")
-                    if not body:
-                        controller.record_terminal(HOST, "EMPTY_ARTIFACT")
-                        raise RuntimeError("provider returned an empty artifact")
-                    controller.record_success(HOST)
-                    cas_items.append({
-                        "url": url, "url_sha256": url_hash, "sha256": body_sha,
-                        "byte_count": len(body), "cas_path": str(cas_path),
-                    })
-                    break
-            input_path = plan_path.with_suffix(".decode.json")
-            input_path.write_text(json.dumps([{"index": index, "path": item["cas_path"], "sha256": item["sha256"]} for index, item in enumerate(cas_items)], indent=2) + "\n", encoding="utf-8")
-            decoded_path = plan_path.with_suffix(".m1.csv")
-            _run_node("decode", "--plan", str(plan_path), "--input", str(input_path), "--output", str(decoded_path))
-            _build_bundle(target, plan, cas_items, decoded_path)
+            body = body_path.read_bytes() if body_path is not None and body_path.is_file() else None
+            body_sha = evidence.get("body_sha256")
+            body_bytes = evidence.get("byte_count")
+            return {
+                "status": evidence.get("status"), "url": url, "headers": evidence.get("headers") if isinstance(evidence.get("headers"), dict) else {},
+                "body": body, "body_sha256": body_sha, "body_byte_count": body_bytes, "buffer_sha256": evidence.get("buffer_sha256"),
+                "provenance": {
+                    "provider": "Dukascopy", "status": evidence.get("status"), "url_sha256": evidence.get("url_sha256"),
+                    "body_sha256": body_sha, "body_byte_count": body_bytes, "node_package": evidence.get("package"),
+                },
+            }
         finally:
-            plan_path.unlink(missing_ok=True)
-            plan_path.with_suffix(".decode.json").unlink(missing_ok=True)
-            plan_path.with_suffix(".m1.csv").unlink(missing_ok=True)
-    state = controller._load(); state["run_status"] = "COMPLETE"; controller._write(state)
-    ledger.close()
-    return state
+            if body_path is not None and body_path.is_file():
+                body_path.unlink(missing_ok=True)
+
+    coordinator = AcquisitionCoordinator(
+        fixture_root=None, cas_root=args.cas_root.resolve(), ledger_path=args.ledger_path.resolve(),
+        provider=provider_fetch, mode="provider", rate_controller=controller, host=HOST,
+    )
+    try:
+        coordinator.ledger.start_run(run_id, source_commit=source["source_commit"], source_tree_sha256=source["source_tree_sha256"], repository_root=ROOT)
+        for target in targets:
+            key = "|".join(target_key(target))
+            plan_fd, plan_name = tempfile.mkstemp(prefix="dukascopy-plan-", suffix=".json")
+            os.close(plan_fd)
+            plan_path = Path(plan_name)
+            try:
+                start, end = _envelope(str(target["date"]))
+                plan = _run_node("plan", "--instrument", _instrument(str(target["leg"])), "--start", start.isoformat(), "--end", end.isoformat(), "--timeframe", "m1", "--price-type", "bid", "--output", str(plan_path))
+                cas_items = []
+                for index, url in enumerate(plan["urls"]):
+                    url_hash = str(plan["url_sha256"][index])
+                    artifact_id = f"{key}|{index}"
+                    artifact = {"artifact_id": artifact_id, "fixture_path": "provider", "url": url, "plan_path": str(plan_path), "plan_index": index, "url_sha256": url_hash}
+                    committed = coordinator.run(run_id=run_id, source_commit=source["source_commit"], source_tree_sha256=source["source_tree_sha256"], artifacts=[artifact], repository_root=ROOT)[0]
+                    cas_items.append({"url": url, "url_sha256": url_hash, "sha256": committed["body_sha256"], "byte_count": committed["body_bytes"], "cas_path": committed["cas_path"]})
+                input_path = plan_path.with_suffix(".decode.json")
+                input_path.write_text(json.dumps([{"index": index, "path": item["cas_path"], "sha256": item["sha256"]} for index, item in enumerate(cas_items)], indent=2) + "\n", encoding="utf-8")
+                decoded_path = plan_path.with_suffix(".m1.csv")
+                _run_node("decode", "--plan", str(plan_path), "--input", str(input_path), "--output", str(decoded_path))
+                _build_bundle(target, plan, cas_items, decoded_path)
+            finally:
+                plan_path.unlink(missing_ok=True)
+                plan_path.with_suffix(".decode.json").unlink(missing_ok=True)
+                plan_path.with_suffix(".m1.csv").unlink(missing_ok=True)
+        state = controller._load(); state["run_status"] = "COMPLETE"; controller._write(state)
+        return state
+    finally:
+        coordinator.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -341,7 +281,7 @@ def _run_fixture_mode(args: argparse.Namespace, run_id: str) -> dict[str, object
             source_commit=source["source_commit"],
             source_tree_sha256=source["source_tree_sha256"],
             artifacts=_fixture_artifacts(fixture_root),
-            repository_root=ROOT,
+            repository_root=None,
         )
     finally:
         coordinator.close()

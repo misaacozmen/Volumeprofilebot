@@ -2,10 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "tables", "state_machine"],
+  "required": ["schema_version", "tables", "state_machine", "receipt"],
   "properties": {
     "schema_version": {"const": 1},
     "tables": {"const": ["ledger_meta", "owner_replay"]},
-    "state_machine": {"const": ["RESERVED", "CONSUMED"]}
+    "state_machine": {"const": ["RESERVED", "CONSUMED"]},
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "receipt_type", "run_id", "nonces", "purpose", "state", "source_commit", "source_tree_oid", "inventory_sha256", "issued_at_utc", "signer_public_key_sha256", "signature_algorithm", "signature_b64"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "receipt_type": {"const": "OWNER_REPLAY_RECEIPT_V1"},
+        "run_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "nonces": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minItems": 2, "maxItems": 2},
+        "purpose": {"const": "SUPER1_FINAL_MANIFEST"},
+        "state": {"const": "CONSUMED"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_tree_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "issued_at_utc": {"type": "string", "minLength": 1},
+        "signer_public_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "signature_algorithm": {"const": "RSA-PSS-SHA256"},
+        "signature_b64": {"type": "string", "minLength": 1}
+      }
+    }
   }
 }

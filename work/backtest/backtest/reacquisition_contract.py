@@ -22,7 +22,7 @@ MANIFEST_KEYS = frozenset({
     "run_id", "audit_nonce_a", "audit_nonce_b", "audit_process_identity_a", "audit_process_identity_b",
     "audit_identity_a_path", "audit_identity_a_sha256", "audit_identity_b_path", "audit_identity_b_sha256",
     "source_commit", "source_tree_sha256", "frozen_input_hashes", "trust_state",
-    "owner_trust_policy_path", "owner_trust_policy_sha256", "owner_replay_ledger_path", "owner_replay_ledger_sha256",
+    "owner_trust_policy_path", "owner_trust_policy_sha256", "owner_replay_ledger_path", "owner_replay_receipt_path", "owner_replay_receipt_sha256",
     "owner_signature_status",
 })
 
@@ -69,6 +69,20 @@ def _external_file(value: object, *, repository_root: Path, expected_sha256: obj
     return path
 
 
+def _external_path(value: object, *, repository_root: Path, label: str) -> Path:
+    raw = str(value or "")
+    if not raw or not Path(raw).is_absolute():
+        raise ValueError(f"{label} path must be absolute and external")
+    path = Path(raw).resolve()
+    if not path.is_file():
+        raise ValueError(f"{label} is missing")
+    try:
+        path.relative_to(repository_root.resolve())
+    except ValueError:
+        return path
+    raise ValueError(f"{label} must remain outside the repository")
+
+
 def _validate_owner_trust(
     payload: Mapping[str, Any],
     *,
@@ -81,22 +95,29 @@ def _validate_owner_trust(
     leaf_public_key_sha256: str | None,
     owner_trust_policy_path: Path | None,
     owner_replay_ledger_path: Path | None,
+    owner_replay_receipt_path: Path | None,
+    owner_replay_receipt_sha256: str | None,
+    pinned_public_key_path: Path | None,
+    pinned_public_key_sha256: str | None,
 ) -> None:
     if owner_trust_policy_path is not None and Path(str(payload.get("owner_trust_policy_path") or "")).resolve() != owner_trust_policy_path.resolve():
         raise ValueError("owner trust policy path differs from the canonical manifest binding")
     if owner_replay_ledger_path is not None and Path(str(payload.get("owner_replay_ledger_path") or "")).resolve() != owner_replay_ledger_path.resolve():
         raise ValueError("owner replay ledger path differs from the canonical manifest binding")
+    if owner_replay_receipt_path is not None and Path(str(payload.get("owner_replay_receipt_path") or "")).resolve() != owner_replay_receipt_path.resolve():
+        raise ValueError("owner replay receipt path differs from the canonical manifest binding")
     policy_path = _external_file(
         owner_trust_policy_path or payload.get("owner_trust_policy_path"),
         repository_root=repository_root,
         expected_sha256=payload.get("owner_trust_policy_sha256"),
         label="owner trust policy",
     )
-    replay_path = _external_file(
-        payload.get("owner_replay_ledger_path"),
+    replay_path = _external_path(payload.get("owner_replay_ledger_path"), repository_root=repository_root, label="owner replay ledger")
+    receipt_path = _external_file(
+        owner_replay_receipt_path or payload.get("owner_replay_receipt_path"),
         repository_root=repository_root,
-        expected_sha256=payload.get("owner_replay_ledger_sha256"),
-        label="owner replay ledger",
+        expected_sha256=owner_replay_receipt_sha256 or payload.get("owner_replay_receipt_sha256"),
+        label="owner replay receipt",
     )
     if trusted_root_public_key_path is None or trusted_root_public_key_sha256 is None or not repository_identity or not branch:
         raise ValueError("independent owner trust root, repository identity, and branch are required")
@@ -107,7 +128,7 @@ def _validate_owner_trust(
         label="trusted owner root public key",
     )
     try:
-        from scripts.owner_replay_ledger import validate as validate_replay_ledger
+        from scripts.owner_replay_ledger import validate as validate_replay_ledger, validate_receipt
         from scripts.owner_trust import validate_policy
         validate_policy(
             policy_path,
@@ -119,11 +140,29 @@ def _validate_owner_trust(
             source_commit=str(payload.get("source_commit") or ""),
             source_tree_oid=str(payload.get("source_tree_sha256") or ""),
             leaf_public_key_sha256=str(leaf_public_key_sha256 or ""),
+            expected_purpose="SUPER1_FINAL_MANIFEST",
+            expected_nonces=(str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")),
+            repository_root=repository_root,
         )
         validate_replay_ledger(
             replay_path,
             run_id=str(payload.get("run_id") or ""),
             nonces=(str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")),
+            purpose="SUPER1_FINAL_MANIFEST",
+            require_consumed=True,
+        )
+        if pinned_public_key_path is None or pinned_public_key_sha256 is None:
+            raise ValueError("owner replay receipt requires the pinned owner public key")
+        validate_receipt(
+            receipt_path,
+            signer_public_key_path=pinned_public_key_path,
+            signer_public_key_sha256=pinned_public_key_sha256,
+            run_id=str(payload.get("run_id") or ""),
+            nonces=(str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")),
+            source_commit=str(payload.get("source_commit") or ""),
+            source_tree_oid=str(payload.get("source_tree_sha256") or ""),
+            inventory_sha256=str(payload.get("inventory_sha256") or ""),
+            purpose="SUPER1_FINAL_MANIFEST",
         )
     except (OSError, ValueError, TypeError) as exc:
         raise ValueError("owner trust inputs are invalid") from exc
@@ -327,6 +366,8 @@ def validate_final_manifest(
     branch: str | None = None,
     owner_trust_policy_path: Path | None = None,
     owner_replay_ledger_path: Path | None = None,
+    owner_replay_receipt_path: Path | None = None,
+    owner_replay_receipt_sha256: str | None = None,
 ) -> ValidatedFinalManifest:
     resolved = path.resolve()
     root = provenance_root.resolve()
@@ -362,7 +403,8 @@ def validate_final_manifest(
         _require_digest(payload.get(field), f"final manifest {field}")
     repository_root = root.parents[2]
     from scripts.git_provenance import current_branch, validate_commit_tree
-    validate_commit_tree(repository_root, str(payload.get("source_commit")), str(payload.get("source_tree_sha256")))
+    from scripts.git_provenance import validate_production_source_binding
+    validate_production_source_binding(repository_root, str(payload.get("source_commit")), str(payload.get("source_tree_sha256")))
     if branch is not None and current_branch(repository_root) != branch:
         raise ValueError("owner branch context differs from the checked-out Git branch")
     audit_a_path = Path(str(payload.get("audit_identity_a_path") or ""))
@@ -516,6 +558,9 @@ def validate_final_manifest(
                 raise ValueError("V5 byte attestation does not bind final target bytes")
     if semantic_root(target_rows) != payload["semantic_root_sha256"] or ordered_merkle(target_rows) != payload["ordered_target_merkle_root_sha256"]:
         raise ValueError("final manifest semantic root is invalid")
+    detached_supplied = any((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256))
+    if detached_supplied and not all((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256)):
+        raise ValueError("owner signature inputs must be supplied together")
     signature_required = require_owner_signature or payload.get("owner_signature_status") == "SIGNED"
     _validate_owner_trust(
         payload,
@@ -528,8 +573,12 @@ def validate_final_manifest(
         leaf_public_key_sha256=pinned_public_key_sha256,
         owner_trust_policy_path=owner_trust_policy_path,
         owner_replay_ledger_path=owner_replay_ledger_path,
+        owner_replay_receipt_path=owner_replay_receipt_path,
+        owner_replay_receipt_sha256=owner_replay_receipt_sha256,
+        pinned_public_key_path=pinned_public_key_path,
+        pinned_public_key_sha256=pinned_public_key_sha256,
     )
-    if signature_required:
+    if signature_required or detached_supplied:
         _validate_detached_attestation(
             resolved,
             payload,
@@ -539,8 +588,6 @@ def validate_final_manifest(
             pinned_public_key_sha256=pinned_public_key_sha256,
             expected_source_head_sha256=expected_source_head_sha256,
         )
-    elif any((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256)):
-        raise ValueError("owner signature inputs must be supplied together")
     return ValidatedFinalManifest(payload)
 
 

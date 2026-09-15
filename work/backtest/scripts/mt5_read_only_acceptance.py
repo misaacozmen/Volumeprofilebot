@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from hashlib import sha256
 import hmac
-import importlib.util
 import json
 from pathlib import Path
 import re
@@ -23,6 +22,7 @@ FORBIDDEN_OPERATIONS = frozenset({
 })
 ALLOWED_READ_OPERATIONS = frozenset({"account_info", "positions_get", "orders_get", "history_deals_get", "symbol_info"})
 WRITE_API_NAMES = frozenset({"initialize", "shutdown", "login", "order_send", "order_check", "symbol_select", "market_book_add", "market_book_release", "copy_ticks_from", "copy_ticks_range", "copy_rates_from", "copy_rates_from_pos", "copy_rates_range", "positions_total", "orders_total", "history_orders_total", "history_deals_total"})
+PINNED_PROBE_SHA256 = "3c97b264a537a0efcd323f6889d7355ce54c07570bf9e783da922ce936ae717d"
 
 
 class ReadOnlyAcceptanceError(RuntimeError):
@@ -83,75 +83,43 @@ def run_read_only_acceptance(module: Any, *, symbol: str = "", now: datetime | N
     expected = ["account_info", "positions_get", "orders_get", "history_deals_get"] + (["symbol_info"] if symbol.strip() else [])
     if mt5.calls != expected:
         raise ReadOnlyAcceptanceError("MT5 read sequence is not canonical")
-    return {"status": "PASS_READ_ONLY", "checked_at_utc": current.astimezone(timezone.utc).isoformat(), "account_identity_sha256": identity_hash, "read_operations": list(mt5.calls), "open_positions": len(positions), "pending_orders": len(orders), "history_deals": len(history), "order_send": 0, "write_operations": 0}
+    return {"status": "TEST_ONLY_READ_ONLY", "checked_at_utc": current.astimezone(timezone.utc).isoformat(), "account_identity_sha256": identity_hash, "read_operations": list(mt5.calls), "open_positions": len(positions), "pending_orders": len(orders), "history_deals": len(history), "order_send": 0, "write_operations": 0}
 
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
-def _load_adapter(path: Path) -> Any:
-    source = path.read_text(encoding="utf-8")
-    lowered = source.lower()
-    if any(re.search(rf"\b{re.escape(name)}\b", lowered) for name in FORBIDDEN_OPERATIONS):
-        raise ValueError("MT5 adapter contains a forbidden broker operation")
-    spec = importlib.util.spec_from_file_location("owner_mt5_adapter", path)
-    if spec is None or spec.loader is None:
-        raise ValueError("MT5 adapter cannot be loaded")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def run_adapter(adapter_path: str | Path, *, owner_hmac_key_path: str | Path, binding_id: str, run_id: str, source_commit: str, source_tree_oid: str, nonce: str) -> dict[str, Any]:
-    adapter = _load_adapter(Path(adapter_path).resolve())
+    raise ValueError("external MT5 adapters are disabled; use the pinned read-only probe")
+
+
+def run_pinned_read_only_acceptance(*, owner_hmac_key_path: str | Path, binding_id: str, run_id: str, source_commit: str, source_tree_oid: str, nonce: str, symbol: str = "", now: datetime | None = None) -> dict[str, Any]:
+    probe_path = Path(__file__).with_name("mt5_read_only_probe.py")
+    if not probe_path.is_file() or sha256(probe_path.read_bytes()).hexdigest() != PINNED_PROBE_SHA256:
+        raise ValueError("pinned MT5 read-only probe hash differs")
     key = Path(owner_hmac_key_path).resolve().read_bytes()
     if not key:
         raise ValueError("owner HMAC key is empty")
-    client = adapter.build_client()
-    if client is None:
-        raise ValueError("MT5 adapter returned no owner-controlled proxy")
-    initialized = False
-    shutdown_called = False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
     operations: list[str] = []
+    shutdown_called = False
+    identity_hmac: str | None = None
+    status = "BLOCKED_EXTERNAL_ACCEPTANCE"
+    error_code = "UNKNOWN"
     try:
-        initialized = bool(client.initialize())
-        operations.append("initialize")
-        if not initialized:
-            raise ValueError("credentialless MT5 initialize failed")
-        account = client.account_info()
-        operations.append("account_info")
-        positions = client.positions_get()
-        operations.append("positions_get")
-        orders = client.orders_get()
-        operations.append("orders_get")
-        deals = client.history_deals_get()
-        operations.append("history_deals_get")
-        module = getattr(client, "module", client)
-        demo_constant = getattr(module, "ACCOUNT_TRADE_MODE_DEMO", None)
-        trade_mode = getattr(account, "trade_mode", None)
-        if demo_constant is None or trade_mode != demo_constant:
-            raise ValueError("MT5 account is not provably DEMO")
-        identity_material = _canonical({
-            "login": str(getattr(account, "login", "")),
-            "server": str(getattr(account, "server", "")),
-            "company": str(getattr(account, "company", "")),
-        })
+        import MetaTrader5 as mt5
+        from scripts.mt5_read_only_probe import execute
+        account, operations = execute(mt5, now=current.astimezone(timezone.utc), symbol=symbol)
+        shutdown_called = operations[-1:] == ["shutdown"]
+        identity_material = _canonical({"login": str(getattr(account, "login", "")), "server": str(getattr(account, "server", "")), "company": str(getattr(account, "company", ""))})
         identity_hmac = hmac.new(key, identity_material, "sha256").hexdigest()
-        if positions is None or orders is None or deals is None:
-            raise ValueError("read-only MT5 exposure query failed")
         status = "PASS_EXTERNAL"
     except Exception as exc:
-        status = "BLOCKED_EXTERNAL_ACCEPTANCE"
-        identity_hmac = None
         error_code = type(exc).__name__
-    finally:
-        try:
-            client.shutdown()
-            shutdown_called = True
-            operations.append("shutdown")
-        except Exception:
-            shutdown_called = False
+        shutdown_called = operations[-1:] == ["shutdown"]
     payload = {
         "schema_version": 1,
         "status": status,
@@ -176,6 +144,7 @@ def run_adapter(adapter_path: str | Path, *, owner_hmac_key_path: str | Path, bi
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pinned-read-only", action="store_true")
     parser.add_argument("--adapter", type=Path)
     parser.add_argument("--owner-hmac-key", type=Path)
     parser.add_argument("--binding-id")
@@ -188,26 +157,19 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.adapter is not None:
+        parser.error("external MT5 adapters are disabled; use --pinned-read-only")
+    if args.pinned_read_only:
         required = (args.owner_hmac_key, args.binding_id, args.run_id, args.source_commit, args.source_tree_oid, args.nonce, args.report)
         if any(value is None for value in required):
-            parser.error("owner adapter mode requires all owner parameters")
-        payload = run_adapter(args.adapter, owner_hmac_key_path=args.owner_hmac_key, binding_id=args.binding_id, run_id=args.run_id, source_commit=args.source_commit, source_tree_oid=args.source_tree_oid, nonce=args.nonce)
+            parser.error("pinned read-only mode requires all owner parameters")
+        payload = run_pinned_read_only_acceptance(owner_hmac_key_path=args.owner_hmac_key, binding_id=args.binding_id, run_id=args.run_id, source_commit=args.source_commit, source_tree_oid=args.source_tree_oid, nonce=args.nonce, symbol=args.symbol)
         target = args.report
     else:
-        if args.output is None:
-            parser.error("legacy mode requires --output")
-        try:
-            import MetaTrader5 as mt5
-            payload = run_read_only_acceptance(mt5, symbol=args.symbol)
-            code = 0
-        except Exception as exc:
-            payload = {"status": "BLOCKED_EXTERNAL_ACCEPTANCE", "reason_code": type(exc).__name__}
-            code = 2
-        target = args.output
+        parser.error("legacy read-only acceptance is not an owner gate; use --pinned-read-only")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(_canonical(payload) + b"\n")
     print(json.dumps({"status": payload["status"], "order_send": payload.get("order_send", 0), "write_operations": payload.get("write_operations", 0)}, sort_keys=True))
-    return 0 if payload["status"] in {"PASS_EXTERNAL", "PASS_READ_ONLY"} else 2
+    return 0 if payload["status"] == "PASS_EXTERNAL" else 2
 
 
 if __name__ == "__main__":

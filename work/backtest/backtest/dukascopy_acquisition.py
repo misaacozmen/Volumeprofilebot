@@ -128,6 +128,16 @@ class AcquisitionTerminalError(RuntimeError):
     pass
 
 
+class ProviderResponseError(RuntimeError):
+    def __init__(self, message: str, *, status: int | None = None, error_code: str = "PROVIDER_RESPONSE_INVALID", headers: Mapping[str, Any] | None = None, endpoint: str | None = None, request_url_sha256: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_code = error_code
+        self.headers = dict(headers or {})
+        self.endpoint = endpoint
+        self.request_url_sha256 = request_url_sha256
+
+
 def _fsync_directory(path: Path) -> None:
     try:
         fd = os.open(str(path), os.O_RDONLY)
@@ -176,7 +186,33 @@ def process_start_token(pid: int | None = None) -> str:
         if os.name != "nt":
             stat = Path(f"/proc/{pid}").stat()
             return f"{stat.st_ctime_ns}:{stat.st_mtime_ns}"
-        return f"pid:{pid}"
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME)]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            raise OSError(error, f"cannot open process {pid}")
+        try:
+            creation_time = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel_time = wintypes.FILETIME()
+            user_time = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(handle, ctypes.byref(creation_time), ctypes.byref(exit_time), ctypes.byref(kernel_time), ctypes.byref(user_time)):
+                error = ctypes.get_last_error()
+                raise OSError(error, f"cannot read process start time {pid}")
+            value = (int(creation_time.dwHighDateTime) << 32) | int(creation_time.dwLowDateTime)
+            return f"FILETIME:{value:016x}"
+        finally:
+            kernel32.CloseHandle(handle)
 
 
 class ProviderProcessLock:
@@ -471,6 +507,24 @@ class RateLimitController:
             self._write(state)
             return item
 
+    def record_transient_failure(self, host: str, code: str, *, now: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
+        if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
+            raise ValueError("provider host is outside the locked allowlist")
+        host = str(host).lower()
+        observed = validate_clock(now=now, transport_fixture=transport_fixture)
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            item = dict(state["hosts"].get(host, {"consecutive_429": 0, "transient_failure_count": 0}))
+            count = int(item.get("transient_failure_count", 0)) + 1
+            if count >= len(RETRY_DELAYS_SECONDS):
+                item.update({"circuit": "TERMINAL", "terminal_error": code, "terminal_at_utc": iso_utc(observed), "half_open_claimed": False, "transient_failure_count": count})
+            else:
+                delay = retry_delay_for_attempt(count, rng=self.rng)
+                item.update({"circuit": "OPEN", "transient_failure_count": count, "transient_failure_code": code, "selected_delay_seconds": delay, "next_retry_at_utc": iso_utc(datetime.fromtimestamp(observed.timestamp() + delay, timezone.utc)), "half_open_claimed": False, "unknown_attempt": False})
+            state["hosts"][host] = item
+            self._write(state)
+            return item
+
     def record_http_status(self, status: int) -> dict[str, Any]:
         status_code = int(status)
         if status_code < 100 or status_code > 599:
@@ -621,8 +675,8 @@ class AcquisitionRunLedger:
         if not run_id or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit)) or not re.fullmatch(r"[0-9a-f]{40}", str(source_tree_sha256)):
             raise ValueError("acquisition run identity is incomplete")
         if repository_root is not None:
-            from scripts.git_provenance import validate_commit_tree
-            validate_commit_tree(Path(repository_root).resolve(), str(source_commit), str(source_tree_sha256))
+            from scripts.git_provenance import validate_production_source_binding
+            validate_production_source_binding(Path(repository_root).resolve(), str(source_commit), str(source_tree_sha256))
         identity = _canonical({"pid": os.getpid(), "process_start_token": process_start_token(), "host": platform.node()}).decode("utf-8")
         with self._transaction() as connection:
             existing = connection.execute("SELECT source_commit, source_tree_sha256 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -807,6 +861,53 @@ class AcquisitionCoordinator:
             raise ValueError("committed artifact URL binding is invalid")
         return {"run_id": run_id, "artifact_id": artifact_id, "state": "COMMITTED", "body_sha256": body_sha256, "body_bytes": body_bytes, "cas_path": str(cas_path), "request_url": request_url, "request_url_sha256": request_url_sha256}
 
+    def _validate_provider_response(self, item: Mapping[str, Any], response: Any) -> tuple[bytes, dict[str, Any]]:
+        request_url = validate_provider_url(str(item.get("url") or ""))
+        request_url_sha256 = sha256_bytes(request_url.encode("utf-8"))
+        if not isinstance(response, Mapping):
+            raise ProviderResponseError("provider response evidence is not an object")
+        raw_status = response.get("status")
+        if isinstance(raw_status, bool):
+            raise ProviderResponseError("provider response status is invalid")
+        try:
+            status = int(raw_status)
+        except (TypeError, ValueError) as exc:
+            raise ProviderResponseError("provider response status is invalid") from exc
+        if response.get("url") != request_url:
+            raise ProviderResponseError("provider response URL binding differs", status=status, error_code="PROVIDER_URL_MISMATCH", endpoint=request_url, request_url_sha256=request_url_sha256)
+        headers = response.get("headers")
+        if not isinstance(headers, Mapping):
+            raise ProviderResponseError("provider response headers are invalid", status=status, error_code="PROVIDER_HEADERS_INVALID", endpoint=request_url, request_url_sha256=request_url_sha256)
+        if status != 200:
+            raise ProviderResponseError(f"provider HTTP status {status}", status=status, error_code=f"HTTP_{status}", headers=headers, endpoint=request_url, request_url_sha256=request_url_sha256)
+        body = response.get("body")
+        if not isinstance(body, bytes) or not body:
+            raise ProviderResponseError("provider response body is empty or unavailable", status=status, error_code="PROVIDER_BODY_INVALID")
+        body_sha256 = sha256_bytes(body)
+        body_bytes = len(body)
+        if response.get("body_sha256") != body_sha256 or response.get("body_byte_count") != body_bytes:
+            raise ProviderResponseError("provider response body hash or size is not bound", status=status, error_code="PROVIDER_BODY_BINDING_MISMATCH")
+        if response.get("buffer_sha256") is not None and response.get("buffer_sha256") != body_sha256:
+            raise ProviderResponseError("provider response buffer hash is not bound", status=status, error_code="PROVIDER_BODY_BINDING_MISMATCH")
+        content_length = headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(str(content_length)) != body_bytes:
+                    raise ProviderResponseError("provider response content-length differs", status=status, error_code="PROVIDER_SIZE_MISMATCH")
+            except ValueError as exc:
+                raise ProviderResponseError("provider response content-length is invalid", status=status, error_code="PROVIDER_SIZE_INVALID") from exc
+        provenance = response.get("provenance")
+        if not isinstance(provenance, Mapping) or provenance.get("provider") != "Dukascopy" or provenance.get("status") != 200 or provenance.get("url_sha256") != request_url_sha256 or provenance.get("body_sha256") != body_sha256 or provenance.get("body_byte_count") != body_bytes:
+            raise ProviderResponseError("provider response provenance is incomplete or mismatched", status=status, error_code="PROVIDER_PROVENANCE_MISMATCH")
+        expected_sha = item.get("sha256")
+        expected_bytes = item.get("bytes")
+        if expected_sha not in (None, "") and require_sha256(expected_sha, "expected provider body hash") != body_sha256:
+            raise ProviderResponseError("provider response differs from the declared body hash", status=status, error_code="PROVIDER_BODY_BINDING_MISMATCH")
+        if expected_bytes not in (None, ""):
+            if isinstance(expected_bytes, bool) or int(expected_bytes) != body_bytes:
+                raise ProviderResponseError("provider response differs from the declared body size", status=status, error_code="PROVIDER_SIZE_MISMATCH")
+        return body, {"status": status, "headers": dict(headers), "endpoint": request_url, "request_url_sha256": request_url_sha256, "body_sha256": body_sha256, "body_byte_count": body_bytes}
+
     def run(self, *, run_id: str, source_commit: str, source_tree_sha256: str, artifacts: list[Mapping[str, Any]], repository_root: str | Path | None = None) -> list[dict[str, Any]]:
         self.ledger.start_run(run_id, source_commit=source_commit, source_tree_sha256=source_tree_sha256, repository_root=repository_root)
         output: list[dict[str, Any]] = []
@@ -816,31 +917,52 @@ class AcquisitionCoordinator:
             request_url = str(item.get("url") or f"fixture://{fixture_path}")
             if self.mode == "provider" and not item.get("url"):
                 raise ValueError("provider artifact URL is required")
-            expected_sha256 = str(item.get("sha256") or "")
-            expected_bytes = int(item.get("bytes", -1))
+            expected_sha256 = str(item.get("sha256") or "") or None
+            expected_bytes_raw = item.get("bytes")
+            expected_bytes = None if expected_bytes_raw in (None, "") else int(expected_bytes_raw)
+            if self.mode == "fixture" and (expected_sha256 is None or expected_bytes is None):
+                raise ValueError("fixture artifact body identity is required")
             state = self.ledger.reserve_artifact(run_id, artifact_id, fixture_path or "provider", request_url=request_url, expected_body_sha256=expected_sha256, expected_body_bytes=expected_bytes)
             if state == "COMMITTED":
                 output.append(self._verify_committed(run_id, artifact_id))
                 continue
             if self.mode == "fixture":
+                assert expected_sha256 is not None and expected_bytes is not None
                 body = self._fixture_bytes(fixture_path, expected_sha256=expected_sha256, expected_bytes=expected_bytes)
             else:
                 assert self.provider is not None
                 assert self.rate_controller is not None
                 request = self.rate_controller.before_request(self.host, run_id=run_id, artifact_id=artifact_id)
                 try:
-                    body = self.provider(item)
-                except Exception:
-                    self.rate_controller.finish_request(request, error_code="PROVIDER_ERROR", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
-                    raise
-                if not isinstance(body, bytes):
-                    self.rate_controller.finish_request(request, error_code="PROVIDER_INVALID_BYTES", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
-                    raise ValueError("provider callback must return bytes")
-                if len(body) != expected_bytes or sha256_bytes(body) != require_sha256(expected_sha256, "provider body hash"):
-                    self.rate_controller.finish_request(request, error_code="PROVIDER_BODY_BINDING_MISMATCH", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
-                    raise ValueError("provider bytes do not match the declared CAS identity")
-                self.rate_controller.finish_request(request, status=200, body_sha256=sha256_bytes(body), body_byte_count=len(body), endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
-                self.rate_controller.record_success(self.host)
+                    response = self.provider(item)
+                    body, response_meta = self._validate_provider_response(item, response)
+                    self.rate_controller.finish_request(request, status=200, body_sha256=response_meta["body_sha256"], body_byte_count=response_meta["body_byte_count"], headers=response_meta["headers"], endpoint=response_meta["endpoint"], request_url_sha256=response_meta["request_url_sha256"])
+                    self.rate_controller.record_success(self.host)
+                except ProviderResponseError as exc:
+                    status = exc.status
+                    self.rate_controller.finish_request(request, status=status, error_code=exc.error_code, headers=exc.headers, endpoint=exc.endpoint or request_url, request_url_sha256=exc.request_url_sha256 or sha256_bytes(request_url.encode("utf-8")))
+                    if status is not None and 100 <= status <= 599:
+                        self.rate_controller.record_http_status(status)
+                    if status == 429:
+                        item_state = self.rate_controller.record_429(self.host, exc.headers.get("retry-after"))
+                        raise AcquisitionDeferred(str(item_state["next_retry_at_utc"]), "DEFERRED_RATE_LIMIT") from exc
+                    if status in {404, 410}:
+                        self.rate_controller.record_terminal(self.host, "SOURCE_ARTIFACT_MISSING")
+                        raise AcquisitionTerminalError("SOURCE_ARTIFACT_MISSING") from exc
+                    if status is not None and 500 <= status <= 599:
+                        item_state = self.rate_controller.record_transient_failure(self.host, f"HTTP_{status}")
+                        if item_state.get("circuit") == "TERMINAL":
+                            raise AcquisitionTerminalError(f"HTTP_{status}_RETRY_EXHAUSTED") from exc
+                        raise AcquisitionDeferred(str(item_state["next_retry_at_utc"]), "DEFERRED_PROVIDER_FAILURE") from exc
+                    self.rate_controller.record_terminal(self.host, exc.error_code)
+                    raise AcquisitionTerminalError(str(exc)) from exc
+                except Exception as exc:
+                    error_code = "TRANSPORT_TIMEOUT" if isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutExpired" else "PROVIDER_PROCESS_CRASH" if isinstance(exc, (BrokenPipeError, ConnectionError, RuntimeError)) else "PROVIDER_ERROR"
+                    self.rate_controller.finish_request(request, error_code=error_code, endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
+                    self.rate_controller.record_transient_failure(self.host, error_code)
+                    raise ProviderResponseError("provider callback failed", error_code=error_code) from exc
+            if self.mode == "provider":
+                assert isinstance(body, bytes) and body
             body_sha256, cas_path = self.cas.put(body)
             if not cas_path.is_file() or sha256_bytes(cas_path.read_bytes()) != body_sha256:
                 raise ValueError("CAS readback verification failed")
