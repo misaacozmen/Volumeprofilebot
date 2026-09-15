@@ -1,58 +1,70 @@
 # SUPER1 — 1–22 Durum ve Kabul Kanıtı
 
 Tarih: 2026-09-15
-Promotion code HEAD tested: `a24a0ab950ee2b9b9e5bfe7d1cad2701bff99050`
-Risk branch HEAD tested: `cd8c02b8d3914eaea6ff71dac6cbf796f83206ed`
+Promotion implementation commit tested: `6624bf2338057520533f311d8426b87d58435a18`
+Promotion implementation tree: `5afc4cd9f467b9d40af866b1d62c0a2d498d83b2`
+Risk branch commit tested: `af55caa527fac638c9894f416ea69847b2021a96`
+Risk branch tree: `3b072e20d3ad589d6cf066e0cf83731cc70631dd`
 
 ## Nihai kapı
 
 `NOT PROMOTABLE / NO PUSH / NO LIVE ORDER`
 
-Kod tarafındaki 1–11 risk düzeltmeleri ayrı risk branch’inde yapıldı ve promotion branch’ine yalnızca risk commit’i taşındı. 12–18 için fail-closed acquisition, persistent state lock, body-stream timeout, target-key, raw/decoded bundle attestation ve gerçek dosya kanıtı kontrolleri eklendi. Dış yetki veya üretim verisi yokken PASS üretilmedi.
+Provider çağrısı, broker hesabı/parolası, private key üretimi/kullanımı, remote işlem, history rewrite veya live order yapılmadı. Kod ve test kanıtı hazırlandı; platform ve dış owner/provider kanıtları olmadan PASS üretilmedi.
 
 ## Test ve branch kanıtı
 
 | Kapsam | HEAD | Sonuç | JUnit / kanıt SHA-256 |
 |---|---|---:|---|
-| Promotion hedefli suite | `a24a0ab` | 298 passed, 1 skipped | `outputs/reports/pytest_promotion_full_targeted_final.xml` — `00254f1f569c3017cf1f3188fbf658a455868f399822d840bf835f24dac847e2` |
-| Risk hedefli suite | `cd8c02b` | 32 passed, 7 skipped | `outputs/reports/pytest_risk_targeted_20260915_postcommit.xml` — `0a2755a257a00ccdb7f25c61e162c42299afd062632318321ef61e4d782dd3c1` |
-| Promotion tam pytest | `a24a0ab` | 744 passed, 10 skipped, 0 failed | `outputs/reports/pytest_promotion_full_20260915_final.xml` — `5de6e326ecc9d7ffce4fe1292c46743073bf92020a98a14a4bd4012c2df0bd5d` (754 test) |
-| Risk tam pytest | `cd8c02b` | 706 passed, 7 skipped, 0 failed | `outputs/reports/pytest_risk_full_20260915_final.xml` — `c997d91981798c8773861b60c1c5fae9c809ebcfff8380e06b250639ee5867ca` (713 test) |
-| Python compile / Node AST / PowerShell AST / `git diff --check` | iki branch | passed | current test and static-check evidence |
+| Promotion hedefli suite | `6624bf2` | 69 passed, 8 skipped | `outputs/reports/pytest_promotion_targeted_20260915_final.xml` — `f1c55d301d5f2339ba766b337291778b28109c0492b2a431104cbcd2e3b17e79` |
+| Risk hedefli suite | `af55caa` | 27 passed, 0 skipped | `outputs/reports/pytest_risk_targeted_20260915_final2.xml` — `9998b4182234be2b7752cb9dd0a794a40fd683e06209ed4014fb1b69998a6b5b` |
+| Promotion tam pytest | `6624bf2` | 744 passed, 10 skipped, 0 failed | `outputs/reports/pytest_promotion_full_20260915_postcommit.xml` — `a29ecf70b69bcd2e07c4f2bc27e8298ac5625dd3bda441a1ba5fef3a70d250e0` |
+| Risk tam pytest | `af55caa` | 707 passed, 7 skipped, 0 failed | `outputs/reports/pytest_risk_full_20260915_final2.xml` — `1f5a24d1f5bae7d218d5977c8cf6dc39f574b9e0dd8f915ddf039f80163ffda8` |
+| `compileall`, PowerShell AST, Node AST, `git diff --check` | iki branch / promotion | passed; 36 PowerShell dosyası | platform static-check kanıtı |
 
-Tam testlerdeki skip’ler Windows AppContainer/restricted-token launcher yokluğu nedeniyle sandbox’ın bilinçli `BLOCKED` davranışını doğrulayan platform sınırlarıdır; başarısız test yoktur. Bu durum 11 ve 12–22 için dış kabul kanıtı eksikliğini kaldırmaz.
+Skip’ler Windows AppContainer/restricted-token veya gerçek POSIX namespace/ACL launcher yokluğu nedeniyle PASS sayılmadı; item 11 `BLOCKED_PLATFORM` olarak sınıflandırıldı.
+
+## Uygulanan güvenlik ve V5 değişiklikleri
+
+- Risk branch’inde whitelist key-set reconciliation, hesap-geneli IN/INOUT cooldown, gerçek account/positions/orders/history broker read set’i, monoton query sequence, sorgu sınırları ve approval sonrası ikinci fresh query uygulandı. Approval/risk reddinde `order_send=0` korunuyor; SQLite concurrency aynı transactional kapıda.
+- Sandbox, doğrulanmış OS izolasyonu yoksa `BLOCKED_PLATFORM` ile fail-closed kalıyor; rlimit-only subprocess izolasyon kabulü yok.
+- Acquisition coordinator yalnız zorunlu fixture root kabul ediyor; provider callback’i reddediyor, SQLite WAL ledger, CAS readback, run identity, crash/resume ve aynı artifact yarışında idempotent commit kullanıyor. Provider process hard deadline ve process-tree cleanup ile çalışıyor.
+- Final reacquisition manifesti iki bağımsız audit identity, run/nonce/process/source/tree/frozen-hash bağları, raw→decoded→attestation→COMMITTED zinciri, replacement date bounds, repo dışı owner trust policy/replay ledger ve `ValidatedFinalManifest` döndürüyor. Owner imzası yoksa durum `AWAITING_OWNER_SIGNATURE`.
+- Aktif Super1 runner ve Windows runtime contract V5’e bağlandı; V5 candidate yalnız `load_artifact(..., verify_inputs=True)` ve dedicated V5 validator üzerinden yükleniyor. V5 unsigned/live-disabled/fresh-forward-only; eski OOS/promotion alanları taşınmıyor.
+- Public identity scan tracked dosyalar, korunmuş untracked dosyalar ve reachable Git object’lerini tarıyor; denylist değeri çıktılanmıyor, yalnız kapsam/yol/hash/sayaç kanıtı tutuluyor.
 
 ## 1–22 ayrı durum
 
 | # | Durum | Kabul kanıtı | Eksik dış girdi / blocker |
 |---:|---|---|---|
-| 1 | PASS (hedefli) | `test_super1_instruction_1_11.py`, approval/production-flow suite; promotion/risk JUnit | 11 ve 12–22 dış kabul kanıtları nedeniyle yayın kapısı kapalı |
-| 2 | PASS (hedefli) | retry ve write-once negatif testleri; risk JUnit | Gerçek broker readback yetkisi yok |
-| 3 | PASS (hedefli) | instrument metadata/tick/economic semantic negatif testleri; risk JUnit | Gerçek XM symbol snapshot yok |
-| 4 | PASS (hedefli) | evaluation window, warmup, gap/closure testleri; risk JUnit | Tam üretim veri kapsamı residual nedeniyle yok |
-| 5 | PASS (hedefli) | atomic slot, approval replay/request-hash testleri; risk JUnit | İmzalı lease ve broker E2E yok |
-| 6 | PASS (hedefli) | closed search, overlap, deterministic/no-valid-trial testleri; risk JUnit | Yeni gerçek forward/OOS çalışması yok |
-| 7 | PASS (hedefli) | closed-terminal, null/reason, provenance risk-xray testleri; risk JUnit | Tam valid coverage yok |
-| 8 | PASS (hedefli) | lifecycle/cursor/late-deal negatif testleri; risk JUnit | Gerçek broker session/deal kanıtı yok |
-| 9 | PASS (hedefli) | unknown env ve secret-redaction testleri; risk JUnit | Gerçek deployment environment teyidi yok |
-| 10 | PASS (hedefli) | denominator/nonfinite/numeric contract testleri; risk JUnit | Broker canlı quantization snapshot yok |
-| 11 | BLOCKED | sandbox negatif suite çalıştı | Windows AppContainer/restricted-token ve POSIX network namespace için OS düzeyi kabul kanıtı yok |
-| 12 | BLOCKED | `test_super1_instruction_12_18.py`; coordinator loop/checkpoint kodu | Tek URL başarılı fixture’ı provider-start/terminal-event/CAS/coordinator termination ile E2E kanıtlanmadı |
-| 13 | BLOCKED | persistent lock ve `record_success` negatif testleri | Restart + iki gerçek süreç concurrency kabulü eksik |
-| 14 | BLOCKED | Node `reader`/timer/cancel negatif kanıtı | Yavaş header/body ve >16 MiB fixture E2E kanıtı eksik |
-| 15 | BLOCKED | nested `target_key` apply ve unknown dataset negatif testleri | Residual-zero 113 hedef gerçek apply smoke’u yok |
-| 16 | BLOCKED | strict raw/decoded/bundle recomputation ve detached-signature fail-closed kodu | İmzalı final manifest, unique nonce/source HEAD/event root ve repo dışı pinned key yok |
-| 17 | BLOCKED | private evidence-root/path/hash doğrulaması ve eksik denylist testleri | Repo dışı security/history/rotation kanıt kökü ve yedi gerçek artifact yok |
-| 18 | BLOCKED | cache/target/CAS/terminal contract kodu ve negatif suite | Provider erişimi, fixture isolation, crash/resume ve account-switch E2E kanıtı yok |
-| 19 | BLOCKED | `outputs/reports/dukascopy_reacquisition_v5/bundle_audit.json` SHA `b14daa3d4dbdb35109bb07e47e9ccc5887c02f7779503969efb72059f9f032cb` | 14 VERIFIED_LEGACY, 3 INVALID_LEGACY, 1 INCOMPLETE_STAGING, 95 MISSING; residual 99. Circuit OPEN, provider call 0, next retry `2026-09-15T15:33:39.3919524Z`; final signed manifest yok |
-| 20 | BLOCKED | `test_super1_instruction_19_22.py`; readiness report SHA `7787ab0d29ded73ca20a04094ce741b79c8343be9bbd43930e7a55675818711a` | Hesap sahibinin repo dışı denylist’i yok; public/history durumları `UNASSESSED_MISSING_DENYLIST` |
-| 21 | BLOCKED | readiness report ve no-push çalışma kuralı | 9 erişilebilir kimlik blob’u için owner-approved sanitized mirror, remote ref re-scan ve explicit lease yok |
-| 22 | BLOCKED | readiness report; deployment binding kodu yalnızca doğrulama kapısıdır | Broker owner rotation/revocation ve yeni private signed binding kanıtı yok |
+| 1 | `FAIL_CODE` | risk/approval/production-flow testleri; exact rejection ve `order_send=0` | Açık risk acceptance koşulları canlı broker kanıtıyla kapanmadı |
+| 2 | `PASS_CODE` | retry, write-once ve broker-read negatif suite | Gerçek broker readback yetkisi yok |
+| 3 | `PASS_CODE` | instrument metadata/tick/economic semantic negatif suite | Gerçek XM symbol snapshot yok |
+| 4 | `PASS_CODE` | evaluation window, warmup, gap/closure suite | Tam üretim veri kapsamı residual nedeniyle yok |
+| 5 | `FAIL_CODE` | atomic slot, approval replay/request-hash ve SQLite concurrency suite | İmzalı lease ve broker E2E yok |
+| 6 | `PASS_CODE` | closed search, overlap, deterministic/no-valid-trial suite | Yeni gerçek forward/OOS çalışması yok |
+| 7 | `PASS_CODE` | closed-terminal, null/reason, provenance risk-xray suite | Tam valid coverage yok |
+| 8 | `PASS_CODE` | lifecycle/cursor/late-deal suite | Gerçek broker session/deal kanıtı yok |
+| 9 | `PASS_CODE` | unknown-env ve secret-redaction suite | Gerçek deployment environment teyidi yok |
+| 10 | `PASS_CODE` | denominator/nonfinite/numeric contract suite | Broker canlı quantization snapshot yok |
+| 11 | `BLOCKED_PLATFORM` | sandbox negatif suite ve fail-closed code | Windows AppContainer/restricted-token ve POSIX namespace/ACL kanıtı yok |
+| 12 | `FAIL_CODE` | acquisition coordinator/timeout/CAS negative suite | Provider-start/terminal-event/termination E2E fixture kanıtı yok |
+| 13 | `FAIL_CODE` | persistent lock ve `record_success` negatif suite | Restart + iki gerçek süreç concurrency kabulü yok |
+| 14 | `FAIL_CODE` | Node reader/timer/cancel negatif suite | Yavaş header/body ve >16 MiB fixture E2E kanıtı yok |
+| 15 | `FAIL_CODE` | nested `target_key`/unknown dataset negatif suite | Residual-zero 113 hedef apply smoke’u yok |
+| 16 | `FAIL_CODE` | raw/decoded/bundle recomputation ve detached-signature fail-closed code | İmzalı final manifest, source HEAD/event root ve repo dışı pinned key yok |
+| 17 | `FAIL_CODE` | evidence path/hash ve identity scan code | Repo dışı security/history/rotation kanıt kökü ve gerçek artifact seti yok |
+| 18 | `FAIL_CODE` | CAS/target/terminal contract ve coordinator code | Provider erişimi, fixture isolation, crash/resume/account-switch E2E kabulü yok |
+| 19 | `BLOCKED_EXTERNAL` | `outputs/reports/dukascopy_reacquisition_v5/bundle_audit.json` SHA `b14daa3d4dbdb35109bb07e47e9ccc5887c02f7779503969efb72059f9f032cb` | 14 VERIFIED_LEGACY, 3 INVALID_LEGACY, 1 INCOMPLETE_STAGING, 95 MISSING; residual 99; provider call 0; final signed manifest yok |
+| 20 | `BLOCKED_EXTERNAL` | `test_super1_instruction_19_22.py`; denylist olmadan açık blocked sonucu | Hesap sahibinin repo dışı denylist’i yok; public/history `UNASSESSED_MISSING_DENYLIST` |
+| 21 | `BLOCKED_EXTERNAL` | no-push çalışma kuralı ve identity scan code | Owner-approved sanitized mirror, remote ref re-scan ve explicit lease yok |
+| 22 | `BLOCKED_EXTERNAL` | deployment binding yalnız doğrulama kapısı olarak kaldı | Broker owner rotation/revocation ve yeni private signed binding kanıtı yok |
 
 ## Veri, güvenlik ve yayın sınırı
 
 - Frozen inventory SHA: `a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075`; 113 unique hedef değişmedi.
 - Acquisition state SHA: `c42eecf3bc6f4ae4a000a9f4a11f7c43140d147dfa9dbb3dce940c8a9a8dbccb`; state `DEFERRED_RATE_LIMIT`, provider call `0`.
-- Dört korumalı untracked girdi değiştirilmedi ve stage edilmedi.
-- Broker hesabı, parola, private key, remote history, fetch/pull/tag/push veya live order işlemi yapılmadı.
-- Current V4 runtime chain doğrulandı: candidate artifact `e0aa5d771befad1b8017d61b78a0f4732b7e7c4f9f40b7995da0de0509bd1b8c`, engine `0de20902eade693fb0a4688dd5fda505fe97e2497994293fde5f3fd20bdef194`, deal schema `109369101e71b9fe29be181257976efe9bdd3ec590ab001ac4463a55674b202d`, config `f861ac48c09dff3c3faf688f586c66cb9404d3c47bcdf85565f0d056390f7934`, signal contract `ae5e3c3d6ea67685384c2b36e779502969927f2b57721a848707b49278d3ee94`.
+- V4 dosyaları 660933a blob’larıyla birebir korunuyor: candidate `e02bad2aa7af3c3ee1db8fb1199e3217a50d117a`, manifest `bed6c345ec9ae5b291aeec2d46b14592a2bea33e`, signal `f898ab60ad147df4f2b35ab0662a71b84a4866c9`, config `2dc60b25c7f3489c4baa12a1ecd06ae064f9da1c`.
+- V5 candidate file `1794ec151dfeced2cc3532647c8b25c6e8ac1ff8b6479646d0d38784d196a8a4`, artifact `3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440`, signal `3ab042d941b5fc31411cbcd309d6d5a2935240a76ef5c570fc22dfee8703398d`, config `ef8582ce0a0d5ff4e251a21ba93e7ae912a2939a170070d0cfd3781663ae7ab5`, manifest `bb2bbc1445909703bf6c96e8c57d1c715944a820e735063eabc1a7a69559450b`, current engine `2330d9eb9466dc624fbbbefeb77704d03b2e614fd10d933f465623a74f892124`.
+- Korunmuş untracked girdiler değiştirilmedi ve stage edilmedi. SHA-256’ları: `7cc0518a0c5957102cd867e358316761ca8330d80ecc0662fe84ea67f94df1ec` (3m manifest), `167259c5cc4cebde76d2c5d7b70ed65aa8f21c2ace2e8a10ace48b1e7a8a4839` (5m manifest), `af37ef2ff5e3b489df7d715aa826fd746af9138d762300661b48a783e3eecca3` (takvim), ve legacy backup dört dosyasında sırasıyla `e0fbaecf29dfc9208cfdd830c36d4264972a3ecc8bce78eb0f4ddafe6c2be130`, `d6785a2b6a80ad5d5de45ea6c33a9d38d343443fe0c4aa14667c5be3ef081d9d`, `88f0b9f91913ed4b1ccc2a7f5b4cb3ece181dca2d7bd4bd1a915dcae004a7f5b`, `1f7104e6b20676406102b6c798af05c41a2c31620e011662624ba229b1a5d683`.
+- Report commit öncesi promotion working tree yalnız bu dört protected untracked girdiyi gösteriyordu; protected girdilerin hiçbiri staged olmadı.
