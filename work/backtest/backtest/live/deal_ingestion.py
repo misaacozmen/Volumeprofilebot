@@ -843,21 +843,17 @@ def realized_r(
     return float(total)
 
 
-def last_strategy_times(
+def last_account_entry_time(
     deals: Iterable[Mapping[str, Any]],
     *,
-    strategy_matcher: Callable[[Mapping[str, Any]], bool],
     in_values: set[Any],
     inout_values: set[Any],
     exit_values: set[Any],
     out_by_values: set[Any],
-) -> tuple[datetime | None, datetime | None]:
+) -> datetime | None:
     last_entry: datetime | None = None
-    last_loss: datetime | None = None
     for source in deals:
         deal = dict(source)
-        if not strategy_matcher(deal):
-            continue
         entry = deal.get("entry")
         if entry not in in_values | inout_values | exit_values | out_by_values:
             raise DealIngestionError(f"broker deal {deal_id(deal)} has an unknown entry type")
@@ -865,13 +861,4 @@ def last_strategy_times(
         assert timestamp is not None
         if entry in in_values | inout_values and (last_entry is None or timestamp > last_entry):
             last_entry = timestamp
-        if entry in exit_values | inout_values | out_by_values:
-            values = []
-            for field in ("profit", "commission", "swap", "fee"):
-                value = deal.get(field)
-                if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)):
-                    raise DealIngestionError(f"broker deal {deal_id(deal)} cannot be converted to R: {field}")
-                values.append(float(value))
-            if sum(values) < 0 and (last_loss is None or timestamp > last_loss):
-                last_loss = timestamp
-    return last_entry, last_loss
+    return last_entry

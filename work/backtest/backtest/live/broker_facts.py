@@ -8,12 +8,13 @@ import hashlib
 import json
 import math
 from numbers import Real
-from typing import Any, Callable, Mapping
+from threading import Lock
+from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .contracts import BrokerSnapshot, InstrumentContract
-from .deal_ingestion import DealIngestionError, daily_deals, last_strategy_times, realized_r
+from .deal_ingestion import DealIngestionError, daily_deals, last_account_entry_time, realized_r
 
 
 class BrokerFactsError(RuntimeError):
@@ -78,6 +79,7 @@ class BrokerFactsBuilder:
         deal_in_values: set[Any] | None = None,
         deal_inout_values: set[Any] | None = None,
         deal_out_by_values: set[Any] | None = None,
+        whitelist_instrument_ids: Sequence[str] | None = None,
     ) -> None:
         self.read = read
         self.order_calc_profit = order_calc_profit
@@ -92,6 +94,7 @@ class BrokerFactsBuilder:
         self.deal_in_values = deal_in_values or {0, "0", "IN", "DEAL_ENTRY_IN"}
         self.deal_inout_values = deal_inout_values or {2, "2", "INOUT", "DEAL_ENTRY_INOUT"}
         self.deal_out_by_values = deal_out_by_values or {3, "3", "OUT_BY", "DEAL_ENTRY_OUT_BY"}
+        self.whitelist_instrument_ids = tuple(dict.fromkeys(str(value) for value in (whitelist_instrument_ids or ())))
 
     def _collection(self, operation: str, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
         value = self.read(operation, *args, **kwargs)
@@ -183,7 +186,8 @@ class BrokerFactsBuilder:
         """
         known = self.deal_in_values | self.deal_inout_values | self.deal_out_values | self.deal_out_by_values
         entry_keys: set[tuple[str, str]] = set()
-        entry_counts: dict[str, int] = {default_contract.instrument_id: 0}
+        instrument_ids = set(self.whitelist_instrument_ids) | {default_contract.instrument_id}
+        entry_counts: dict[str, int] = {instrument_id: 0 for instrument_id in instrument_ids}
         for deal in deals:
             entry = deal.get("entry")
             if entry not in known:
@@ -204,7 +208,7 @@ class BrokerFactsBuilder:
             entry_counts[resolved.instrument_id] = entry_counts.get(resolved.instrument_id, 0) + 1
 
         def exposure_counts(rows: tuple[dict[str, Any], ...], field: str) -> dict[str, int]:
-            result: dict[str, int] = {default_contract.instrument_id: 0}
+            result: dict[str, int] = {instrument_id: 0 for instrument_id in instrument_ids}
             for row in rows:
                 symbol = str(row.get("symbol") or "")
                 resolved = self._resolve_contract(symbol, default_contract)
@@ -232,6 +236,8 @@ class BrokerFactsBuilder:
         if start > end:
             raise BrokerFactsError("broker history interval is invalid")
         with self.mutex():
+            query_started_at = datetime.now(timezone.utc)
+            query_sequence = self._next_query_sequence()
             account = self.read("account_info")
             if account is None:
                 raise BrokerFactsError("broker account snapshot is unknown")
@@ -281,9 +287,8 @@ class BrokerFactsBuilder:
             for deal in owned_deals:
                 owned_deal_ids.append(str(deal.get("deal_id") or deal.get("ticket") or ""))
             try:
-                last_entry, last_loss = last_strategy_times(
+                last_entry = last_account_entry_time(
                     deals,
-                    strategy_matcher=self.strategy_matcher,
                     in_values=self.deal_in_values,
                     inout_values=self.deal_inout_values,
                     exit_values=self.deal_out_values,
@@ -294,6 +299,7 @@ class BrokerFactsBuilder:
             total_entry_count, entry_counts, position_counts, pending_counts = self._account_entry_counts(
                 daily_deal_rows, positions, pending, contract
             )
+            query_completed_at = datetime.now(timezone.utc)
             query_id = uuid4().hex
             deal_facts_hash = hashlib.sha256(
                 json.dumps(deals, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode("utf-8")
@@ -319,10 +325,11 @@ class BrokerFactsBuilder:
                 "total_entry_count": total_entry_count, "entry_counts_by_instrument": entry_counts,
                 "open_position_counts_by_instrument": position_counts, "pending_order_counts_by_instrument": pending_counts,
                 "last_accepted_entry_at": None if last_entry is None else last_entry.isoformat(),
-                "last_terminal_loss_at": None if last_loss is None else last_loss.isoformat(),
                 "owned_deal_ids": owned_deal_ids, "policy_hash": policy_hash,
                 "instrument_contract_hash": contract.contract_hash,
                 "account_login": str(account_login), "broker_query_id": query_id,
+                "query_started_at": query_started_at.isoformat(), "query_completed_at": query_completed_at.isoformat(),
+                "broker_query_sequence": query_sequence, "broker_read_operations": ("account_info", "positions_get", "orders_get", "history_deals_get"),
                 "history_start": history_start.isoformat(), "history_end": history_end.isoformat(),
                 "deal_facts_hash": deal_facts_hash,
                 "deal_reconciliation_at": current.isoformat(),
@@ -339,7 +346,7 @@ class BrokerFactsBuilder:
                 order_calc_profit=self.order_calc_profit, order_calc_margin=self.order_calc_margin,
                 total_entry_count=total_entry_count, entry_counts_by_instrument=entry_counts,
                 open_position_counts_by_instrument=position_counts, pending_order_counts_by_instrument=pending_counts,
-                last_accepted_entry_at=last_entry, last_terminal_loss_at=last_loss,
+                last_accepted_entry_at=last_entry,
                 owned_deal_ids=tuple(owned_deal_ids), policy_hash=policy_hash,
                 instrument_contract_hash=contract.contract_hash,
                 account_login=str(account_login), broker_query_id=query_id,
@@ -347,4 +354,16 @@ class BrokerFactsBuilder:
                 deal_reconciliation_at=current,
                 deal_watermark_time_msc=watermark_time_msc,
                 deal_watermark_ticket=watermark_ticket,
+                query_started_at=query_started_at, query_completed_at=query_completed_at,
+                broker_query_sequence=query_sequence,
+                broker_read_operations=("account_info", "positions_get", "orders_get", "history_deals_get"),
             )
+
+    _query_sequence_lock = Lock()
+    _query_sequence = 0
+
+    @classmethod
+    def _next_query_sequence(cls) -> int:
+        with cls._query_sequence_lock:
+            cls._query_sequence += 1
+            return cls._query_sequence

@@ -1167,6 +1167,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 starting_risk_reader=ingestor.starting_risk_cash,
                 strategy_matcher=belongs_to_super1,
                 mutex=order_mutex,
+                whitelist_instrument_ids=tuple(dict(policy.instrument_whitelist)),
                 contract_resolver=lambda broker_symbol: registry.symbol_info(
                     broker_symbol, self._retry_mt5_read("symbol_info", broker_symbol)
                 ),
@@ -1812,6 +1813,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                         starting_risk_reader=ingestor.starting_risk_cash,
                         strategy_matcher=lambda _row: True,
                         mutex=order_mutex,
+                        whitelist_instrument_ids=tuple(dict(policy.instrument_whitelist)),
                     ).build(
                         now=now.to_pydatetime(),
                         contract=contract,

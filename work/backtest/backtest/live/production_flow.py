@@ -130,6 +130,7 @@ class ProductionOrderFlow:
         *,
         account_key: str,
         previous: BrokerSnapshot | None = None,
+        approval_validated_at: datetime | None = None,
     ) -> None:
         account_login = str(snapshot.account_login or "").strip()
         if not account_login or account_login != str(account_key):
@@ -139,11 +140,27 @@ class ProductionOrderFlow:
             raise ProductionFlowError("broker query identity is missing")
         if not isinstance(snapshot.as_of, datetime):
             raise ProductionFlowError("broker query time is missing")
+        started = snapshot.query_started_at
+        completed = snapshot.query_completed_at
+        sequence = snapshot.broker_query_sequence
+        operations = tuple(snapshot.broker_read_operations)
+        if not isinstance(started, datetime) or not isinstance(completed, datetime) or started > completed:
+            raise ProductionFlowError("broker query interval is missing or invalid")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
+            raise ProductionFlowError("broker query sequence is missing")
+        if operations != ("account_info", "positions_get", "orders_get", "history_deals_get"):
+            raise ProductionFlowError("broker query did not refresh the complete broker-read set")
+        if approval_validated_at is not None and started <= approval_validated_at:
+            raise ProductionFlowError("final broker query started before approval validation")
         if previous is not None:
             if query_id == str(previous.broker_query_id or "").strip():
                 raise ProductionFlowError("approval final check reused the prior broker query")
             if snapshot.as_of < previous.as_of:
                 raise ProductionFlowError("approval final broker query is older than the precheck")
+            if sequence <= int(previous.broker_query_sequence or 0):
+                raise ProductionFlowError("approval final broker query sequence did not advance")
+            if started <= (previous.query_completed_at or previous.query_started_at or datetime.min.replace(tzinfo=timezone.utc)):
+                raise ProductionFlowError("approval final broker query reused the prior read boundary")
 
     def send(
         self,
@@ -233,10 +250,18 @@ class ProductionOrderFlow:
         self._event("verified operator approval")
         state.transition(OrderState.OPERATOR_APPROVED)
         self._audit_state(proposal, state.state, campaign_id=campaign_id, account_key=account_key, payload={"approval_id": approval_id})
+        approval_validated_at = d.approval_store.now()
+        if approval_validated_at.tzinfo is None:
+            approval_validated_at = approval_validated_at.replace(tzinfo=timezone.utc)
         second = snapshot_provider()
         if not isinstance(second, BrokerSnapshot):
             raise ProductionFlowError("final risk check did not use a fresh broker snapshot")
-        self._validate_broker_query(second, account_key=account_key, previous=first)
+        self._validate_broker_query(
+            second,
+            account_key=account_key,
+            previous=first,
+            approval_validated_at=approval_validated_at,
+        )
         self._event("fresh broker snapshot")
         try:
             order = d.risk_guard.approve(proposal, second, approval_id=approval_id)

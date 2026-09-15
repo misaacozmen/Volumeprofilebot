@@ -13,6 +13,7 @@ from backtest.live.approval import ApprovalStore, wire_request_hash
 from backtest.live.audit_ledger import AuditLedger
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerSnapshot, BrokerEvidence, InstrumentContract, LiveRiskPolicy
+from backtest.live.deal_ingestion import TerminalDealIngestor
 from backtest.live.halt import HaltController
 from backtest.live.instruments import InstrumentRegistry
 from backtest.live.order_state import OrderStateMachine
@@ -110,14 +111,20 @@ def _flow(tmp_path: Path, adapter: _NoSendAdapter, *, clock=None) -> ProductionO
     baseline = LockedOOSBaseline(CANDIDATE, 100, 100, (2022, 2023, 2024), 0.0, 1.0, 2.0, 7)
     health = StrategyHealth("ACTIVE", baseline=baseline, expected_candidate_hash=CANDIDATE)
     store = ApprovalStore(tmp_path / "approvals.sqlite3", now=lambda: NOW)
-    ledger = AuditLedger(tmp_path / "audit.sqlite3", campaign_id="campaign", account_key=ACCOUNT)
+    ledger = AuditLedger(tmp_path / "approvals.sqlite3", campaign_id="campaign", account_key=ACCOUNT)
+    deal_ingestor = TerminalDealIngestor(
+        tmp_path / "approvals.sqlite3", read_deals=lambda _start, _end: (),
+        account_key=ACCOUNT, campaign_id="campaign", candidate_hash=CANDIDATE,
+        campaign_start=NOW - timedelta(days=365), magic=260805101, now=lambda: NOW,
+        private_terminal_binding_hash="b" * 63 + "c",
+    )
     return ProductionOrderFlow(ProductionDependencies(
         risk_guard=RiskGuard(policy=_policy(), clock=clock or (lambda: NOW)),
         order_state=OrderStateMachine(), audit_ledger=ledger,
         halt_controller=HaltController(tmp_path / "runtime"),
         instrument_registry=InstrumentRegistry([contract, _contract("spx", "US500Cash")]),
         approval_store=store, runtime_settings=RuntimeSettings("DEMO_ORDER"),
-        strategy_health=health, execution_adapter=adapter,
+        strategy_health=health, execution_adapter=adapter, deal_ingestor=deal_ingestor,
     ))
 
 
@@ -400,6 +407,12 @@ def _same_sqlite_process_worker(db_path: str, approval_id: str, name: str, barri
             instrument_registry=InstrumentRegistry([contract, _contract("spx", "US500Cash")]),
             approval_store=store, runtime_settings=RuntimeSettings("DEMO_ORDER"),
             strategy_health=health, execution_adapter=_ProcessExecutionAdapter(),
+            deal_ingestor=TerminalDealIngestor(
+                db_path, read_deals=lambda _start, _end: (), account_key=ACCOUNT,
+                campaign_id="campaign", candidate_hash=CANDIDATE,
+                campaign_start=NOW - timedelta(days=365), magic=260805101, now=lambda: NOW,
+                private_terminal_binding_hash="b" * 63 + "c",
+            ),
         )
         builder = _builder(deals=tuple({
             "deal_id": f"spx-entry-{index}", "order": f"spx-order-{index}",

@@ -142,7 +142,6 @@ class BrokerSnapshot:
     open_position_counts_by_instrument: Mapping[str, int] = field(default_factory=dict)
     pending_order_counts_by_instrument: Mapping[str, int] = field(default_factory=dict)
     last_accepted_entry_at: datetime | None = None
-    last_terminal_loss_at: datetime | None = None
     owned_deal_ids: Sequence[str] = field(default_factory=tuple)
     policy_hash: str = ""
     instrument_contract_hash: str = ""
@@ -152,6 +151,10 @@ class BrokerSnapshot:
     deal_watermark_ticket: int | None = None
     account_login: str = ""
     broker_query_id: str = ""
+    query_started_at: datetime | None = None
+    query_completed_at: datetime | None = None
+    broker_query_sequence: int | None = None
+    broker_read_operations: Sequence[str] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)

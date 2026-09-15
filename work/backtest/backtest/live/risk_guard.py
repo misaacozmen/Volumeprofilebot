@@ -173,14 +173,16 @@ class RiskGuard:
             allowed_ids = set(whitelist)
             if any(str(key) not in allowed_ids for key in (*entry_counts.keys(), *position_counts.keys(), *pending_counts.keys())):
                 raise RiskGuardError("broker exposure contains an instrument outside the signed whitelist")
+            if any(set(values) != allowed_ids for values in (entry_counts, position_counts, pending_counts)):
+                raise RiskGuardError("broker exposure counts must contain the complete signed whitelist")
             for values in (entry_counts, position_counts, pending_counts):
                 for key, value in values.items():
                     exact_count(values, str(key))
-            if sum(exact_count(entry_counts, key) for key in entry_counts) != total_entries:
+            if sum(exact_count(entry_counts, key) for key in allowed_ids) != total_entries:
                 raise RiskGuardError("broker entry counts do not reconcile with the account total")
-            if sum(exact_count(position_counts, key) for key in position_counts) != len(self._value(snapshot, "open_positions")):
+            if sum(exact_count(position_counts, key) for key in allowed_ids) != len(self._value(snapshot, "open_positions")):
                 raise RiskGuardError("broker position counts do not reconcile with the broker snapshot")
-            if sum(exact_count(pending_counts, key) for key in pending_counts) != len(self._value(snapshot, "pending_orders")):
+            if sum(exact_count(pending_counts, key) for key in allowed_ids) != len(self._value(snapshot, "pending_orders")):
                 raise RiskGuardError("broker pending counts do not reconcile with the broker snapshot")
             if total_entries >= self.policy.max_total_trades_per_day or exact_count(entry_counts, proposal.instrument_id) >= dict(self.policy.max_trades_per_day_by_instrument)[proposal.instrument_id]:
                 raise RiskGuardError("daily broker trade-count limit is active")
