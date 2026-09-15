@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import multiprocessing
+from pathlib import Path
+import sqlite3
+import time
 
 import pytest
 
 from backtest.dukascopy_acquisition import (
     AcquisitionDeferred,
+    AcquisitionCoordinator,
+    AcquisitionRunLedger,
     HttpCas,
     ProviderProcessLock,
     RateLimitController,
     parse_retry_after,
     rate_limit_delay,
+    sha256_bytes,
 )
 from scripts.reacquire_invalid_sessions_v5 import load_authoritative_targets
 
@@ -64,3 +71,108 @@ def test_authoritative_inventory_has_113_targets_and_missing_nq_record() -> None
     )
     assert len(targets) == 113
     assert any(str(row["date"]) == "2025-04-16" and row["leg"] == "nq" for row in targets)
+
+
+def _coordinator_process_worker(fixture_root: str, cas_root: str, ledger_path: str, result_queue) -> None:
+    coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=cas_root, ledger_path=ledger_path)
+    original = coordinator._fixture_bytes
+
+    def slow_fixture(*args, **kwargs):
+        time.sleep(0.5)
+        return original(*args, **kwargs)
+
+    coordinator._fixture_bytes = slow_fixture
+    try:
+        result = coordinator.run(
+            run_id="a" * 40,
+            source_commit="b" * 40,
+            source_tree_sha256="c" * 64,
+            artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 12}],
+        )
+    except Exception as exc:
+        result_queue.put(("ERROR", str(exc)))
+    else:
+        result_queue.put(("OK", result[0]["state"]))
+    finally:
+        coordinator.close()
+
+
+def test_fixture_coordinator_rejects_provider_and_verifies_cas_on_resume(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    body = b"fixture-body"
+    (fixture_root / "one.bin").write_bytes(body)
+    with pytest.raises(ValueError, match="provider calls are forbidden"):
+        AcquisitionCoordinator(
+            fixture_root=fixture_root,
+            cas_root=tmp_path / "cas-provider",
+            ledger_path=tmp_path / "provider.sqlite3",
+            provider=lambda: None,
+        )
+    coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=tmp_path / "cas", ledger_path=tmp_path / "ledger.sqlite3")
+    spec = {"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(body), "bytes": len(body)}
+    first = coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[spec])
+    assert first[0]["state"] == "COMMITTED"
+    Path(first[0]["cas_path"]).write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="CAS evidence"):
+        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[spec])
+    coordinator.close()
+
+
+def test_fixture_coordinator_rejects_declared_hash_and_byte_count_mismatch(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    (fixture_root / "one.bin").write_bytes(b"fixture-body")
+    coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=tmp_path / "cas", ledger_path=tmp_path / "ledger.sqlite3")
+    with pytest.raises(ValueError, match="declared CAS identity"):
+        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": "d" * 64, "bytes": 12}])
+    with pytest.raises(ValueError, match="declared CAS identity"):
+        coordinator.run(run_id="b" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 11}])
+    coordinator.close()
+
+
+def test_forged_committed_row_never_resumes_as_verified(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    (fixture_root / "one.bin").write_bytes(b"fixture-body")
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = AcquisitionRunLedger(db_path)
+    ledger.start_run("a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64)
+    assert ledger.reserve_artifact("a" * 40, "one", "one.bin") == "IN_PROGRESS"
+    ledger.connection.execute(
+        "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=? WHERE run_id=? AND artifact_id=?",
+        ("d" * 64, 12, "a" * 40, "one"),
+    )
+    ledger.connection.commit()
+    ledger.close()
+    coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=tmp_path / "cas", ledger_path=db_path)
+    with pytest.raises(ValueError, match="CAS evidence"):
+        coordinator.run(
+            run_id="a" * 40,
+            source_commit="b" * 40,
+            source_tree_sha256="c" * 64,
+            artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 12}],
+        )
+    coordinator.close()
+
+
+def test_same_run_artifact_race_has_one_lease_owner_and_one_terminal_commit(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    (fixture_root / "one.bin").write_bytes(b"fixture-body")
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    processes = [
+        context.Process(target=_coordinator_process_worker, args=(str(fixture_root), str(tmp_path / "cas"), str(tmp_path / "ledger.sqlite3"), queue))
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=30)
+        assert process.exitcode == 0
+    results = [queue.get(timeout=5) for _ in processes]
+    assert sorted(results) == [("ERROR", "acquisition artifact lease is held by another live process"), ("OK", "COMMITTED")]
+    connection = sqlite3.connect(tmp_path / "ledger.sqlite3")
+    assert connection.execute("SELECT state FROM acquisition_artifacts").fetchone() == ("COMMITTED",)
+    connection.close()

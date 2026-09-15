@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
@@ -30,6 +30,7 @@ STATE_SCHEMA_VERSION = 2
 REQUEST_METHOD_CONTRACT_VERSION = "DUKASCOPY_HTTP_REQUEST_V5"
 MIN_PROVIDER_SPACING_SECONDS = 2.0
 UNKNOWN_ATTEMPT_COOLDOWN_SECONDS = 24 * 60 * 60
+ACQUISITION_LEASE_SECONDS = 15 * 60
 
 
 def utc_now() -> datetime:
@@ -539,7 +540,8 @@ class AcquisitionRunLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None, check_same_thread=False)
         self.connection.execute("PRAGMA busy_timeout=30000")
-        if int(self.connection.execute("PRAGMA foreign_keys=ON").fetchone()[0]) != 1:
+        self.connection.execute("PRAGMA foreign_keys=ON")
+        if int(self.connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise ValueError("acquisition ledger requires SQLite foreign keys")
         if str(self.connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":
             raise ValueError("acquisition ledger requires SQLite WAL")
@@ -560,12 +562,23 @@ class AcquisitionRunLedger:
                 body_sha256 TEXT,
                 body_bytes INTEGER,
                 fixture_path TEXT NOT NULL,
+                lease_pid INTEGER,
+                lease_process_start_token TEXT,
+                lease_expires_at_utc TEXT,
                 updated_at_utc TEXT NOT NULL,
                 PRIMARY KEY (run_id, artifact_id),
                 FOREIGN KEY (run_id) REFERENCES acquisition_runs(run_id)
             );
             """
         )
+        columns = {str(row[1]) for row in self.connection.execute("PRAGMA table_info(acquisition_artifacts)")}
+        for name, definition in (
+            ("lease_pid", "INTEGER"),
+            ("lease_process_start_token", "TEXT"),
+            ("lease_expires_at_utc", "TEXT"),
+        ):
+            if name not in columns:
+                self.connection.execute(f'ALTER TABLE acquisition_artifacts ADD COLUMN "{name}" {definition}')
 
     def _transaction(self):
         class Transaction:
@@ -606,15 +619,42 @@ class AcquisitionRunLedger:
         run_id, artifact_id, fixture_path = str(run_id).strip(), str(artifact_id).strip(), str(fixture_path).strip()
         if not run_id or not artifact_id or not fixture_path:
             raise ValueError("acquisition artifact identity is incomplete")
+        pid = os.getpid()
+        process_token = process_start_token(pid)
+        now = utc_now()
+        expires = iso_utc(now + timedelta(seconds=ACQUISITION_LEASE_SECONDS))
         with self._transaction() as connection:
             if connection.execute("SELECT 1 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone() is None:
                 raise ValueError("acquisition artifact references an unknown run")
-            existing = connection.execute("SELECT state FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?", (run_id, artifact_id)).fetchone()
+            existing = connection.execute(
+                "SELECT state,lease_pid,lease_process_start_token,lease_expires_at_utc FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
+                (run_id, artifact_id),
+            ).fetchone()
             if existing is not None:
-                return str(existing[0])
+                state = str(existing[0])
+                if state == "COMMITTED":
+                    return state
+                if state != "IN_PROGRESS":
+                    raise ValueError("acquisition artifact has an invalid persisted state")
+                lease_pid = existing[1]
+                lease_token = str(existing[2] or "")
+                lease_expires = existing[3]
+                lease_active = False
+                if lease_pid is not None and lease_token and lease_expires:
+                    try:
+                        lease_active = parse_utc(str(lease_expires)) > now and process_start_token(int(lease_pid)) == lease_token
+                    except (OSError, ValueError, TypeError):
+                        lease_active = False
+                if lease_active and (int(lease_pid) != pid or lease_token != process_token):
+                    raise ValueError("acquisition artifact lease is held by another live process")
+                connection.execute(
+                    "UPDATE acquisition_artifacts SET fixture_path=?,lease_pid=?,lease_process_start_token=?,lease_expires_at_utc=?,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
+                    (fixture_path, pid, process_token, expires, iso_utc(now), run_id, artifact_id),
+                )
+                return state
             connection.execute(
-                "INSERT INTO acquisition_artifacts(run_id,artifact_id,state,fixture_path,updated_at_utc) VALUES(?,?,?,?,?)",
-                (run_id, artifact_id, "IN_PROGRESS", fixture_path, iso_utc(utc_now())),
+                "INSERT INTO acquisition_artifacts(run_id,artifact_id,state,fixture_path,lease_pid,lease_process_start_token,lease_expires_at_utc,updated_at_utc) VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, artifact_id, "IN_PROGRESS", fixture_path, pid, process_token, expires, iso_utc(now)),
             )
         return "IN_PROGRESS"
 
@@ -624,7 +664,7 @@ class AcquisitionRunLedger:
             raise ValueError("acquisition body byte count is invalid")
         with self._transaction() as connection:
             updated = connection.execute(
-                "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=?,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
+                "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=?,lease_pid=NULL,lease_process_start_token=NULL,lease_expires_at_utc=NULL,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
                 (body_sha256, int(body_bytes), iso_utc(utc_now()), str(run_id), str(artifact_id)),
             ).rowcount
             if updated == 0:
@@ -632,6 +672,18 @@ class AcquisitionRunLedger:
                 if existing is not None and existing[0] == "COMMITTED" and existing[1] == body_sha256 and int(existing[2]) == int(body_bytes):
                     return
                 raise ValueError("acquisition artifact is not an in-progress row")
+
+    def artifact(self, run_id: str, artifact_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT run_id,artifact_id,state,body_sha256,body_bytes,fixture_path FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
+            (str(run_id), str(artifact_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": str(row[0]), "artifact_id": str(row[1]), "state": str(row[2]),
+            "body_sha256": row[3], "body_bytes": row[4], "fixture_path": str(row[5]),
+        }
 
     def close(self) -> None:
         self.connection.close()
@@ -667,6 +719,19 @@ class AcquisitionCoordinator:
             raise ValueError("fixture bytes do not match the declared CAS identity")
         return body
 
+    def _verify_committed(self, run_id: str, artifact_id: str) -> dict[str, Any]:
+        record = self.ledger.artifact(run_id, artifact_id)
+        if record is None or record["state"] != "COMMITTED":
+            raise ValueError("persisted artifact is not committed")
+        body_sha256 = require_sha256(record.get("body_sha256"), "committed artifact body hash")
+        body_bytes = record.get("body_bytes")
+        if isinstance(body_bytes, bool) or not isinstance(body_bytes, int) or body_bytes < 0:
+            raise ValueError("committed artifact byte count is invalid")
+        cas_path = self.cas.path_for(body_sha256)
+        if not cas_path.is_file() or cas_path.stat().st_size != body_bytes or sha256_bytes(cas_path.read_bytes()) != body_sha256:
+            raise ValueError("committed artifact CAS evidence is invalid")
+        return {"run_id": run_id, "artifact_id": artifact_id, "state": "COMMITTED", "body_sha256": body_sha256, "body_bytes": body_bytes, "cas_path": str(cas_path)}
+
     def run(self, *, run_id: str, source_commit: str, source_tree_sha256: str, artifacts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         self.ledger.start_run(run_id, source_commit=source_commit, source_tree_sha256=source_tree_sha256)
         output: list[dict[str, Any]] = []
@@ -675,7 +740,7 @@ class AcquisitionCoordinator:
             fixture_path = str(item.get("fixture_path") or "").strip()
             state = self.ledger.reserve_artifact(run_id, artifact_id, fixture_path)
             if state == "COMMITTED":
-                output.append({"run_id": run_id, "artifact_id": artifact_id, "state": state})
+                output.append(self._verify_committed(run_id, artifact_id))
                 continue
             body = self._fixture_bytes(fixture_path, expected_sha256=str(item.get("sha256") or ""), expected_bytes=int(item.get("bytes", -1)))
             body_sha256, cas_path = self.cas.put(body)

@@ -440,6 +440,8 @@ def apply_verified_reacquisitions(
     frame_loader: Callable[[Path], pd.DataFrame],
 ) -> dict[tuple[str, str], pd.DataFrame]:
     """Apply only paths explicitly attested by the strict final manifest."""
+    if not isinstance(manifest, ValidatedFinalManifest):
+        raise ValueError("validated final manifest object is required")
     result = {key: frame.copy() for key, frame in loaded.items()}
     for row in manifest["targets"]:
         if not isinstance(row, Mapping):
