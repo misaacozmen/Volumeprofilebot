@@ -51,7 +51,7 @@ def minimal_subprocess_environment(environment: Mapping[str, str] | None = None)
 
 SUPPORTED_ENV = frozenset(
     {
-        "XM_MT5_TERMINAL_PATH", "XM_MT5_SERVER", "XM_MT5_SIGNED_SERVER_ASSERTION",
+        "XM_MT5_TERMINAL_PATH", "XM_MT5_SERVER", "XM_MT5_ACCOUNT_LOGIN", "XM_MT5_SIGNED_SERVER_ASSERTION",
         "XM_MT5_READ_ONLY_PASSWORD", "XM_MT5_PASSWORD", "CAPITAL_IDENTIFIER",
         "CAPITAL_API_KEY", "CAPITAL_API_PASSWORD", "SUPER1_INVOCATION_NONCE",
         "SUPER1_RUNNER_SID", "SUPER1_LAUNCHER_SHA256", "SUPER1_INVOCATION_STARTED_AT",
@@ -78,6 +78,7 @@ ENVIRONMENT_SCHEMA = tuple(
     for key, target, kind, secret in (
         ("XM_MT5_TERMINAL_PATH", "terminal_path", "path", False),
         ("XM_MT5_SERVER", "server", "string", False),
+        ("XM_MT5_ACCOUNT_LOGIN", "account_login", "integer", False),
         ("XM_MT5_SIGNED_SERVER_ASSERTION", "signed_server_assertion", "string", False),
         ("XM_MT5_READ_ONLY_PASSWORD", "read_only_password", "secret", True),
         ("XM_MT5_PASSWORD", "password", "secret", True),

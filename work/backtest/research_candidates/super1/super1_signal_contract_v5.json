@@ -29,11 +29,11 @@
     "generator_sha256": "ae608cabe5fcce40895972f66bf714cb2d2f638e084f99e88e8bcb95059ebe91",
     "payload_adapter_path": "scripts/run_forward_shadow.py",
     "payload_adapter_sha256": "4bdabaad2a8c43b6469f8c743eea11c5ed6f428ae2731786754a131d6ad00107",
-    "engine_source_sha256": "af84b07871c8dbca648c8f343c53b2b632d3620701743fba337c1500280eb337"
+    "engine_source_sha256": "1967758e0643129492b8166df58090377a2600b6f862f5dfb99de0b5190523f0"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
-    "sha256": "5b1698201c05d625a9e53010d44884f3c3fca213a76d736a16868958e495a395",
+    "sha256": "e9372c849a47310aaeeb62d5e93e9dcc92465f4a1d6f8dc09699bdd461a92c44",
     "account_identity_gate": "DETACHED_SIGNED_PRIVATE_BINDING_EQUALITY"
   },
   "safety": {

@@ -58,7 +58,10 @@ try:
         controller._write(state)
     try:
         result = coordinator.run(run_id=run_id, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[{"artifact_id": "artifact", "url": url}], repository_root=None)
+        second = coordinator.run(run_id=run_id, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[{"artifact_id": "artifact", "url": url}], repository_root=None) if mode == "ok" else None
         outcome = {"ok": True, "state": result[0]["state"]}
+        if second is not None:
+            outcome["second_state"] = second[0]["state"]
     except Exception as exc:
         outcome = {"ok": False, "error": type(exc).__name__, "message": str(exc)}
 finally:
@@ -69,6 +72,30 @@ state = json.loads((root / "state.json").read_text())
 events = state["request_events"]
 print(json.dumps({"outcome": outcome, "artifact_states": rows, "events": events, "provider_call_count": state["provider_call_count"], "circuit": state["hosts"].get("datafeed.dukascopy.com", {}).get("circuit"), "cas_count": len(list((root / "cas").rglob("*.bi5")))}, sort_keys=True))
 sys.exit(0 if outcome["ok"] else 1)
+'''
+
+
+SPACING_HARNESS = r'''
+import json, sys
+from datetime import datetime, timedelta, timezone
+from backtest.dukascopy_acquisition import AcquisitionDeferred, RateLimitController
+
+root = sys.argv[1]
+host = "datafeed.dukascopy.com"
+now = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+controller = RateLimitController(root + "/state.json", rng=lambda: 0)
+first = controller.before_request(host, now=now, run_id="run", artifact_id="one", transport_fixture=True)
+controller.finish_request(first, status=200, body_sha256="a" * 64, body_byte_count=1, endpoint="https://datafeed.dukascopy.com/test.bin", request_url_sha256="b" * 64, finished_at=now, transport_fixture=True)
+controller.record_success(host, now=now, transport_fixture=True)
+spacing_error = None
+try:
+    controller.before_request(host, now=now + timedelta(seconds=1), run_id="run", artifact_id="two", transport_fixture=True)
+except AcquisitionDeferred as exc:
+    spacing_error = exc.reason
+second = controller.before_request(host, now=now + timedelta(seconds=2), run_id="run", artifact_id="two", transport_fixture=True)
+controller.finish_request(second, status=200, body_sha256="c" * 64, body_byte_count=1, endpoint="https://datafeed.dukascopy.com/test.bin", request_url_sha256="b" * 64, finished_at=now + timedelta(seconds=2), transport_fixture=True)
+state = controller.store.read()
+print(json.dumps({"spacing_error": spacing_error, "last_start": state["hosts"][host]["last_provider_start_at_utc"], "event_count": len(state["request_events"]), "all_terminal": all(event["terminal"] for event in state["request_events"])}, sort_keys=True))
 '''
 
 
@@ -91,6 +118,9 @@ def test_provider_cli_statuses_commit_only_valid_200(tmp_path: Path, mode: str, 
     assert result["cas_count"] == (1 if status == 200 else 0)
     event = result["events"][0]
     assert event["terminal"] is True and event["status"] == status
+    if status == 200:
+        assert result["outcome"]["second_state"] == "COMMITTED"
+        assert len(result["events"]) == 1
 
 
 @pytest.mark.parametrize("mode,error_code", [("timeout", "TRANSPORT_TIMEOUT"), ("crash", "PROVIDER_PROCESS_CRASH")])
@@ -109,6 +139,13 @@ def test_provider_cli_crash_resume_commits_after_persisted_recovery(tmp_path: Pa
     assert resumed["returncode"] == 0 and resumed["artifact_states"] == [["COMMITTED"]]
     assert resumed["provider_call_count"] == 2 and resumed["cas_count"] == 1
     assert all(event["terminal"] is True for event in resumed["events"])
+
+
+def test_provider_rate_controller_spacing_is_persistent_in_subprocess(tmp_path: Path) -> None:
+    completed = subprocess.run([sys.executable, "-c", SPACING_HARNESS, str(tmp_path)], cwd=ROOT, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip())
+    assert result == {"all_terminal": True, "event_count": 2, "last_start": "2026-09-16T12:00:02Z", "spacing_error": "DEFERRED_PROVIDER_SPACING"}
 
 
 def test_provider_cli_concurrent_lease_has_one_call_and_one_commit(tmp_path: Path) -> None:

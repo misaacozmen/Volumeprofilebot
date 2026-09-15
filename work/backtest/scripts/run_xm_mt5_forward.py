@@ -1403,6 +1403,40 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         state: str,
         details: dict[str, object],
     ) -> None:
+        # Persist only a terminal snapshot that is still bound to the same
+        # verified demo account after the broker read set.  Two adjacent fresh
+        # identity reads close the account-switch race between the final MT5
+        # query and the SQLite transaction; drift is explicitly no-send.
+        try:
+            self._refresh_demo_identity()
+            first_scope = {
+                "login": int(getattr(self.account, "login", -1)),
+                "server": str(getattr(self.account, "server", "")),
+                "company": str(getattr(self.account, "company", "")),
+            }
+            self._refresh_demo_identity()
+            second_scope = {
+                "login": int(getattr(self.account, "login", -1)),
+                "server": str(getattr(self.account, "server", "")),
+                "company": str(getattr(self.account, "company", "")),
+            }
+            if first_scope != second_scope:
+                raise core.CriticalLiveError("MT5 account changed during the terminal read set")
+            details = {
+                **details,
+                "account_scope": second_scope,
+                "fresh_read_set": True,
+            }
+        except (BrokerStateUnknownError, core.CriticalLiveError) as exc:
+            state = "BROKER_STATE_UNKNOWN_NO_SEND"
+            details = {
+                **details,
+                "account_scope": None,
+                "fresh_read_set": False,
+                "reason": f"terminal snapshot account scope was not stable: {exc}",
+            }
+            core.write_no_send_sentinel(output_root, "BROKER_STATE_UNKNOWN", order_id=order_id)
+            core.write_fatal_latch(output_root, "BROKER_STATE_UNKNOWN", details["reason"], order_id=order_id)
         now = core.utc_now().isoformat()
         connection = self._ready_order_connection(output_root)
         try:

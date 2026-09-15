@@ -17,6 +17,49 @@ class CandidateValidationError(ValueError):
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 GIT_OID_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+V4_PROMOTION_EVIDENCE_HASH_FIELDS = (
+    "reacquisition_manifest_sha256",
+    "reacquisition_semantic_root_sha256",
+    "full_history_determinism_a_sha256",
+    "full_history_determinism_b_sha256",
+    "reliability_determinism_a_sha256",
+    "reliability_determinism_b_sha256",
+    "risk_xray_sha256",
+    "security_history_attestation_sha256",
+    "account_rotation_attestation_sha256",
+)
+V4_PROMOTION_EVIDENCE_FILE_FIELDS = tuple(
+    field.removesuffix("_sha256") + "_path"
+    for field in V4_PROMOTION_EVIDENCE_HASH_FIELDS
+    if field not in {"reacquisition_manifest_sha256", "reacquisition_semantic_root_sha256"}
+) + (
+    "final_manifest_attestation_path",
+    "final_manifest_signature_path",
+    "final_manifest_public_key_path",
+)
+V4_PROMOTION_EVIDENCE_KEYS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "semantic_state",
+        "account_binding_id_sha256",
+        "source_commit",
+        "source_tree_sha256",
+        "private_evidence_root",
+        "reacquisition_manifest_path",
+        "final_manifest_source_head_sha256",
+        "final_manifest_source_commit",
+        "final_manifest_source_tree_sha256",
+        "final_manifest_attestation_path",
+        "final_manifest_signature_path",
+        "final_manifest_public_key_path",
+        "final_manifest_attestation_sha256",
+        "final_manifest_signature_sha256",
+        "final_manifest_public_key_sha256",
+        *V4_PROMOTION_EVIDENCE_HASH_FIELDS,
+        *V4_PROMOTION_EVIDENCE_FILE_FIELDS,
+    }
+)
 INDEPENDENT_BASE_CODE_HASH = "bb333e7a5790b2b9d18e933707cc8f310d1ba55bff91ff611778c63da2bab42b"
 V4_REQUIRED_BINDING_PATHS = frozenset({
     "config_path", "calendar_path", "data_manifest_path", "signal_contract_path",
@@ -179,6 +222,77 @@ def _evidence_file(evidence_root: Path, value: Any, label: str) -> Path:
     if not resolved.is_file():
         raise CandidateValidationError(f"{label} is missing")
     return resolved
+
+
+def validate_v4_promotion_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    repository_root: Path,
+    manifest_path: Path,
+) -> Path:
+    """Validate the closed, external V4 promotion-evidence envelope.
+
+    A hex digest is only an assertion: every asserted file must exist, hash to
+    it, and bind back to the real final manifest's source identity.  Detached
+    signature verification remains in ``validate_final_manifest``.
+    """
+    if set(evidence) != V4_PROMOTION_EVIDENCE_KEYS:
+        raise CandidateValidationError("V4 promotion evidence closed schema is invalid")
+    if evidence.get("schema_version") != 1 or evidence.get("status") != "VERIFIED_COMPLETE" or evidence.get("semantic_state") != "V4_PROMOTION_EVIDENCE_VERIFIED":
+        raise CandidateValidationError("V4 promotion evidence state is invalid")
+    account_binding = _require_hash(evidence.get("account_binding_id_sha256"), "V4 account binding SHA-256")
+    if account_binding != str(evidence.get("account_binding_id_sha256")).lower():
+        raise CandidateValidationError("V4 account binding SHA-256 is not canonical")
+    for field in ("source_commit", "source_tree_sha256", "final_manifest_source_commit", "final_manifest_source_tree_sha256"):
+        value = str(evidence.get(field) or "")
+        if not GIT_OID_RE.fullmatch(value):
+            raise CandidateValidationError(f"V4 promotion evidence {field} is not a Git OID")
+    evidence_root = _evidence_root(repository_root, evidence.get("private_evidence_root"))
+    for field in V4_PROMOTION_EVIDENCE_HASH_FIELDS:
+        _require_hash(evidence.get(field), f"V4 promotion evidence {field}")
+    for field in V4_PROMOTION_EVIDENCE_FILE_FIELDS:
+        digest_field = field.removesuffix("_path") + "_sha256"
+        observed = sha256(
+            _evidence_file(evidence_root, evidence.get(field), f"V4 promotion evidence {field}").read_bytes()
+        ).hexdigest()
+        if observed != str(evidence[digest_field]).lower():
+            raise CandidateValidationError(f"V4 promotion evidence {digest_field} is not bound to the attested file")
+    rotation_path = _evidence_file(
+        evidence_root,
+        evidence.get("account_rotation_attestation_path"),
+        "V4 account rotation attestation",
+    )
+    rotation = _read_object(rotation_path, "V4 account rotation attestation")
+    rotation_keys = {
+        "schema_version", "status", "run_id", "old_binding_id_sha256", "new_binding_id_sha256",
+        "old_binding_revoked", "new_binding_active", "account_trade_mode", "account_identity_hmac_sha256",
+        "provider_issuer", "semantic_state", "effective_at_utc", "nonce", "source_commit",
+        "source_tree_oid", "signature_algorithm", "signature_b64", "signer_public_key_sha256",
+    }
+    if set(rotation) != rotation_keys or rotation.get("schema_version") != 1 or rotation.get("status") != "SIGNED" or rotation.get("semantic_state") != "ROTATED_DEMO" or rotation.get("account_trade_mode") != "DEMO" or rotation.get("old_binding_revoked") is not True or rotation.get("new_binding_active") is not True or not str(rotation.get("provider_issuer") or "").strip() or rotation.get("signature_algorithm") != "RSA-PSS-SHA256" or not str(rotation.get("signature_b64") or "").strip():
+        raise CandidateValidationError("V4 account rotation attestation schema or semantic state is invalid")
+    old_binding = _require_hash(rotation.get("old_binding_id_sha256"), "V4 old account binding SHA-256")
+    new_binding = _require_hash(rotation.get("new_binding_id_sha256"), "V4 new account binding SHA-256")
+    if old_binding == new_binding or new_binding != account_binding or rotation.get("source_commit") != evidence["source_commit"] or rotation.get("source_tree_oid") != evidence["source_tree_sha256"] or rotation.get("signer_public_key_sha256") != evidence["final_manifest_public_key_sha256"]:
+        raise CandidateValidationError("V4 account rotation binding differs")
+    if not GIT_OID_RE.fullmatch(str(rotation.get("source_commit") or "")) or not GIT_OID_RE.fullmatch(str(rotation.get("source_tree_oid") or "")) or not SHA256_RE.fullmatch(str(rotation.get("account_identity_hmac_sha256") or "")) or not re.fullmatch(r"[0-9a-fA-F]{64}", str(rotation.get("nonce") or "")):
+        raise CandidateValidationError("V4 account rotation identity is invalid")
+    final_manifest = _file(repository_root, str(evidence.get("reacquisition_manifest_path") or ""), "V4 reacquisition manifest evidence")
+    if final_manifest.resolve() != manifest_path.resolve():
+        raise CandidateValidationError("V4 reacquisition evidence path is not the validated final manifest")
+    if sha256(final_manifest.read_bytes()).hexdigest() != str(evidence["reacquisition_manifest_sha256"]).lower():
+        raise CandidateValidationError("V4 reacquisition promotion evidence is not bound to the final manifest bytes")
+    try:
+        final_payload = json.loads(final_manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CandidateValidationError("V4 final manifest evidence is unreadable") from exc
+    if not isinstance(final_payload, Mapping) or final_payload.get("source_commit") != evidence["final_manifest_source_commit"] or final_payload.get("source_tree_sha256") != evidence["final_manifest_source_tree_sha256"]:
+        raise CandidateValidationError("V4 final manifest source binding differs")
+    if evidence["source_commit"] != evidence["final_manifest_source_commit"] or evidence["source_tree_sha256"] != evidence["final_manifest_source_tree_sha256"]:
+        raise CandidateValidationError("V4 promotion evidence source binding differs")
+    _require_hash(evidence.get("final_manifest_source_head_sha256"), "V4 final manifest source head SHA-256")
+    _require_hash(evidence.get("final_manifest_public_key_sha256"), "V4 final manifest public key SHA-256")
+    return evidence_root
 
 
 def validate_super1_v5_candidate(
@@ -449,22 +563,12 @@ def validate_super1_v4_candidate(
         evidence = manifest.get("promotion_evidence")
         if not isinstance(evidence, Mapping):
             raise CandidateValidationError("V4 fresh promotion evidence is missing")
-        evidence_root = _evidence_root(root_path, evidence.get("private_evidence_root"))
-        hash_fields = ("reacquisition_manifest_sha256", "reacquisition_semantic_root_sha256", "full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256")
-        for field in hash_fields:
-            _require_hash(evidence.get(field), f"V4 promotion evidence {field}")
-        for field in ("full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256"):
-            path_field = field.removesuffix("_sha256") + "_path"
-            observed = sha256(_evidence_file(evidence_root, evidence.get(path_field), f"V4 promotion evidence {path_field}").read_bytes()).hexdigest()
-            if observed != str(evidence[field]).lower():
-                raise CandidateValidationError(f"V4 promotion evidence {field} is not bound to the attested file")
-        _require_hash(evidence.get("final_manifest_source_head_sha256"), "V4 final manifest source head SHA-256")
-        reacquisition_path = _file(root_path, str(evidence.get("reacquisition_manifest_path") or ""), "V4 reacquisition manifest evidence")
-        expected_reacquisition = root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
-        if reacquisition_path != expected_reacquisition:
-            raise CandidateValidationError("V4 reacquisition evidence path is not the canonical final manifest")
-        if not reacquisition_path.is_file() or sha256(reacquisition_path.read_bytes()).hexdigest() != str(evidence["reacquisition_manifest_sha256"]).lower():
-            raise CandidateValidationError("V4 reacquisition promotion evidence is not bound to the final manifest bytes")
+        evidence_root = validate_v4_promotion_evidence(
+            evidence,
+            repository_root=root_path,
+            manifest_path=root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json",
+        )
+        reacquisition_path = root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
         try:
             from .reacquisition_contract import validate_final_manifest
             final_attestation = _evidence_file(evidence_root, evidence.get("final_manifest_attestation_path"), "V4 final manifest attestation")

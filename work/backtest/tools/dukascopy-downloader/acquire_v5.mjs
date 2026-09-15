@@ -2,7 +2,7 @@ import * as locked from "dukascopy-node";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const { generateUrls, BufferFetcher, processData, formatOutput } = locked;
@@ -93,10 +93,11 @@ function safeEndpoint(value) {
   return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
 }
 
-async function fetchWithLimits(url, stageRoot, meta) {
+async function fetchWithLimits(url, stageRoot, meta, timeoutMs = 30_000) {
   const parsed = validateUrl(url);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error("provider timeout must be a positive integer");
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   let reader;
   let complete = false;
@@ -173,12 +174,16 @@ async function runDecode(args) {
   return { mode: "decode", rows: processedData.length, output_sha256: sha256(Buffer.from(formatted)), package: contract };
 }
 
-try {
-  const args = parseArgs(process.argv.slice(2));
-  const contract = await lockedContract();
-  const result = args.mode === "plan" ? await runPlan(args) : args.mode === "fetch-one" ? await runFetchOne(args) : await runDecode(args);
-  process.stdout.write(JSON.stringify({ ...result, contract }) + "\n");
-} catch (error) {
-  process.stderr.write(JSON.stringify({ error: String(error?.message || error) }) + "\n");
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    const contract = await lockedContract();
+    const result = args.mode === "plan" ? await runPlan(args) : args.mode === "fetch-one" ? await runFetchOne(args) : await runDecode(args);
+    process.stdout.write(JSON.stringify({ ...result, contract }) + "\n");
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ error: String(error?.message || error) }) + "\n");
+    process.exitCode = 1;
+  }
 }
+
+export { fetchWithLimits };

@@ -733,8 +733,13 @@ class AcquisitionRunLedger:
                 state = str(existing[0])
                 if state == "COMMITTED":
                     persisted = tuple(existing[1:5])
-                    requested = (request_url, request_url_sha256, expected_body_sha256, expected_body_bytes)
-                    if any(value is not None for value in persisted) and persisted != requested:
+                    if persisted[0] is not None and persisted[0] != request_url:
+                        raise ValueError("acquisition artifact identity differs from the persisted request")
+                    if persisted[1] is not None and request_url_sha256 is not None and persisted[1] != request_url_sha256:
+                        raise ValueError("acquisition artifact identity differs from the persisted request")
+                    if persisted[2] is not None and expected_body_sha256 is not None and persisted[2] != expected_body_sha256:
+                        raise ValueError("acquisition artifact identity differs from the persisted request")
+                    if persisted[3] is not None and expected_body_bytes is not None and persisted[3] != expected_body_bytes:
                         raise ValueError("acquisition artifact identity differs from the persisted request")
                     return state
                 if state != "IN_PROGRESS":

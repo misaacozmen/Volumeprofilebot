@@ -1240,6 +1240,44 @@ def test_demo_identity_drift_is_rejected_before_order_permission() -> None:
     assert mt5.pending_send_count == 0
 
 
+def test_terminal_snapshot_account_switch_is_recorded_as_unknown_no_send(tmp_path) -> None:
+    class AccountSwitchDuringReadSet(FakeOrderMt5):
+        def __init__(self) -> None:
+            super().__init__()
+            self.account_reads = 0
+
+        def account_info(self):
+            self.account_reads += 1
+            account = super().account_info()
+            if self.account_reads >= 2:
+                account.login = 999999
+                account.server = "REAL-SERVER"
+                account.company = "Other Broker"
+                account.trade_mode = 1
+            return account
+
+    client = demo_client(AccountSwitchDuringReadSet())
+    client._record_broker_state(
+        tmp_path,
+        "order-1",
+        "OPEN_PROTECTED",
+        {"broker_order_ticket": 12345, "checked_at": "2026-07-29T14:30:00Z"},
+    )
+
+    connection = sqlite3.connect(client._order_db(tmp_path))
+    try:
+        row = connection.execute(
+            "SELECT state, details_json FROM broker_execution_states WHERE order_id='order-1'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    assert row[0] == "BROKER_STATE_UNKNOWN_NO_SEND"
+    assert json.loads(row[1])["fresh_read_set"] is False
+    assert (tmp_path / "runtime" / "no_send.sentinel.json").is_file()
+    assert (tmp_path / "fatal_latch.json").is_file()
+
+
 def test_base_client_smoke_is_not_an_execution_path(tmp_path) -> None:
     with pytest.raises(MODULE.core.CriticalLiveError, match="Super1 production order coordinator"):
         demo_client(FakeOrderMt5()).smoke_order(tmp_path, {"runtime_config_hash": "runtime-hash"})

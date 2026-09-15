@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from backtest.dukascopy_acquisition import AcquisitionDeferred, RateLimitController
+from backtest.candidate_validation import CandidateValidationError, validate_v4_promotion_evidence
 from backtest.reacquisition_contract import (
     ValidatedFinalManifest,
     _validate_detached_attestation,
@@ -166,12 +167,107 @@ def test_apply_verified_reacquisition_applies_all_113_targets(tmp_path: Path) ->
         targets.append({"target": {"date": date_text, "leg": "nq", "timeframe": "3m"}, "derived_path": derived.name})
     result = apply_verified_reacquisitions(
         loaded,
-        ValidatedFinalManifest({"targets": targets}),
+        ValidatedFinalManifest({"schema_version": 5, "residual_count": 0, "targets": targets}),
         provenance_root=tmp_path,
         frame_loader=pd.read_csv,
     )
+    assert all("target" in row for row in ValidatedFinalManifest({"targets": targets})["targets"])
+    assert len({(row["target"]["date"], row["target"]["leg"], row["target"]["timeframe"]) for row in targets}) == 113
     assert len(result[("DUKASCOPY_USATECHIDXUSD", "3m")]) == 113
     assert result[("DUKASCOPY_USATECHIDXUSD", "3m")]["close"].tolist() == list(map(float, range(113)))
+
+
+def test_v4_promotion_evidence_requires_external_files_state_and_source_binding(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    manifest_path = repository / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({"source_commit": "a" * 40, "source_tree_sha256": "b" * 40}), encoding="utf-8")
+    evidence_root = tmp_path / "owner-evidence"
+    evidence_root.mkdir()
+    files = {}
+    for field in (
+        "full_history_determinism_a",
+        "full_history_determinism_b",
+        "reliability_determinism_a",
+        "reliability_determinism_b",
+        "risk_xray",
+        "security_history_attestation",
+        "account_rotation_attestation",
+        "final_manifest_attestation",
+        "final_manifest_signature",
+        "final_manifest_public_key",
+    ):
+        path = evidence_root / f"{field}.bin"
+        path.write_bytes(field.encode("ascii"))
+        files[field] = path
+    files["account_rotation_attestation"].write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "SIGNED",
+                "run_id": "f" * 64,
+                "old_binding_id_sha256": "1" * 64,
+                "new_binding_id_sha256": "c" * 64,
+                "old_binding_revoked": True,
+                "new_binding_active": True,
+                "account_trade_mode": "DEMO",
+                "account_identity_hmac_sha256": "2" * 64,
+                "provider_issuer": "owner-provider",
+                "semantic_state": "ROTATED_DEMO",
+                "effective_at_utc": "2026-09-16T12:00:00Z",
+                "nonce": "0" * 64,
+                "source_commit": "a" * 40,
+                "source_tree_oid": "b" * 40,
+                "signature_algorithm": "RSA-PSS-SHA256",
+                "signature_b64": "test-signature",
+                "signer_public_key_sha256": sha256(files["final_manifest_public_key"].read_bytes()).hexdigest(),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    evidence = {
+        "schema_version": 1,
+        "status": "VERIFIED_COMPLETE",
+        "semantic_state": "V4_PROMOTION_EVIDENCE_VERIFIED",
+        "account_binding_id_sha256": "c" * 64,
+        "source_commit": "a" * 40,
+        "source_tree_sha256": "b" * 40,
+        "private_evidence_root": str(evidence_root),
+        "reacquisition_manifest_path": "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json",
+        "reacquisition_manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
+        "reacquisition_semantic_root_sha256": "d" * 64,
+        "full_history_determinism_a_sha256": sha256(files["full_history_determinism_a"].read_bytes()).hexdigest(),
+        "full_history_determinism_b_sha256": sha256(files["full_history_determinism_b"].read_bytes()).hexdigest(),
+        "reliability_determinism_a_sha256": sha256(files["reliability_determinism_a"].read_bytes()).hexdigest(),
+        "reliability_determinism_b_sha256": sha256(files["reliability_determinism_b"].read_bytes()).hexdigest(),
+        "risk_xray_sha256": sha256(files["risk_xray"].read_bytes()).hexdigest(),
+        "security_history_attestation_sha256": sha256(files["security_history_attestation"].read_bytes()).hexdigest(),
+        "account_rotation_attestation_sha256": sha256(files["account_rotation_attestation"].read_bytes()).hexdigest(),
+        "final_manifest_source_head_sha256": "e" * 64,
+        "final_manifest_source_commit": "a" * 40,
+        "final_manifest_source_tree_sha256": "b" * 40,
+        "final_manifest_attestation_path": files["final_manifest_attestation"].name,
+        "final_manifest_signature_path": files["final_manifest_signature"].name,
+        "final_manifest_public_key_path": files["final_manifest_public_key"].name,
+        "final_manifest_attestation_sha256": sha256(files["final_manifest_attestation"].read_bytes()).hexdigest(),
+        "final_manifest_signature_sha256": sha256(files["final_manifest_signature"].read_bytes()).hexdigest(),
+        "final_manifest_public_key_sha256": sha256(files["final_manifest_public_key"].read_bytes()).hexdigest(),
+        "full_history_determinism_a_path": files["full_history_determinism_a"].name,
+        "full_history_determinism_b_path": files["full_history_determinism_b"].name,
+        "reliability_determinism_a_path": files["reliability_determinism_a"].name,
+        "reliability_determinism_b_path": files["reliability_determinism_b"].name,
+        "risk_xray_path": files["risk_xray"].name,
+        "security_history_attestation_path": files["security_history_attestation"].name,
+        "account_rotation_attestation_path": files["account_rotation_attestation"].name,
+    }
+    assert validate_v4_promotion_evidence(evidence, repository_root=repository, manifest_path=manifest_path) == evidence_root.resolve()
+    tampered = dict(evidence, risk_xray_sha256="f" * 64)
+    with pytest.raises(CandidateValidationError, match="not bound to the attested file"):
+        validate_v4_promotion_evidence(tampered, repository_root=repository, manifest_path=manifest_path)
+    source_mismatch = dict(evidence, final_manifest_source_tree_sha256="0" * 40)
+    with pytest.raises(CandidateValidationError, match="source binding differs"):
+        validate_v4_promotion_evidence(source_mismatch, repository_root=repository, manifest_path=manifest_path)
 
 
 def test_reacquisition_and_node_body_timeout_contracts_are_present() -> None:
@@ -244,6 +340,45 @@ def test_locked_downloader_slow_header_deadline_is_a_child_process_failure(tmp_p
     except subprocess.TimeoutExpired:
         return
     raise AssertionError("slow-header child process unexpectedly completed")
+
+
+def test_locked_downloader_slow_body_abort_stays_active_until_stream_finishes(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    assert node is not None
+    node_script = (ROOT / "tools/dukascopy-downloader/acquire_v5.mjs").as_uri()
+    stage_root = tmp_path / "stage"
+    stage_root.mkdir()
+    harness = f"""
+import {{ fetchWithLimits }} from {json.dumps(node_script)};
+const stageRoot = {json.dumps(str(stage_root))};
+let activeSignal;
+const reader = {{
+  read() {{ return new Promise((resolve, reject) => {{
+    const timer = setTimeout(() => resolve({{ done: false, value: new Uint8Array([1]) }}), 1000);
+    activeSignal.addEventListener('abort', () => {{ clearTimeout(timer); reject(new Error('ABORTED_SLOW_BODY')); }}, {{ once: true }});
+  }}); }},
+  cancel() {{ return Promise.resolve(); }}
+}};
+globalThis.fetch = async (_url, options) => {{
+  activeSignal = options.signal;
+  return {{ status: 200, headers: {{ has: () => false, get: () => null }}, body: {{ getReader: () => reader }} }};
+}};
+const meta = [];
+const started = Date.now();
+try {{
+  await fetchWithLimits('https://datafeed.dukascopy.com/slow-body.bin', stageRoot, meta, 50);
+  process.stdout.write(JSON.stringify({{ outcome: 'UNEXPECTED_SUCCESS' }}));
+}} catch (error) {{
+  const fs = await import('node:fs/promises');
+  const files = await fs.readdir(stageRoot);
+  process.stdout.write(JSON.stringify({{ outcome: error.message, elapsed_ms: Date.now() - started, metadata_count: meta.length, staged_file_count: files.length, cas_committed: false }}));
+}}
+"""
+    completed = subprocess.run([node, "--input-type=module", "-e", harness], cwd=ROOT, capture_output=True, text=True, timeout=5, check=False)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["outcome"] == "ABORTED_SLOW_BODY"
+    assert result["elapsed_ms"] < 500 and result["metadata_count"] == 0 and result["staged_file_count"] == 0 and result["cas_committed"] is False
 
 
 def test_provider_process_timeout_kills_process_tree(tmp_path: Path) -> None:

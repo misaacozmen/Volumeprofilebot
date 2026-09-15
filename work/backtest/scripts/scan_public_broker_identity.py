@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -13,6 +14,7 @@ import subprocess
 
 PUBLIC_PREFIXES = ("live_forward/", "research_candidates/", "forward_shadow/", "deploy/")
 IDENTITY_KEYS = frozenset({"expected_server", "expected_company"})
+PYTHON_SCAN_PREFIXES = ("backtest/", "scripts/", "live_forward/", "research_candidates/", "forward_shadow/", "deploy/")
 
 
 def tracked_files(root: Path) -> list[Path]:
@@ -63,6 +65,40 @@ def concrete_paths(value: object, prefix: str = "$") -> list[str]:
     return found
 
 
+def python_concrete_paths(raw: bytes) -> list[str]:
+    """Find concrete identity literals in executable Python, without evaluating it."""
+    try:
+        tree = ast.parse(raw.decode("utf-8"))
+    except (UnicodeDecodeError, SyntaxError):
+        return []
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            value = node.value
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                name = target.id.casefold()
+                if name in {"account_login", "login"} and isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool) and value.value > 0:
+                    found.append(f"$.{target.id}")
+                if name in IDENTITY_KEYS and isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip():
+                    found.append(f"$.{target.id}")
+        elif isinstance(node, ast.keyword) and node.arg in {"login", "account_login"}:
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool) and value.value > 0:
+                found.append(f"$.{node.arg}")
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                    continue
+                if key.value == "account_login" and isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool) and value.value > 0:
+                    found.append("$.account_login")
+                if key.value in IDENTITY_KEYS and isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip():
+                    found.append(f"$.{key.value}")
+    return sorted(set(found))
+
+
 def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
     denied: list[bytes] = []
     if denylist is not None:
@@ -88,6 +124,8 @@ def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
             except (UnicodeError, json.JSONDecodeError):
                 pass
         denied_count = sum(raw.count(item) for item in denied)
+        if relative.startswith(PYTHON_SCAN_PREFIXES) and path.suffix.lower() == ".py":
+            locations.extend(python_concrete_paths(raw))
         if locations or denied_count:
             matches.append({
                 "path": relative,
@@ -161,6 +199,8 @@ def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, objec
                 fields = concrete_paths(json.loads(blob.decode("utf-8")))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 pass
+        elif kind == b"blob" and path.endswith(".py") and path.startswith(PYTHON_SCAN_PREFIXES):
+            fields = python_concrete_paths(blob)
         if kind == b"commit" and denied_count:
             counts["commit_message_match_count"] += denied_count
         if kind == b"tag" and denied_count:

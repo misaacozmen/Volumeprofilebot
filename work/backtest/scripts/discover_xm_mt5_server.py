@@ -5,12 +5,16 @@ import json
 import os
 import sys
 
+from backtest.live.settings import environment_value
 
-ACCOUNT_LOGIN = 318413815
 DEFAULT_SERVERS = ["XMGlobal-MT5", *[f"XMGlobal-MT5 {number}" for number in range(1, 51)]]
 
 
 def main() -> None:
+    raw_login = environment_value("XM_MT5_ACCOUNT_LOGIN").strip()
+    if not raw_login.isascii() or not raw_login.isdigit() or int(raw_login) <= 0:
+        raise SystemExit("XM_MT5_ACCOUNT_LOGIN must be supplied through the approved environment schema.")
+    account_login = int(raw_login)
     try:
         import MetaTrader5 as mt5
     except ImportError as exc:
@@ -23,15 +27,15 @@ def main() -> None:
     servers = [server_override] if server_override else DEFAULT_SERVERS
     for server in servers:
         kwargs = {
-            "login": ACCOUNT_LOGIN,
+            "login": account_login,
             "password": password,
             "server": server,
             "timeout": 20_000,
         }
         ok = mt5.initialize(terminal_path, **kwargs) if terminal_path else mt5.initialize(**kwargs)
         account = mt5.account_info() if ok else None
-        if account is not None and int(account.login) == ACCOUNT_LOGIN and str(account.server) == server:
-            print(json.dumps({"state": "FOUND", "login": ACCOUNT_LOGIN, "server": server}))
+        if account is not None and int(account.login) == account_login and str(account.server) == server:
+            print(json.dumps({"state": "FOUND", "server": server}))
             mt5.shutdown()
             return
         mt5.shutdown()
@@ -40,4 +44,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-from backtest.live.settings import environment_value

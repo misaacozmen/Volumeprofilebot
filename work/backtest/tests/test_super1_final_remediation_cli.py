@@ -6,11 +6,13 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from scripts.git_provenance import current_commit_tree, validate_commit_tree
 from scripts.owner_replay_ledger import consume, initialize, reserve, validate
+from scripts import run_super1_owner_acceptance as owner_acceptance
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,3 +101,78 @@ def test_git_source_tree_binding_and_sqlite_replay_are_fail_closed(tmp_path: Pat
     with pytest.raises(Exception):
         reserve(ledger, run_id=run_id, nonce=nonce_a, purpose="audit")
     consume(ledger, run_id=run_id, nonce=nonce_a)
+
+
+def test_owner_rotation_binds_run_nonce_and_opaque_old_new_bindings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    run_id = "a" * 64
+    nonce = "b" * 64
+    old_binding = "c" * 64
+    new_binding = "d" * 64
+    identity_hmac = "e" * 64
+    payload = {
+        "status": "SIGNED",
+        "old_binding_revoked": True,
+        "new_binding_active": True,
+        "account_trade_mode": "DEMO",
+        "provider_issuer": "owner-provider",
+        "semantic_state": "ROTATED_DEMO",
+        "effective_at_utc": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+    }
+
+    def fake_verify(*args, **kwargs):
+        expected = kwargs["expected"]
+        fixed = {
+            "run_id": run_id,
+            "nonce": nonce,
+            "source_commit": "1" * 40,
+            "source_tree_oid": "2" * 40,
+            "old_binding_id_sha256": old_binding,
+            "new_binding_id_sha256": new_binding,
+            "account_identity_hmac_sha256": identity_hmac,
+        }
+        if any(expected.get(key) != value for key, value in fixed.items()):
+            raise ValueError("rotation evidence binding differs")
+        return {
+            **payload,
+            **fixed,
+        }
+
+    monkeypatch.setattr(owner_acceptance, "_verify_signed_document", fake_verify)
+    owner_acceptance._verify_rotation(
+        tmp_path / "rotation.json",
+        signer_key_path=tmp_path / "owner.pem",
+        signer_key_sha256="f" * 64,
+        run_id=run_id,
+        source_commit="1" * 40,
+        source_tree_oid="2" * 40,
+        nonce=nonce,
+        old_binding_sha256=old_binding,
+        new_binding_sha256=new_binding,
+        identity_hmac_sha256=identity_hmac,
+    )
+    with pytest.raises(ValueError, match="binding differs"):
+        owner_acceptance._verify_rotation(
+            tmp_path / "rotation.json",
+            signer_key_path=tmp_path / "owner.pem",
+            signer_key_sha256="f" * 64,
+            run_id="0" * 64,
+            source_commit="1" * 40,
+            source_tree_oid="2" * 40,
+            nonce=nonce,
+            old_binding_sha256=old_binding,
+            new_binding_sha256=new_binding,
+            identity_hmac_sha256=identity_hmac,
+        )
+    with pytest.raises(ValueError, match="binding differs"):
+        owner_acceptance._verify_rotation(
+            tmp_path / "rotation.json",
+            signer_key_path=tmp_path / "owner.pem",
+            signer_key_sha256="f" * 64,
+            run_id=run_id,
+            source_commit="1" * 40,
+            source_tree_oid="2" * 40,
+            nonce=nonce,
+            old_binding_sha256=old_binding,
+            new_binding_sha256="0" * 64,
+            identity_hmac_sha256=identity_hmac,
+        )
