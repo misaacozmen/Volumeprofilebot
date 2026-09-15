@@ -1,8 +1,8 @@
 # SUPER1 — 1–22 Durum ve Kabul Kanıtı
 
 Tarih: 2026-09-15
-Promotion code HEAD tested: `b5b8e3200d1a153f465e153245852ba332b37b51`
-Risk branch HEAD tested: `faf37e1323bd0e9f22f3031b384f45c342d7d60c`
+Promotion code HEAD tested: `a24a0ab950ee2b9b9e5bfe7d1cad2701bff99050`
+Risk branch HEAD tested: `cd8c02b8d3914eaea6ff71dac6cbf796f83206ed`
 
 ## Nihai kapı
 
@@ -14,19 +14,19 @@ Kod tarafındaki 1–11 risk düzeltmeleri ayrı risk branch’inde yapıldı ve
 
 | Kapsam | HEAD | Sonuç | JUnit / kanıt SHA-256 |
 |---|---|---:|---|
-| Promotion hedefli negatif suite | `b5b8e32` | 51 passed | `outputs/reports/pytest_super1_targeted_20260915.xml` — `4ecfd1cdfc5857523b3ada2621e9a21ba66fbbdb8af814b0d9314ebe9f5fd3da` |
-| Risk hedefli suite | `faf37e1` | 74 passed | `outputs/reports/pytest_risk_targeted_20260915.xml` — `da2b24ad0962b7102924106e4e7847874f025988c9c19b917bc27ab7f753f52e` |
-| Promotion tam pytest | `b5b8e32` | 742 passed, 4 failed, 0 errors | `outputs/reports/pytest_super1_full_20260915.xml` — `8256a3344dd8695f804f3e03ebbde033f2bbd2843cafd2d38ce72f3986e59516` (746 test) |
-| Risk tam pytest | `faf37e1` | 3 collection errors | `outputs/reports/pytest_risk_full_20260915.xml` — `7746d785c791644c90b02d27fc644784822c6be287dd21f9cd7c06b6715efc03` |
-| Python compile / Node AST / PowerShell AST / `git diff --check` | iki branch | passed | çalışma ağacı gate çıktısı |
+| Promotion hedefli suite | `a24a0ab` | 298 passed, 1 skipped | `outputs/reports/pytest_promotion_full_targeted_final.xml` — `00254f1f569c3017cf1f3188fbf658a455868f399822d840bf835f24dac847e2` |
+| Risk hedefli suite | `cd8c02b` | 32 passed, 7 skipped | `outputs/reports/pytest_risk_targeted_20260915_postcommit.xml` — `0a2755a257a00ccdb7f25c61e162c42299afd062632318321ef61e4d782dd3c1` |
+| Promotion tam pytest | `a24a0ab` | 744 passed, 10 skipped, 0 failed | `outputs/reports/pytest_promotion_full_20260915_final.xml` — `5de6e326ecc9d7ffce4fe1292c46743073bf92020a98a14a4bd4012c2df0bd5d` (754 test) |
+| Risk tam pytest | `cd8c02b` | 706 passed, 7 skipped, 0 failed | `outputs/reports/pytest_risk_full_20260915_final.xml` — `c997d91981798c8773861b60c1c5fae9c809ebcfff8380e06b250639ee5867ca` (713 test) |
+| Python compile / Node AST / PowerShell AST / `git diff --check` | iki branch | passed | current test and static-check evidence |
 
-Promotion tam suite hataları eski V4 sealed candidate/source hash zincirinin yeni kaynak HEAD ile uyuşmamasıdır; bu gerçek release blocker’dır. Risk tam suite ayrıca worktree’de bulunmayan `live_forward/xm_mt5_demo_config.json` ve V08 manifest SHA uyuşmazlığı nedeniyle collection’da durdu.
+Tam testlerdeki skip’ler Windows AppContainer/restricted-token launcher yokluğu nedeniyle sandbox’ın bilinçli `BLOCKED` davranışını doğrulayan platform sınırlarıdır; başarısız test yoktur. Bu durum 11 ve 12–22 için dış kabul kanıtı eksikliğini kaldırmaz.
 
 ## 1–22 ayrı durum
 
 | # | Durum | Kabul kanıtı | Eksik dış girdi / blocker |
 |---:|---|---|---|
-| 1 | PASS (hedefli) | `test_super1_instruction_1_11.py`, approval/production-flow suite; risk JUnit | Sealed V4 runtime hash zinciri release testinde eskimiş; promotion yine yayınlanamaz |
+| 1 | PASS (hedefli) | `test_super1_instruction_1_11.py`, approval/production-flow suite; promotion/risk JUnit | 11 ve 12–22 dış kabul kanıtları nedeniyle yayın kapısı kapalı |
 | 2 | PASS (hedefli) | retry ve write-once negatif testleri; risk JUnit | Gerçek broker readback yetkisi yok |
 | 3 | PASS (hedefli) | instrument metadata/tick/economic semantic negatif testleri; risk JUnit | Gerçek XM symbol snapshot yok |
 | 4 | PASS (hedefli) | evaluation window, warmup, gap/closure testleri; risk JUnit | Tam üretim veri kapsamı residual nedeniyle yok |
@@ -55,3 +55,4 @@ Promotion tam suite hataları eski V4 sealed candidate/source hash zincirinin ye
 - Acquisition state SHA: `c42eecf3bc6f4ae4a000a9f4a11f7c43140d147dfa9dbb3dce940c8a9a8dbccb`; state `DEFERRED_RATE_LIMIT`, provider call `0`.
 - Dört korumalı untracked girdi değiştirilmedi ve stage edilmedi.
 - Broker hesabı, parola, private key, remote history, fetch/pull/tag/push veya live order işlemi yapılmadı.
+- Current V4 runtime chain doğrulandı: candidate artifact `e0aa5d771befad1b8017d61b78a0f4732b7e7c4f9f40b7995da0de0509bd1b8c`, engine `0de20902eade693fb0a4688dd5fda505fe97e2497994293fde5f3fd20bdef194`, deal schema `109369101e71b9fe29be181257976efe9bdd3ec590ab001ac4463a55674b202d`, config `f861ac48c09dff3c3faf688f586c66cb9404d3c47bcdf85565f0d056390f7934`, signal contract `ae5e3c3d6ea67685384c2b36e779502969927f2b57721a848707b49278d3ee94`.
