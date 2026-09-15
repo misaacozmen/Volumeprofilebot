@@ -329,11 +329,31 @@ class AuditLedger:
 
     def _deliver_anchor(self, event_id: str, sequence: int, digest: str) -> None:
         attempted = datetime.now(timezone.utc).isoformat()
-        self.connection.execute(
-            "UPDATE audit_anchor_outbox SET state='DELIVERY_ATTEMPTED',attempted_at_utc=?,last_error='' WHERE event_id=? AND state IN ('PENDING','DELIVERY_ATTEMPTED','FAILED')",
-            (attempted, event_id),
-        )
+        # Anchor delivery is a cross-process ordered side effect.  The DB
+        # write lock must cover claim, anchor replacement, and ACK; otherwise
+        # two processes can publish sequence N+1 before N and leave the
+        # startup anchor inconsistent with the acknowledged prefix.
+        self.connection.execute("BEGIN IMMEDIATE")
         try:
+            row = self.connection.execute(
+                "SELECT state,event_hash FROM audit_anchor_outbox WHERE event_id=? AND sequence=?",
+                (event_id, sequence),
+            ).fetchone()
+            if row is None or str(row[1]) != digest:
+                raise AuditLedgerError("audit anchor outbox row is missing or not bound")
+            if str(row[0]) == "ACKED":
+                self.connection.commit()
+                return
+            next_row = self.connection.execute(
+                "SELECT sequence FROM audit_anchor_outbox WHERE state <> 'ACKED' ORDER BY sequence LIMIT 1"
+            ).fetchone()
+            if next_row is None or int(next_row[0]) != sequence:
+                self.connection.commit()
+                return
+            self.connection.execute(
+                "UPDATE audit_anchor_outbox SET state='DELIVERY_ATTEMPTED',attempted_at_utc=?,last_error='' WHERE event_id=? AND state IN ('PENDING','DELIVERY_ATTEMPTED','FAILED')",
+                (attempted, event_id),
+            )
             anchored_hash = self.anchor_lookup(event_id) if self.anchor_lookup is not None else None
             if anchored_hash is not None and str(anchored_hash).lower() != digest:
                 raise AuditLedgerError("external audit event ID is bound to a different hash")
@@ -343,25 +363,25 @@ class AuditLedger:
                 self.anchor_path,
                 {"schema_version": AUDIT_SCHEMA_VERSION, "sequence": sequence, "event_hash": digest, "event_id": event_id},
             )
-        except Exception as exc:
-            self.connection.execute(
-                "UPDATE audit_anchor_outbox SET state='FAILED',last_error=? WHERE event_id=?",
-                (f"{type(exc).__name__}: {exc}", event_id),
-            )
-            if isinstance(exc, AuditLedgerError):
-                raise
-            raise AuditLedgerError("audit anchor delivery failed") from exc
-        self.connection.execute("BEGIN IMMEDIATE")
-        try:
             if self.connection.execute(
                 "UPDATE audit_anchor_outbox SET state='ACKED',acked_at_utc=? WHERE event_id=? AND event_hash=? AND state='DELIVERY_ATTEMPTED'",
                 (datetime.now(timezone.utc).isoformat(), event_id, digest),
             ).rowcount != 1:
                 raise AuditLedgerError("audit anchor ACK could not be persisted")
             self.connection.commit()
-        except Exception:
-            self.connection.rollback()
-            raise
+        except Exception as exc:
+            if self.connection.in_transaction:
+                try:
+                    self.connection.execute(
+                        "UPDATE audit_anchor_outbox SET state='FAILED',last_error=? WHERE event_id=?",
+                        (f"{type(exc).__name__}: {exc}", event_id),
+                    )
+                    self.connection.commit()
+                except Exception:
+                    self.connection.rollback()
+            if isinstance(exc, AuditLedgerError):
+                raise
+            raise AuditLedgerError("audit anchor delivery failed") from exc
 
     def _legacy_snapshot_hash(self, connection: sqlite3.Connection | None = None) -> str:
         connection = connection or self.connection

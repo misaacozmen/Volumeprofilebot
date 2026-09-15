@@ -29,11 +29,11 @@ def windows_appcontainer_available() -> bool:
 
 
 def posix_namespace_available() -> bool:
-    """Return whether a real namespace/ACL worker launcher is configured.
+    """Return whether a real namespace+ACL launcher is installed.
 
-    RLIMIT-only subprocesses are not an isolation boundary.  This repository
-    has no verified user/mount/network namespace launcher, so POSIX execution
-    is blocked until one is explicitly provisioned and audited.
+    Resource limits and a new session are not a filesystem/network boundary.
+    Until the deployment supplies an attested launcher with user, mount,
+    network, PID, and ACL namespaces, POSIX execution must also fail closed.
     """
     return False
 
@@ -130,25 +130,20 @@ def _assign_windows_job(process: subprocess.Popen[bytes], profile: SandboxProfil
     return kernel32, job
 
 
-def run_isolated_worker(
-    worker_path: str | Path, request: Mapping[str, Any], *, profile: str,
-    environment: Mapping[str, str] | None = None,
+def run_sandbox(
+    request: Mapping[str, Any], *, profile: str = "offline", environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     limits = PROFILES.get(profile)
     if limits is None:
         raise SandboxError("unknown sandbox profile")
     if os.name == "nt" and not windows_appcontainer_available():
         raise SandboxError("Windows AppContainer isolation is unavailable; sandboxed backtest is BLOCKED_PLATFORM")
-    if os.name == "posix" and not posix_namespace_available():
-        raise SandboxError("POSIX namespace/ACL isolation is unavailable; sandboxed backtest is BLOCKED_PLATFORM")
+    if os.name != "nt" and not posix_namespace_available():
+        raise SandboxError("POSIX namespace and ACL isolation is unavailable; sandboxed backtest is BLOCKED_PLATFORM")
     payload = _canonical_json({**dict(request), "limits": {"output_mb": limits.output_mb}})
-    max_payload_bytes = limits.output_mb * 1024 * 1024
-    if len(payload) > max_payload_bytes:
+    if len(payload) > 4 * 1024 * 1024:
         raise SandboxError("sandbox request is too large")
-    worker = Path(worker_path).resolve()
-    if not worker.is_file():
-        raise SandboxError("sandbox worker is missing")
-    command = [sys.executable, "-I", str(worker)]
+    command = [sys.executable, "-I", str(_worker_path())]
     kwargs: dict[str, Any] = {
         "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
         "shell": False, "env": minimal_subprocess_environment(environment),
@@ -181,7 +176,7 @@ def run_isolated_worker(
     if process.returncode != 0:
         detail = stderr.decode("utf-8", "replace")[-1000:]
         raise SandboxError(f"sandbox worker failed ({process.returncode}): {detail}")
-    if len(stdout) > max_payload_bytes:
+    if len(stdout) > 2 * 1024 * 1024:
         raise SandboxError("sandbox response is too large")
     try:
         response = json.loads(stdout)
@@ -193,12 +188,6 @@ def run_isolated_worker(
     if claimed != hashlib.sha256(_canonical_json(response)).hexdigest():
         raise SandboxError("sandbox response hash mismatch")
     return response
-
-
-def run_sandbox(
-    request: Mapping[str, Any], *, profile: str = "offline", environment: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    return run_isolated_worker(_worker_path(), request, profile=profile, environment=environment)
 
 
 def _validated_files(root: Path, max_bytes: int) -> None:

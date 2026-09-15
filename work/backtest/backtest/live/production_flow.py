@@ -18,7 +18,7 @@ from .execution import issue_persistence_receipt
 from .halt import HaltController
 from .instruments import InstrumentRegistry
 from .order_state import OrderState, OrderStateMachine
-from .risk_guard import RiskGuard
+from .risk_guard import RiskGuard, RiskGuardError
 from .settings import RuntimeSettings
 from .strategy_health import StrategyHealth
 
@@ -238,7 +238,13 @@ class ProductionOrderFlow:
             raise ProductionFlowError("final risk check did not use a fresh broker snapshot")
         self._validate_broker_query(second, account_key=account_key, previous=first)
         self._event("fresh broker snapshot")
-        order = d.risk_guard.approve(proposal, second, approval_id=approval_id)
+        try:
+            order = d.risk_guard.approve(proposal, second, approval_id=approval_id)
+        except RiskGuardError as exc:
+            # The final post-approval risk decision is still a typed denial;
+            # it must never escape as an uncaught implementation exception or
+            # proceed to approval consumption.
+            raise ProductionFlowError(str(exc)) from exc
         request_for_order = getattr(d.execution_adapter, "request_for_order", None)
         wire_request = request_for_order(order)
         if not isinstance(wire_request, dict):
@@ -352,6 +358,12 @@ class ProductionOrderFlow:
                 broker_total_entry_count=(None if policy is None else self._broker_count_value(second.total_entry_count)),
             )
         except ApprovalError as exc:
+            # The reservation is part of the same SQLite transaction as the
+            # single-use approval.  Preserve this exact risk denial so an
+            # inter-process loser is observable as a limit decision; all
+            # other lifecycle failures remain deliberately opaque.
+            if str(exc) == "daily entry slot limit is active":
+                raise ProductionFlowError(str(exc)) from exc
             raise ProductionFlowError("approval consumption failed closed") from exc
         if consumed.state != "CONSUMED":
             raise ProductionFlowError("approval was not atomically consumed")

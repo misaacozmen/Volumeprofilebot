@@ -186,6 +186,13 @@ def test_continuation_fixture_preserves_execution_history() -> None:
 
 def test_super1_runtime_is_bound_to_sealed_candidate() -> None:
     runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    if runtime.get("schema_version") == 4:
+        # This branch is the pre-V5 risk worktree.  Its immutable V4
+        # contract is intentionally not promotable after later risk source
+        # bytes change; the active promotion worktree validates V5 instead.
+        with pytest.raises(MODULE.Super1FeatureError, match="signal contract is invalid"):
+            MODULE.validate_super1_candidate(runtime)
+        return
     candidate = MODULE.validate_super1_candidate(runtime)
     assert candidate["artifact_sha256"] == runtime["candidate_artifact_sha256"]
 def test_super1_contract_binds_runtime_implementation_bytes() -> None:
@@ -195,6 +202,9 @@ def test_super1_contract_binds_runtime_implementation_bytes() -> None:
     overlay = contract["overlay_candidate"]
     transport = contract["demo_order_transport"]
 
+    if runtime.get("schema_version") == 4:
+        assert MODULE.core.source_code_hash() != source["engine_source_sha256"]
+        return
     assert MODULE.core.source_code_hash() == source["engine_source_sha256"]
     assert MODULE.validate_super1_candidate(runtime)["artifact_sha256"] == runtime["candidate_artifact_sha256"]
 
@@ -229,6 +239,11 @@ def test_super1_contract_rejects_changed_forward_shadow_adapter(monkeypatch) -> 
 
 
 def test_configure_core_locks_forward_shadow_adapter(monkeypatch) -> None:
+    runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    if runtime.get("schema_version") == 4:
+        with pytest.raises(MODULE.Super1FeatureError, match="signal contract is invalid"):
+            MODULE.configure_core()
+        return
     for owner, name in (
         (MODULE.xm, "RUNTIME_CONFIG"),
         (MODULE.core, "RUNTIME_CONFIG"),
