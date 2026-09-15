@@ -14,8 +14,8 @@
   "config_path": "live_forward/super1_xm_mt5_demo_config_v5.json",
   "config_sha256": "aa01fe44d71a084ff492695abb955b4fecdad3fcfc53068ef13002d6aefc71ff",
   "engine_source_sha256": "af84b07871c8dbca648c8f343c53b2b632d3620701743fba337c1500280eb337",
-  "source_commit": "8d1ae6e0631e20d567c40cb7788e75ab5c006d93",
-  "source_tree_sha256": "fb3067044e199a9324a6397f08e347272e4ff3ae",
+  "source_commit": "788904525871b625c410faef1d8edd463f8e8550",
+  "source_tree_sha256": "3e4a320183e15c3fb3abb2e5d3626fecb8368940",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
     "sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d"

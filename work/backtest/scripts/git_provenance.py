@@ -65,7 +65,7 @@ def validate_production_source_binding(repository_root: str | Path, commit_oid: 
     for relative in current:
         current_bytes = (repo / relative).read_bytes()
         bound_bytes = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{tree_oid}:{relative}"],
+            ["git", "-C", str(repo), "show", f"{tree_oid}:./{relative}"],
             capture_output=True,
             check=False,
         )
