@@ -238,17 +238,20 @@ def validate_final_manifest(
             if {item.name for item in bundle_dir.iterdir()} != allowed:
                 raise ValueError("V5 final target bundle contains extra files")
             committed_payload = json.loads(committed.read_text(encoding="utf-8"))
-            if any(committed_payload.get(key) != value for key, value in {
+            if committed_payload != {
+                "schema_version": 1,
                 "manifest_name": manifest_name,
                 "minute_name": minute_name,
                 "derived_name": derived_name,
+                "decoded_name": decoded_path.name,
+                "attestation_name": attestation_name,
                 "manifest_sha256": row["manifest_sha256"],
                 "minute_sha256": row["minute_sha256"],
                 "derived_sha256": row["derived_sha256"],
                 "decoded_sha256": row["decoded_sha256"],
-                "attestation_name": attestation_name,
-                "decoded_name": decoded_path.name,
-            }.items()):
+                "attestation_sha256": row["attestation_sha256"],
+                "target": {"date": target_key(row)[0], "leg": target_key(row)[1], "timeframe": target_key(row)[2]},
+            }:
                 raise ValueError("V5 COMMITTED evidence does not bind final target bytes")
             bundle_manifest = json.loads(safe_provenance_path(root, row["manifest_path"], "manifest_path").read_text(encoding="utf-8"))
             if not isinstance(bundle_manifest, dict) or bundle_manifest.get("schema_version") != 5:
