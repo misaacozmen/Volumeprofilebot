@@ -12,6 +12,7 @@ from backtest.live.approval import ApprovalStore
 from backtest.live.audit_ledger import AuditLedger
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerSnapshot, BrokerEvidence, InstrumentContract, LiveRiskPolicy
+from backtest.live.deal_ingestion import TerminalDealIngestor
 from backtest.live.halt import HaltController
 from backtest.live.instruments import InstrumentRegistry
 from backtest.live.order_state import OrderStateMachine
@@ -110,6 +111,12 @@ def _flow(tmp_path: Path, adapter: _NoSendAdapter) -> ProductionOrderFlow:
         instrument_registry=InstrumentRegistry([contract, _contract("spx", "US500Cash")]),
         approval_store=store, runtime_settings=RuntimeSettings("DEMO_ORDER"),
         strategy_health=health, execution_adapter=adapter,
+        deal_ingestor=TerminalDealIngestor(
+            tmp_path / "approvals.sqlite3", read_deals=lambda _start, _end: (),
+            account_key=ACCOUNT, campaign_id="campaign", candidate_hash=CANDIDATE,
+            campaign_start=NOW - timedelta(days=1), magic=1, now=lambda: NOW,
+            private_terminal_binding_hash="b" * 63 + "c",
+        ),
     ))
 
 

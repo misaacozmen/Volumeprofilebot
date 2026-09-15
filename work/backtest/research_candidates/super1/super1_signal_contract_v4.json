@@ -33,7 +33,7 @@
   "signal_source": {
     "config_path": "forward_shadow/frozen_config.json",
     "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
-    "engine_source_sha256": "5014525ee259b4b6f59e95b54a4b9bdb7d30d4c6476d72e7ae50b66e5637eee8",
+    "engine_source_sha256": "c2839c70d3da01f67af15f0c9e7496e7fb7393381259baf15060c98b83ec4949",
     "generator_path": "scripts/run_capital_forward.py",
     "generator_sha256": "ae608cabe5fcce40895972f66bf714cb2d2f638e084f99e88e8bcb95059ebe91",
     "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",

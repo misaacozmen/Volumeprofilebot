@@ -39,7 +39,7 @@ def test_optional_mt5_password_reaches_client_from_environment(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "MetaTrader5", SimpleNamespace())
     monkeypatch.setenv("XM_MT5_READ_ONLY_PASSWORD", "secret-value")
     config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    config.update(expected_server="fixture-demo-server")
+    config.update(account_login=12345678, expected_server="fixture-demo-server", expected_company="Fixture Broker Ltd")
 
     client = MODULE.XmMt5ReadOnlyClient(config, {"XM_MT5_SERVER": "fixture-demo-server"})
 
@@ -1139,6 +1139,7 @@ def demo_client(fake_mt5: FakeTradeMt5) -> object:
         account_login=12345678,
         expected_server="fixture-demo-server",
         expected_company="Fixture Broker Ltd",
+        order_comment_prefix="FSP",
     )
     client.magic = int(client.config["magic_number"])
     client.demo_verified = False

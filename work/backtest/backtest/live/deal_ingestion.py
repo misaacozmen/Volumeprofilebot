@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
+import math
+from numbers import Real
 from pathlib import Path
 import re
 import sqlite3
