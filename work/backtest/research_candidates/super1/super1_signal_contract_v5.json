@@ -29,7 +29,7 @@
     "generator_sha256": "ae608cabe5fcce40895972f66bf714cb2d2f638e084f99e88e8bcb95059ebe91",
     "payload_adapter_path": "scripts/run_forward_shadow.py",
     "payload_adapter_sha256": "4bdabaad2a8c43b6469f8c743eea11c5ed6f428ae2731786754a131d6ad00107",
-    "engine_source_sha256": "2330d9eb9466dc624fbbbefeb77704d03b2e614fd10d933f465623a74f892124"
+    "engine_source_sha256": "93a00f809624e8e47b568a6da87a138e16299c5be8f13805782705e5ca1ac313"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
