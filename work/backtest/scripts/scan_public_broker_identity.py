@@ -70,7 +70,13 @@ def _deny_values(denylist: Path | None) -> tuple[list[bytes], str | None]:
         return [], None
     raw = denylist.read_bytes()
     payload = json.loads(raw.decode("utf-8"))
-    return [str(item).encode("utf-8") for item in payload.get("denylist", []) if str(item)], sha256(raw).hexdigest()
+    values = payload.get("denylist") if isinstance(payload, dict) else None
+    if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item for item in values):
+        raise ValueError("private denylist must contain a non-empty string array")
+    encoded = [item.encode("utf-8") for item in values]
+    if len(encoded) != len(set(encoded)):
+        raise ValueError("private denylist contains duplicates")
+    return encoded, sha256(raw).hexdigest()
 
 
 def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, object]], dict[str, int]]:
@@ -140,6 +146,13 @@ def main() -> None:
     root = args.root.resolve()
     git_prefix = _git(root, "rev-parse", "--show-prefix").decode("utf-8", "replace").strip().replace("\\", "/")
     denylist = args.denylist.resolve() if args.denylist else None
+    if denylist is not None:
+        try:
+            denylist.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("private denylist must be outside the source repository")
     started = datetime.now(timezone.utc)
     matches = scan(root, denylist) if denylist is not None else []
     denied, denylist_sha256 = _deny_values(denylist)
