@@ -1,7 +1,7 @@
 # SUPER1 — 1–22 Durum ve Kabul Kanıtı
 
 Tarih: 2026-09-15
-Promotion code HEAD tested: `40bf3aa7e627fd5ab6c697242ce619618f4e482b`
+Promotion code HEAD tested: `b5b8e3200d1a153f465e153245852ba332b37b51`
 Risk branch HEAD tested: `faf37e1323bd0e9f22f3031b384f45c342d7d60c`
 
 ## Nihai kapı
@@ -14,9 +14,9 @@ Kod tarafındaki 1–11 risk düzeltmeleri ayrı risk branch’inde yapıldı ve
 
 | Kapsam | HEAD | Sonuç | JUnit / kanıt SHA-256 |
 |---|---|---:|---|
-| Promotion hedefli negatif suite | `40bf3aa` | 51 passed | `outputs/reports/pytest_super1_targeted_20260915.xml` — `ec60ae64c4e3cc5150f6a6fa992e230820203ba9074c26f4acf6775b398d2cff` |
+| Promotion hedefli negatif suite | `b5b8e32` | 51 passed | `outputs/reports/pytest_super1_targeted_20260915.xml` — `4ecfd1cdfc5857523b3ada2621e9a21ba66fbbdb8af814b0d9314ebe9f5fd3da` |
 | Risk hedefli suite | `faf37e1` | 74 passed | `outputs/reports/pytest_risk_targeted_20260915.xml` — `da2b24ad0962b7102924106e4e7847874f025988c9c19b917bc27ab7f753f52e` |
-| Promotion tam pytest | `40bf3aa` | 742 passed, 4 failed, 0 errors | `outputs/reports/pytest_super1_full_20260915.xml` — `d2a4261ffe6569812694d76be8e0bef4ac77bde0cb197acf4f717c008265619e` (746 test) |
+| Promotion tam pytest | `b5b8e32` | 742 passed, 4 failed, 0 errors | `outputs/reports/pytest_super1_full_20260915.xml` — `8256a3344dd8695f804f3e03ebbde033f2bbd2843cafd2d38ce72f3986e59516` (746 test) |
 | Risk tam pytest | `faf37e1` | 3 collection errors | `outputs/reports/pytest_risk_full_20260915.xml` — `7746d785c791644c90b02d27fc644784822c6be287dd21f9cd7c06b6715efc03` |
 | Python compile / Node AST / PowerShell AST / `git diff --check` | iki branch | passed | çalışma ağacı gate çıktısı |
 
