@@ -12,10 +12,10 @@
   "signal_contract_path": "research_candidates/super1/super1_signal_contract_v5.json",
   "signal_contract_sha256": "fe879ca3d7a09dbe01857ac9f859e215c93025509a55b6c044246a670f3dd268",
   "config_path": "live_forward/super1_xm_mt5_demo_config_v5.json",
-  "config_sha256": "aa01fe44d71a084ff492695abb955b4fecdad3fcfc53068ef13002d6aefc71ff",
+  "config_sha256": "062df1e8412646a45c35b97de90f2cc6d1144c0b667d8db062518ae6199e40ac",
   "engine_source_sha256": "1967758e0643129492b8166df58090377a2600b6f862f5dfb99de0b5190523f0",
-  "source_commit": "788904525871b625c410faef1d8edd463f8e8550",
-  "source_tree_sha256": "3e4a320183e15c3fb3abb2e5d3626fecb8368940",
+  "source_commit": "c633ff141cc0597d96580e7e4133528d2afd7bc1",
+  "source_tree_sha256": "5cb8391e56d0310fee4800cc954a10d7fbce17e4",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
     "sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d"
