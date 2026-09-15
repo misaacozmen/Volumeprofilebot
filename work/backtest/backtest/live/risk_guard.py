@@ -170,12 +170,24 @@ class RiskGuard:
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise RiskGuardError("broker count is invalid")
                 return value
+            allowed_ids = set(whitelist)
+            if any(str(key) not in allowed_ids for key in (*entry_counts.keys(), *position_counts.keys(), *pending_counts.keys())):
+                raise RiskGuardError("broker exposure contains an instrument outside the signed whitelist")
+            for values in (entry_counts, position_counts, pending_counts):
+                for key, value in values.items():
+                    exact_count(values, str(key))
+            if sum(exact_count(entry_counts, key) for key in entry_counts) != total_entries:
+                raise RiskGuardError("broker entry counts do not reconcile with the account total")
+            if sum(exact_count(position_counts, key) for key in position_counts) != len(self._value(snapshot, "open_positions")):
+                raise RiskGuardError("broker position counts do not reconcile with the broker snapshot")
+            if sum(exact_count(pending_counts, key) for key in pending_counts) != len(self._value(snapshot, "pending_orders")):
+                raise RiskGuardError("broker pending counts do not reconcile with the broker snapshot")
             if total_entries >= self.policy.max_total_trades_per_day or exact_count(entry_counts, proposal.instrument_id) >= dict(self.policy.max_trades_per_day_by_instrument)[proposal.instrument_id]:
                 raise RiskGuardError("daily broker trade-count limit is active")
-            if sum(exact_count(position_counts, key) for key in whitelist) >= self.policy.max_total_open_positions or exact_count(position_counts, proposal.instrument_id) >= self.policy.max_open_positions_by_instrument:
+            if sum(exact_count(position_counts, key) for key in position_counts) >= self.policy.max_total_open_positions or exact_count(position_counts, proposal.instrument_id) >= self.policy.max_open_positions_by_instrument:
                 raise RiskGuardError("open-position limit is active")
-            if exact_count(pending_counts, proposal.instrument_id) > 0:
-                raise RiskGuardError("an owned pending order already exists")
+            if sum(exact_count(pending_counts, key) for key in pending_counts) > 0:
+                raise RiskGuardError("a pending order reservation already exists")
             last_entry = self._value(snapshot, "last_accepted_entry_at")
             if last_entry is not None:
                 if not isinstance(last_entry, datetime):

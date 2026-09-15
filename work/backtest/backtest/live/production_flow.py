@@ -138,6 +138,8 @@ class ProductionOrderFlow:
     ) -> Any:
         self._require_dependencies()
         d = self.dependencies
+        if proposal.candidate_hash != candidate_hash:
+            raise ProductionFlowError("proposal candidate binding differs from signed candidate")
         state = d.order_state if d.order_state.state is OrderState.INTENT else OrderStateMachine()
         self._event("SignalProposal")
         d.halt_controller.assert_clear()
@@ -303,6 +305,8 @@ class ProductionOrderFlow:
                 )
 
         try:
+            policy = d.risk_guard.policy
+            policy_limits = None if policy is None else dict(policy.max_trades_per_day_by_instrument)
             consumed = d.approval_store.consume_and_arm(
                 approval_id,
                 proposal=staged_proposal,
@@ -315,6 +319,10 @@ class ProductionOrderFlow:
                 order_id=proposal.proposal_id,
                 request=wire_request,
                 arm=arm,
+                slot_date_ny=(order.approved_at.astimezone(ZoneInfo("America/New_York")).date().isoformat() if policy is not None else None),
+                slot_instrument_id=proposal.instrument_id if policy is not None else None,
+                slot_instrument_limit=None if policy is None else policy_limits[proposal.instrument_id],
+                slot_total_limit=None if policy is None else policy.max_total_trades_per_day,
             )
         except ApprovalError as exc:
             raise ProductionFlowError("approval consumption failed closed") from exc

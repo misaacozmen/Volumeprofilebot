@@ -90,11 +90,20 @@ def validate_metadata(expected: InstrumentContract, metadata: Mapping[str, Any] 
         expected_value = getattr(expected, field)
         if isinstance(expected_value, (int, float)):
             try:
-                if not math.isfinite(float(observed)) or float(observed) != float(expected_value):
+                if isinstance(observed, bool) or not math.isfinite(float(observed)) or float(observed) != float(expected_value):
                     raise InstrumentContractError(f"instrument metadata mismatch: {field}")
             except (TypeError, ValueError):
                 raise InstrumentContractError(f"instrument metadata mismatch: {field}")
         elif observed != expected_value:
+            raise InstrumentContractError(f"instrument metadata mismatch: {field}")
+    optional_identity = {
+        "asset_class": expected.asset_class,
+        "server": expected.expected_server,
+        "company": expected.expected_company,
+    }
+    for field, expected_value in optional_identity.items():
+        observed = metadata.get(field) if isinstance(metadata, Mapping) else getattr(metadata, field, None)
+        if observed is not None and str(observed) != expected_value:
             raise InstrumentContractError(f"instrument metadata mismatch: {field}")
     if expected.broker_path_regex:
         for field, pattern in (("path", expected.broker_path_regex), ("description", expected.broker_description_regex)):
@@ -103,14 +112,24 @@ def validate_metadata(expected: InstrumentContract, metadata: Mapping[str, Any] 
                 raise InstrumentContractError(f"instrument metadata mismatch: {field}")
 
 
-def validate_economic_semantics(expected: InstrumentContract, order_calc_profit: Any) -> None:
+def validate_economic_semantics(
+    expected: InstrumentContract,
+    order_calc_profit: Any,
+    *,
+    reference_price: Any = 1000.0,
+) -> None:
     """Confirm the signed one-tick BUY/SELL economic fingerprint."""
     if not expected.canonical_underlying or not callable(order_calc_profit):
         raise InstrumentContractError("economic semantic probe is unavailable")
-    reference = 1000.0
+    try:
+        reference = float(reference_price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InstrumentContractError("economic semantic reference price is invalid") from exc
+    if isinstance(reference_price, bool) or not math.isfinite(reference) or reference <= 0:
+        raise InstrumentContractError("economic semantic reference price is invalid")
     probes = (
         order_calc_profit(0, expected.broker_symbol, expected.volume_min, reference, reference + expected.tick_size),
-        order_calc_profit(1, expected.broker_symbol, expected.volume_min, reference + expected.tick_size, reference),
+        order_calc_profit(1, expected.broker_symbol, expected.volume_min, reference, reference - expected.tick_size),
     )
     target = float(expected.expected_one_tick_value_at_min_volume)
     tolerance = float(expected.economic_value_tolerance)
@@ -123,6 +142,23 @@ def validate_economic_semantics(expected: InstrumentContract, order_calc_profit:
             raise InstrumentContractError("economic semantic probe returned invalid value") from exc
         if not math.isfinite(observed) or observed <= 0 or abs(observed - target) > tolerance:
             raise InstrumentContractError("economic semantic probe mismatch")
+
+
+def validate_current_tick(expected: InstrumentContract, tick: Mapping[str, Any] | object) -> float:
+    """Validate a live bid/ask quote before using it for economic probes."""
+    def get(name: str) -> Any:
+        return tick.get(name) if isinstance(tick, Mapping) else getattr(tick, name, None)
+
+    bid, ask = get("bid"), get("ask")
+    if any(isinstance(value, bool) or not isinstance(value, Real) for value in (bid, ask)):
+        raise InstrumentContractError("current broker tick is missing bid/ask")
+    bid_value, ask_value = float(bid), float(ask)
+    if not all(math.isfinite(value) and value > 0 for value in (bid_value, ask_value)) or bid_value > ask_value:
+        raise InstrumentContractError("current broker tick is invalid")
+    timestamp = get("time_msc") if get("time_msc") is not None else get("time")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, Real) or not math.isfinite(float(timestamp)) or float(timestamp) <= 0:
+        raise InstrumentContractError("current broker tick timestamp is invalid")
+    return (bid_value + ask_value) / 2.0
 
 
 def map_mt5_symbol_info(info: Mapping[str, Any] | object) -> dict[str, Any]:

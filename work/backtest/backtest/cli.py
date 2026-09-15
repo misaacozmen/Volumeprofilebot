@@ -3,19 +3,23 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, replace
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 
 import pandas as pd
 
 from .calibration import analyze_examples
 from .config import SYMBOL_CONFIGS
-from .data_inspector import infer_symbol_timeframe, inspect_paths, print_reports, write_reports_csv
+from .data_inspector import infer_symbol_timeframe, inspect_paths, parse_timeframe_minutes, print_reports, write_reports_csv
 from .data_loader import load_ohlcv
 from .evaluation_window import EvaluationWindow, EvaluationWindowError, classify_sessions, coverage_report
 from .market_calendar import MarketCalendarError, signed_market_dates
 from .risk_xray import build_risk_xray, write_risk_xray
-from .optimization import StudyConfig, StudyConfigError, optimize
+from .gaps import find_gap_events
+from .optimization import StudyConfig, StudyConfigError, canonical_hash, optimize
 from .walk_forward import walk_forward
 from .engine_pipeline import source_code_hash, stable_frame_hash
 from .strategy import monthly_stats, run_backtest, summarize_trades, trades_to_frame, weekday_stats
@@ -183,7 +187,8 @@ def main(*, _trusted: bool = False) -> None:
             if evaluation_window is None or evaluation_window.includes_session(lifecycle.date)
         ]
         output_dir = args.output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        artifact_dir = Path(tempfile.mkdtemp(prefix=".otobt-run-", dir=output_dir.parent))
 
         trades = trades_to_frame(selected_trades)
         summary = summarize_trades(selected_trades)
@@ -197,17 +202,15 @@ def main(*, _trusted: bool = False) -> None:
             gaps["time"] = gaps["time"].astype(str)
             gaps["skip_date"] = gaps["skip_date"].astype(str)
 
-        trades.to_csv(output_dir / "trades.csv", index=False)
-        summary.to_csv(output_dir / "summary.csv", index=False)
-        monthly.to_csv(output_dir / "monthly_stats.csv", index=False)
-        weekdays.to_csv(output_dir / "weekday_stats.csv", index=False)
-        parameters.to_csv(output_dir / "parameters.csv", index=False)
-        skipped.to_csv(output_dir / "skipped_dates.csv", index=False)
-        gaps.to_csv(output_dir / "backtest_gap_events.csv", index=False)
-
+        coverage = None
         if evaluation_window is not None:
-            source_dates = set(pd.to_datetime(run_frame["time"], utc=True, format="mixed").dt.tz_convert(args.timezone).dt.date)
-            evaluated_dates = set(trades["date"]) if not trades.empty else set()
+            all_session_dates = pd.to_datetime(market_data.frame["time"], utc=True, format="mixed").dt.tz_convert(args.timezone).dt.date
+            source_dates = {value for value in all_session_dates if evaluation_window.includes_session(value)}
+            invalid_data = {
+                pd.Timestamp(event.skip_date).date()
+                for event in find_gap_events(market_data.frame, expected_minutes=parse_timeframe_minutes(args.timeframe) or 5.0)
+                if evaluation_window.includes_session(event.skip_date)
+            }
             try:
                 market_dates = set(signed_market_dates(evaluation_window.evaluation_start, evaluation_window.evaluation_end))
             except MarketCalendarError as exc:
@@ -217,6 +220,7 @@ def main(*, _trusted: bool = False) -> None:
                 evaluation_window.evaluation_dates,
                 source_dates=source_dates,
                 planned_closed=planned_closed,
+                invalid_data=invalid_data,
             )
             evaluated_dates = {
                 session for session, state in classification.items() if state == "VALID"
@@ -235,7 +239,7 @@ def main(*, _trusted: bool = False) -> None:
                     "Evaluation coverage incomplete (INVALID_DATA/MISSING_SOURCE); "
                     "use --allow-incomplete-evaluation only for research."
                 )
-            (output_dir / "run_manifest.json").write_text(
+            (artifact_dir / "run_manifest.json").write_text(
                 json.dumps(
                     {
                         **evaluation_window.manifest_fields(
@@ -263,16 +267,42 @@ def main(*, _trusted: bool = False) -> None:
                 ),
                 encoding="utf-8",
             )
+        summary.to_csv(artifact_dir / "summary.csv", index=False)
+        monthly.to_csv(artifact_dir / "monthly_stats.csv", index=False)
+        weekdays.to_csv(artifact_dir / "weekday_stats.csv", index=False)
+        parameters.to_csv(artifact_dir / "parameters.csv", index=False)
+        skipped.to_csv(artifact_dir / "skipped_dates.csv", index=False)
+        gaps.to_csv(artifact_dir / "backtest_gap_events.csv", index=False)
         closed = {"win", "loss", "loss_same_bar", "breakeven", "reduced_loss"}
         if not trades.empty and "terminal_known_time" not in trades.columns:
             trades = trades.copy()
             trades["terminal_known_time"] = trades["exit_time"]
+        trades.to_csv(artifact_dir / "trades.csv", index=False)
         xray = build_risk_xray(
             trades[trades["result"].isin(closed)] if not trades.empty else trades,
             eligible_dates=None if evaluation_window is None else evaluation_window.evaluation_dates,
-            funnel=None,
+            funnel={
+                "proposed": len(selected_lifecycles),
+                "risk_approved": None,
+                "staged": None,
+                "filled": len(selected_trades),
+                "rejected": None,
+                "expired": None,
+            },
+            coverage=coverage,
+            provenance_hashes={
+                "input_hash": stable_frame_hash(market_data.frame),
+                "code_hash": source_code_hash(),
+                "coverage_hash": None if coverage is None else canonical_hash(coverage),
+            },
         )
-        write_risk_xray(xray, output_dir)
+        write_risk_xray(xray, artifact_dir)
+        if output_dir.exists():
+            if any(output_dir.iterdir()):
+                shutil.rmtree(artifact_dir, ignore_errors=True)
+                raise SystemExit(f"output directory must be absent or empty: {output_dir}")
+            output_dir.rmdir()
+        os.replace(artifact_dir, output_dir)
 
         print(f"Loaded {len(market_data.frame)} candles: {market_data.symbol} {market_data.timeframe}")
         print(f"Skipped dates: {len(result.skipped_dates)}")

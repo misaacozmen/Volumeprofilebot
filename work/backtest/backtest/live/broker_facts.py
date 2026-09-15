@@ -105,11 +105,7 @@ class BrokerFactsBuilder:
             symbol = str(row.get("symbol") or "")
             if not symbol:
                 raise BrokerFactsError("exposure symbol is missing")
-            contract = default_contract if symbol == default_contract.broker_symbol else None
-            if contract is None and self.contract_resolver is not None:
-                contract = self.contract_resolver(symbol)
-            if contract is None:
-                raise BrokerFactsError(f"no signed contract for exposure symbol {symbol}")
+            contract = self._resolve_contract(symbol, default_contract)
             sl = row.get("sl")
             if sl is None:
                 raise BrokerFactsError(f"exposure {symbol} has no exact stop loss")
@@ -133,11 +129,7 @@ class BrokerFactsBuilder:
             symbol = str(row.get("symbol") or "")
             if not symbol:
                 raise BrokerFactsError("exposure symbol is missing")
-            contract = default_contract if symbol == default_contract.broker_symbol else None
-            if contract is None and self.contract_resolver is not None:
-                contract = self.contract_resolver(symbol)
-            if contract is None:
-                raise BrokerFactsError(f"no signed contract for exposure symbol {symbol}")
+            contract = self._resolve_contract(symbol, default_contract)
             volume = _number(row.get("volume_current", row.get("volume", row.get("volume_initial"))), f"{symbol} exposure volume", positive=True)
             entry = _number(row.get("price_open", row.get("price")), f"{symbol} exposure entry price", positive=True)
             notional = abs(volume * entry * contract.contract_size)
@@ -148,6 +140,64 @@ class BrokerFactsBuilder:
         pair = notionals.get(default_contract.broker_symbol, 0.0) / equity * 100.0
         concentration = max(notionals.values()) / total * 100.0
         return float(pair), float(concentration)
+
+    def _resolve_contract(self, symbol: str, default_contract: InstrumentContract) -> InstrumentContract:
+        if symbol == default_contract.broker_symbol:
+            return default_contract
+        if self.contract_resolver is None:
+            raise BrokerFactsError(f"no signed contract for broker symbol {symbol}")
+        try:
+            resolved = self.contract_resolver(symbol)
+        except Exception as exc:
+            raise BrokerFactsError(f"no signed contract for broker symbol {symbol}") from exc
+        if not isinstance(resolved, InstrumentContract):
+            raise BrokerFactsError(f"broker symbol {symbol} resolved to an invalid contract")
+        return resolved
+
+    def _account_entry_counts(
+        self,
+        deals: tuple[dict[str, Any], ...],
+        positions: tuple[dict[str, Any], ...],
+        pending: tuple[dict[str, Any], ...],
+        default_contract: InstrumentContract,
+    ) -> tuple[int, dict[str, int], dict[str, int], dict[str, int]]:
+        """Count account-day entries and all exposure reservations.
+
+        This deliberately does not apply the strategy/campaign matcher.  A
+        second campaign on the same account must consume the same daily slots,
+        and an unknown exposure is a broker-facts failure rather than zero.
+        """
+        known = self.deal_in_values | self.deal_inout_values | self.deal_out_values | self.deal_out_by_values
+        entry_keys: set[tuple[str, str]] = set()
+        entry_counts: dict[str, int] = {}
+        for deal in deals:
+            entry = deal.get("entry")
+            if entry not in known:
+                raise BrokerFactsError("account deal has an unknown entry type")
+            if entry not in self.deal_in_values | self.deal_inout_values:
+                continue
+            symbol = str(deal.get("symbol") or "")
+            if not symbol:
+                raise BrokerFactsError("account entry deal has no symbol")
+            resolved = self._resolve_contract(symbol, default_contract)
+            identity = str(deal.get("order") or deal.get("position_id") or deal.get("deal_id") or "").strip()
+            if not identity:
+                raise BrokerFactsError("account entry deal has no order/position identity")
+            key = (identity, resolved.instrument_id)
+            if key in entry_keys:
+                continue
+            entry_keys.add(key)
+            entry_counts[resolved.instrument_id] = entry_counts.get(resolved.instrument_id, 0) + 1
+
+        def exposure_counts(rows: tuple[dict[str, Any], ...], field: str) -> dict[str, int]:
+            result: dict[str, int] = {}
+            for row in rows:
+                symbol = str(row.get("symbol") or "")
+                resolved = self._resolve_contract(symbol, default_contract)
+                result[resolved.instrument_id] = result.get(resolved.instrument_id, 0) + 1
+            return result
+
+        return len(entry_keys), entry_counts, exposure_counts(positions, "positions"), exposure_counts(pending, "pending")
 
     def build(
         self,
@@ -171,6 +221,8 @@ class BrokerFactsBuilder:
             if terminal.as_of > current or current - terminal.reconciliation_at > timedelta(hours=24):
                 raise BrokerFactsError("canonical terminal fact snapshot is stale")
             account_login = _value(account, "login")
+            if isinstance(account_login, bool) or not isinstance(account_login, (str, int)) or not str(account_login).strip():
+                raise BrokerFactsError("account login is missing")
             equity = _number(_value(account, "equity"), "account equity", positive=True)
             margin_free = _number(_value(account, "margin_free"), "account margin_free", nonnegative=True)
             raw_leverage = _value(account, "leverage")
@@ -191,10 +243,7 @@ class BrokerFactsBuilder:
                 raise BrokerFactsError("canonical strategy health state is unknown")
             def instrument_id(row: Mapping[str, Any]) -> str:
                 symbol = str(row.get("symbol") or "")
-                resolved = contract if symbol == contract.broker_symbol else (self.contract_resolver(symbol) if self.contract_resolver else None)
-                if resolved is None:
-                    raise BrokerFactsError(f"no signed contract for owned symbol {symbol}")
-                return resolved.instrument_id
+                return self._resolve_contract(symbol, contract).instrument_id
 
             owned_deal_ids = list(terminal.owned_deal_ids)
             last_entry: datetime | None = None

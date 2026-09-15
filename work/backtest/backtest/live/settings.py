@@ -60,6 +60,7 @@ SUPPORTED_ENV = frozenset(
 SECRET_FIELDS = frozenset({"read_only_password", "password", "capital_api_key", "capital_api_password"})
 _SID_PATTERN = re.compile(r"^S-\d-(?:\d+-)+\d+$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+PROJECT_ENV_PREFIXES = ("XM_", "CAPITAL_", "SUPER1_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,7 @@ class EnvironmentField:
     value_type: str
     secret: bool = False
     source_policy: str = "ENV_ALLOWLIST"
+    required_modes: frozenset[str] = frozenset()
 
 
 ENVIRONMENT_SCHEMA = tuple(
@@ -126,6 +128,17 @@ def _get(environment: Mapping[str, str], name: str) -> str:
     return str(environment.get(name, "") or "").strip()
 
 
+def validate_environment_keys(environment: Mapping[str, str]) -> None:
+    """Reject unknown project variables while allowing ordinary platform env."""
+    unknown = sorted(
+        str(name) for name in environment
+        if any(str(name).startswith(prefix) for prefix in PROJECT_ENV_PREFIXES)
+        and str(name) not in SUPPORTED_ENV
+    )
+    if unknown:
+        raise SettingsError(f"unknown project environment variable(s): {', '.join(unknown)}")
+
+
 def _validate_invocation_fields(settings: RuntimeSettings, *, required: bool) -> None:
     fields_to_check = (
         ("SUPER1_INVOCATION_NONCE", settings.invocation_nonce),
@@ -170,6 +183,7 @@ def load_settings(
     enforce_required: bool = True,
 ) -> RuntimeSettings:
     env = os.environ if environment is None else environment
+    validate_environment_keys(env)
     mode = str(config.get("account_mode") or config.get("environment") or "").upper()
     signed_terminal = str(config.get("terminal_path") or "").strip()
     signed_server = str(config.get("expected_server") or "").strip()

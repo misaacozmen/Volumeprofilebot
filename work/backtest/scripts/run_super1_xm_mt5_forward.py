@@ -28,7 +28,7 @@ from backtest.market_calendar import MarketCalendarError, load_signed_calendar
 from backtest.live.production_flow import ProductionDependencies, ProductionOrderFlow
 from backtest.live.risk_guard import RiskGuard
 from backtest.live.halt import HaltController, emergency_flatten_cycle
-from backtest.live.instruments import InstrumentRegistry, validate_economic_semantics
+from backtest.live.instruments import InstrumentRegistry, validate_current_tick, validate_economic_semantics
 from backtest.live.order_state import OrderStateMachine
 from backtest.live.settings import PlatformPaths, RuntimeSettings
 from backtest.live.strategy_health import LockedOOSBaseline, StrategyHealth
@@ -1093,7 +1093,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         if info is None:
             raise xm.BrokerStateUnknownError("signed production symbol metadata is unavailable")
         contract = registry.symbol_info(symbol, info)
-        validate_economic_semantics(contract, self.mt5.order_calc_profit)
+        tick = self._retry_mt5_read("symbol_info_tick", symbol)
+        reference_price = validate_current_tick(contract, tick)
+        validate_economic_semantics(contract, self.mt5.order_calc_profit, reference_price=reference_price)
         if contract.instrument_id != instrument_id:
             raise Super1RuntimeError("signed instrument ID does not match the registry")
         return registry, contract, registry_hash
@@ -1103,6 +1105,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         output_root: Path,
         symbol: str,
         contract: InstrumentContract,
+        registry: InstrumentRegistry,
         health: StrategyHealth,
         now: pd.Timestamp,
         approval: bool,
@@ -1128,6 +1131,9 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 terminal_fact_reader=lambda _current: terminal_facts,
                 strategy_matcher=belongs_to_super1,
                 mutex=order_mutex,
+                contract_resolver=lambda broker_symbol: registry.symbol_info(
+                    broker_symbol, self._retry_mt5_read("symbol_info", broker_symbol)
+                ),
             ).build(
                 now=now.to_pydatetime(),
                 contract=contract,
@@ -1370,6 +1376,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             self._order_db(output_root),
             baseline=_signed_health_baseline(self.config, candidate_hash),
             expected_candidate_hash=candidate_hash,
+            strict_broker_order=True,
         )
         limits = _signed_risk_limits(self.config)
         policy = _signed_live_risk_policy(self.config)
@@ -1407,7 +1414,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
         def snapshot_provider() -> BrokerSnapshot:
             nonlocal snapshots
             snapshots += 1
-            return self._production_snapshot(output_root, symbol, contract, health, snapshot_now, snapshots >= 2)
+            return self._production_snapshot(output_root, symbol, contract, registry, health, snapshot_now, snapshots >= 2)
 
         try:
             result = ProductionOrderFlow(dependencies).send(
@@ -1723,7 +1730,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             if info is None:
                 raise xm.BrokerStateUnknownError("SMOKE symbol metadata is unavailable")
             contract = registry.symbol_info(symbol, info)
-            validate_economic_semantics(contract, self.mt5.order_calc_profit)
+            reference_price = validate_current_tick(contract, self._retry_mt5_read("symbol_info_tick", symbol))
+            validate_economic_semantics(contract, self.mt5.order_calc_profit, reference_price=reference_price)
             if contract.instrument_id != instrument_id:
                 raise core.CriticalLiveError("SMOKE instrument ID does not match the signed registry")
             tick = self._retry_mt5_read("symbol_info_tick", symbol)
@@ -1837,9 +1845,10 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 raise core.CriticalLiveError("SMOKE strategy-health state is missing")
             health = StrategyHealth.load_canonical(
                 self._order_db(output_root),
-                baseline=_signed_health_baseline(self.config, candidate_hash),
-                expected_candidate_hash=candidate_hash,
-            )
+            baseline=_signed_health_baseline(self.config, candidate_hash),
+            expected_candidate_hash=candidate_hash,
+            strict_broker_order=True,
+        )
             limits = _signed_risk_limits(self.config)
             policy = _signed_live_risk_policy(self.config)
             adapter = _Super1ProductionSmokeAdapter(self, output_root, request, contract)

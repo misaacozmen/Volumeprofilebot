@@ -76,12 +76,14 @@ class BrokerHealthMetrics:
     session_count: int
     deal_ids: tuple[str, ...]
     session_ids: tuple[str, ...]
+    last_terminal_time_utc: datetime | None = None
+    deal_terminal_times_utc: tuple[tuple[str, datetime], ...] = ()
 
 
 class StrategyHealth:
-    ORDER = (StrategyHealthState.UNKNOWN, StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING, StrategyHealthState.DECAYED, StrategyHealthState.DISABLED)
+    ORDER = (StrategyHealthState.UNKNOWN, StrategyHealthState.WARMUP, StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING, StrategyHealthState.DECAYED, StrategyHealthState.DISABLED)
 
-    def __init__(self, state: str = StrategyHealthState.UNKNOWN, *, baseline: LockedOOSBaseline | None = None, expected_candidate_hash: str | None = None, audit: Callable[[Mapping[str, Any]], Any] | None = None) -> None:
+    def __init__(self, state: str = StrategyHealthState.UNKNOWN, *, baseline: LockedOOSBaseline | None = None, expected_candidate_hash: str | None = None, audit: Callable[[Mapping[str, Any]], Any] | None = None, strict_broker_order: bool = False) -> None:
         if state not in self.ORDER:
             raise StrategyHealthError("unknown strategy health state")
         self.state = state
@@ -89,6 +91,9 @@ class StrategyHealth:
         if expected_candidate_hash is not None and (baseline is None or baseline.candidate_hash != expected_candidate_hash):
             raise StrategyHealthError("baseline candidate hash does not match signed candidate")
         self.audit = audit
+        if not isinstance(strict_broker_order, bool):
+            raise StrategyHealthError("strict broker order flag must be boolean")
+        self.strict_broker_order = strict_broker_order
         self.closed_fills = 0
         self.broker_deal_ids: tuple[str, ...] = ()
         self.valid_sessions = 0
@@ -97,6 +102,8 @@ class StrategyHealth:
         self.drawdown_r = 0.0
         self.session_ids: tuple[str, ...] = ()
         self.last_decision: HealthDecision | None = None
+        self.last_terminal_time_utc: datetime | None = None
+        self.data_integrity_error: str | None = None
 
     def _record(self, decision: HealthDecision) -> HealthDecision:
         self.last_decision = decision
@@ -187,25 +194,46 @@ class StrategyHealth:
             session_count=len({item[3] for item in rows}),
             deal_ids=tuple(item[1] for item in rows),
             session_ids=tuple(sorted({item[3] for item in rows})),
+            last_terminal_time_utc=rows[-1][0] if rows else None,
+            deal_terminal_times_utc=tuple((item[1], item[0]) for item in rows),
         )
 
     def _apply_broker_metrics(self, metrics: BrokerHealthMetrics) -> int:
         previous_ids = set(self.broker_deal_ids)
+        observed_ids = set(metrics.deal_ids)
+        if not previous_ids.issubset(observed_ids):
+            self.data_integrity_error = "broker terminal deal snapshot lost previously observed facts; canonical deal set is append-only"
+            return 0
+        if self.strict_broker_order and self.last_terminal_time_utc is not None and metrics.last_terminal_time_utc is not None:
+            new_rows = observed_ids - previous_ids
+            terminal_times = dict(metrics.deal_terminal_times_utc)
+            if any(
+                deal_id in new_rows and terminal_times.get(deal_id) is not None
+                and terminal_times[deal_id] < self.last_terminal_time_utc
+                for deal_id in new_rows
+            ):
+                self.data_integrity_error = "late broker terminal deal arrived after the health cursor"
+                return 0
         self.rolling_net_r = metrics.rolling_net_r
         self.drawdown_r = metrics.drawdown_r
         self.closed_fills = metrics.fill_count
         self.valid_sessions = metrics.session_count
         self.broker_deal_ids = metrics.deal_ids
         self.session_ids = metrics.session_ids
+        self.last_terminal_time_utc = metrics.last_terminal_time_utc
         new_fills = len(set(metrics.deal_ids) - previous_ids)
         self.checkpoint_fills += new_fills
         return new_fills
 
     def activate(self, *, broker_deals: Iterable[Mapping[str, Any]]) -> HealthDecision:
         self._apply_broker_metrics(self.metrics_from_broker_deals(broker_deals))
+        if self.data_integrity_error is not None:
+            return self._record(HealthDecision(self.state, self.data_integrity_error))
         if self.baseline is None or not self.baseline.locked or not self.baseline.sufficient:
             return self._record(HealthDecision(self.state, "INSUFFICIENT_BASELINE", True))
-        if self.state == StrategyHealthState.UNKNOWN and self.valid_sessions > 0:
+        if self.state == StrategyHealthState.UNKNOWN:
+            self.transition(StrategyHealthState.WARMUP)
+        if self.state == StrategyHealthState.WARMUP and self.valid_sessions > 0:
             self.transition(StrategyHealthState.ACTIVE)
         return self._record(HealthDecision(self.state, "WARMUP_COMPLETE"))
 
@@ -216,6 +244,8 @@ class StrategyHealth:
     ) -> HealthDecision:
         metrics = self.metrics_from_broker_deals(broker_deals)
         self._apply_broker_metrics(metrics)
+        if self.data_integrity_error is not None:
+            return self._record(HealthDecision(self.state, self.data_integrity_error))
         if self.baseline is None or not self.baseline.locked:
             return self._record(HealthDecision(self.state, "INSUFFICIENT_BASELINE", True))
         if not self.baseline.sufficient:
@@ -248,7 +278,7 @@ class StrategyHealth:
         return self._record(HealthDecision(self.state, "DECAYED_EXPOSURE_FULLY_RECONCILED"))
 
     def allows_new_position(self) -> bool:
-        return self.state in {StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING}
+        return self.data_integrity_error is None and self.state in {StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING}
 
     def health_json(self) -> dict[str, Any]:
         return {
@@ -262,6 +292,8 @@ class StrategyHealth:
             "baseline_candidate_hash": None if self.baseline is None else self.baseline.candidate_hash,
             "broker_deal_ids": list(self.broker_deal_ids),
             "session_ids": list(self.session_ids),
+            "last_terminal_time_utc": None if self.last_terminal_time_utc is None else self.last_terminal_time_utc.isoformat(),
+            "data_integrity_error": self.data_integrity_error,
         }
 
     def write_health(self, path: str | Path) -> None:
@@ -283,6 +315,8 @@ class StrategyHealth:
         """Persist health and its locked baseline in the canonical order DB."""
         if self.baseline is None or not self.baseline.locked:
             raise StrategyHealthError("canonical health requires a locked baseline")
+        if self.data_integrity_error is not None:
+            raise StrategyHealthError(self.data_integrity_error)
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(target, timeout=30.0, isolation_level=None)
@@ -308,9 +342,12 @@ class StrategyHealth:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS strategy_health_cursor (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_deal_id TEXT NOT NULL,
-                    updated_at_utc TEXT NOT NULL
+                    last_terminal_time_utc TEXT NOT NULL DEFAULT '', updated_at_utc TEXT NOT NULL
                 )"""
             )
+            cursor_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(strategy_health_cursor)")}
+            if "last_terminal_time_utc" not in cursor_columns:
+                connection.execute("ALTER TABLE strategy_health_cursor ADD COLUMN last_terminal_time_utc TEXT NOT NULL DEFAULT ''")
             metrics = {
                 "closed_fills": self.closed_fills,
                 "valid_sessions": self.valid_sessions,
@@ -318,6 +355,7 @@ class StrategyHealth:
                 "drawdown_r": self.drawdown_r,
                 "broker_deal_ids": list(self.broker_deal_ids),
                 "session_ids": list(self.session_ids),
+                "last_terminal_time_utc": None if self.last_terminal_time_utc is None else self.last_terminal_time_utc.isoformat(),
             }
             connection.execute("BEGIN IMMEDIATE")
             persisted_ids = {str(row[0]) for row in connection.execute("SELECT deal_id FROM broker_terminal_deals")}
@@ -338,10 +376,15 @@ class StrategyHealth:
                 (self.state, self.baseline.candidate_hash, json.dumps(asdict(self.baseline), sort_keys=True, separators=(",", ":")), json.dumps(metrics, sort_keys=True, separators=(",", ":")), datetime.now(timezone.utc).isoformat()),
             )
             connection.execute(
-                """INSERT INTO strategy_health_cursor(singleton,last_deal_id,updated_at_utc) VALUES(1,?,?)
+                """INSERT INTO strategy_health_cursor(singleton,last_deal_id,last_terminal_time_utc,updated_at_utc) VALUES(1,?,?,?)
                    ON CONFLICT(singleton) DO UPDATE SET last_deal_id=excluded.last_deal_id,
+                   last_terminal_time_utc=excluded.last_terminal_time_utc,
                    updated_at_utc=excluded.updated_at_utc""",
-                (self.broker_deal_ids[-1] if self.broker_deal_ids else "", observed_at),
+                (
+                    self.broker_deal_ids[-1] if self.broker_deal_ids else "",
+                    "" if self.last_terminal_time_utc is None else self.last_terminal_time_utc.isoformat(),
+                    observed_at,
+                ),
             )
             connection.commit()
         except Exception:
@@ -359,6 +402,7 @@ class StrategyHealth:
         baseline: LockedOOSBaseline,
         expected_candidate_hash: str,
         audit: Callable[[Mapping[str, Any]], Any] | None = None,
+        strict_broker_order: bool = False,
     ) -> "StrategyHealth":
         connection = sqlite3.connect(Path(path), timeout=30.0)
         try:
@@ -366,7 +410,7 @@ class StrategyHealth:
                 "SELECT state,baseline_candidate_hash,baseline_json,metrics_json FROM strategy_health_state WHERE singleton=1"
             ).fetchone()
             durable_deal_ids = {str(item[0]) for item in connection.execute("SELECT deal_id FROM broker_terminal_deals")}
-            cursor = connection.execute("SELECT last_deal_id FROM strategy_health_cursor WHERE singleton=1").fetchone()
+            cursor = connection.execute("SELECT last_deal_id,last_terminal_time_utc FROM strategy_health_cursor WHERE singleton=1").fetchone()
         except sqlite3.Error as exc:
             raise StrategyHealthError("canonical strategy-health state is missing") from exc
         finally:
@@ -383,7 +427,7 @@ class StrategyHealth:
         canonical_baseline = json.loads(json.dumps(asdict(baseline), sort_keys=True, separators=(",", ":")))
         if baseline_json != canonical_baseline or not isinstance(metrics, dict):
             raise StrategyHealthError("canonical strategy-health baseline was mutated")
-        health = cls(str(row[0]), baseline=baseline, expected_candidate_hash=expected_candidate_hash, audit=audit)
+        health = cls(str(row[0]), baseline=baseline, expected_candidate_hash=expected_candidate_hash, audit=audit, strict_broker_order=strict_broker_order)
         try:
             health.closed_fills = int(metrics["closed_fills"])
             health.valid_sessions = int(metrics["valid_sessions"])
@@ -391,30 +435,37 @@ class StrategyHealth:
             health.drawdown_r = float(metrics["drawdown_r"])
             health.broker_deal_ids = tuple(str(value) for value in metrics["broker_deal_ids"])
             health.session_ids = tuple(str(value) for value in metrics["session_ids"])
+            raw_last_time = metrics.get("last_terminal_time_utc")
+            health.last_terminal_time_utc = None if raw_last_time in (None, "") else cls._timestamp(raw_last_time, deal_id="health-cursor")
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise StrategyHealthError("canonical strategy-health metrics are corrupt") from exc
         if health.closed_fills != len(set(health.broker_deal_ids)) or health.valid_sessions != len(set(health.session_ids)):
             raise StrategyHealthError("canonical strategy-health counters are not derived from unique broker facts")
-        if durable_deal_ids != set(health.broker_deal_ids) or cursor is None or (health.broker_deal_ids and str(cursor[0]) != health.broker_deal_ids[-1]):
+        expected_cursor_time = "" if health.last_terminal_time_utc is None else health.last_terminal_time_utc.isoformat()
+        if durable_deal_ids != set(health.broker_deal_ids) or cursor is None or str(cursor[0]) != (health.broker_deal_ids[-1] if health.broker_deal_ids else "") or str(cursor[1] or "") != expected_cursor_time:
             raise StrategyHealthError("canonical strategy-health cursor/deal set is corrupt")
         if not all(math.isfinite(value) for value in (health.rolling_net_r, health.drawdown_r)):
             raise StrategyHealthError("canonical strategy-health metrics are non-finite")
         return health
 
     @classmethod
-    def load_health(cls, path: str | Path, *, baseline: LockedOOSBaseline | None = None, expected_candidate_hash: str | None = None, audit: Callable[[Mapping[str, Any]], Any] | None = None) -> "StrategyHealth":
+    def load_health(cls, path: str | Path, *, baseline: LockedOOSBaseline | None = None, expected_candidate_hash: str | None = None, audit: Callable[[Mapping[str, Any]], Any] | None = None, strict_broker_order: bool = False) -> "StrategyHealth":
         try:
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
             state = str(payload["state"])
             if state in {StrategyHealthState.ACTIVE, StrategyHealthState.MONITORING, StrategyHealthState.DECAYED} and not payload.get("canonical_state_hash"):
                 raise StrategyHealthError("mutable strategy-health JSON cannot authorize an active state")
-            health = cls(state, baseline=baseline, expected_candidate_hash=expected_candidate_hash, audit=audit)
+            health = cls(state, baseline=baseline, expected_candidate_hash=expected_candidate_hash, audit=audit, strict_broker_order=strict_broker_order)
             health.closed_fills = int(payload.get("closed_fills", 0))
             health.valid_sessions = int(payload.get("valid_sessions", 0))
             health.rolling_net_r = float(payload.get("rolling_net_r", 0.0))
             health.drawdown_r = float(payload.get("drawdown_r", 0.0))
             health.broker_deal_ids = tuple(str(item) for item in payload.get("broker_deal_ids", ()))
             health.session_ids = tuple(str(item) for item in payload.get("session_ids", ()))
+            raw_last_time = payload.get("last_terminal_time_utc")
+            health.last_terminal_time_utc = None if raw_last_time in (None, "") else cls._timestamp(raw_last_time, deal_id="health-state")
+            raw_integrity = payload.get("data_integrity_error")
+            health.data_integrity_error = None if raw_integrity in (None, "") else str(raw_integrity)
             if health.closed_fills != len(set(health.broker_deal_ids)):
                 raise StrategyHealthError("persisted health count is not derived from unique deal IDs")
             if health.valid_sessions != len(set(health.session_ids)):

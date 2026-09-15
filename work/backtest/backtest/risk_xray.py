@@ -10,7 +10,17 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-from .numeric_contracts import FinancialMathError, finite_float
+from .numeric_contracts import FinancialMathError, finite_float, profit_factor
+
+
+def _is_sha256(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _weighted_hhi(labels: Iterable[object], weights: Iterable[float]) -> float | None:
@@ -36,6 +46,17 @@ def _series(fills: pd.DataFrame, eligible_dates: Iterable[object] | None, covera
             index = [value for value in index if classification.get(value) == "VALID" and value in evaluated]
     existing = {str(index_value): float(value) for index_value, value in daily.items()}
     return pd.Series([existing.get(value, 0.0) for value in index], index=index, dtype=float)
+
+
+def _input_hash(frame: pd.DataFrame) -> str:
+    normalized = frame.copy()
+    if normalized.empty:
+        return hashlib.sha256(b"EMPTY").hexdigest()
+    normalized = normalized.reindex(sorted(normalized.columns), axis=1).fillna("").astype(str)
+    normalized = normalized.sort_values(list(normalized.columns), kind="mergesort").reset_index(drop=True)
+    return hashlib.sha256(
+        normalized.to_csv(index=False, lineterminator="\n").encode("utf-8")
+    ).hexdigest()
 
 
 def _stable_terminal_order(frame: pd.DataFrame) -> pd.DataFrame:
@@ -129,6 +150,10 @@ def build_risk_xray(
         if "r_multiple" not in fills.columns:
             raise FinancialMathError("fill frame missing: r_multiple")
         frame = _stable_terminal_order(fills.copy())
+        if "result" in frame.columns:
+            closed_results = {"win", "loss", "loss_same_bar", "breakeven", "reduced_loss"}
+            if (~frame["result"].isin(closed_results)).any():
+                raise FinancialMathError("risk x-ray accepts closed terminal fills only")
         frame["r_multiple"] = [finite_float(value, "r_multiple") for value in frame["r_multiple"]]
         for column, default in (("date", ""), ("symbol", ""), ("direction", "")):
             if column not in frame.columns:
@@ -142,14 +167,24 @@ def build_risk_xray(
     downside_std = float((downside.pow(2).mean()) ** 0.5) if len(downside) else None
     daily_mean = float(daily.mean()) if len(daily) else None
     sorted_daily = daily.sort_values().to_numpy()
-    cvar = float(sorted_daily[: max(1, int(len(sorted_daily) * 0.05))].mean()) if len(sorted_daily) else None
+    cvar = float(sorted_daily[: max(1, int(len(sorted_daily) * 0.05))].mean()) if len(sorted_daily) >= 2 else None
     no_trades = not len(values)
     risk_column = next((column for column in ("open_risk", "exposure_r", "risk_at_entry") if column in frame.columns), None)
     risk_weights = frame[risk_column] if risk_column is not None else []
     pnl_weights = frame["r_multiple"].abs() if len(frame) else []
     risk_hhi = {"symbol": _weighted_hhi(frame["symbol"], risk_weights), "direction": _weighted_hhi(frame["direction"], risk_weights)} if len(frame) else {"symbol": None, "direction": None}
     pnl_hhi = {"symbol": _weighted_hhi(frame["symbol"], pnl_weights), "direction": _weighted_hhi(frame["direction"], pnl_weights)} if len(frame) else {"symbol": None, "direction": None}
-    daily_reason = "NO_ELIGIBLE_DAYS" if not len(daily) else ("INSUFFICIENT_DAILY_SAMPLE" if len(daily) < 2 else None)
+    daily_reason = "NO_ELIGIBLE_DAYS" if not len(daily) else ("INSUFFICIENT_DAILY_SAMPLE" if len(daily) < 2 else ("ZERO_VARIANCE" if daily_std == 0 else None))
+    sortino_reason = (
+        "NO_ELIGIBLE_DAYS" if daily_mean is None else
+        "NO_DOWNSIDE_DAYS" if not len(downside) else
+        "ZERO_DOWNSIDE_VARIANCE" if downside_std == 0 else None
+    )
+    cvar_reason = "NO_ELIGIBLE_DAYS" if not len(daily) else ("INSUFFICIENT_DAILY_SAMPLE" if len(daily) < 2 else None)
+    pf, pf_reason = profit_factor(gross_profit, gross_loss)
+    simultaneous_open_risk = _simultaneous_risk(frame)
+    hashes = dict(provenance_hashes or {})
+    provenance_complete = all(_is_sha256(hashes.get(key)) for key in ("input_hash", "code_hash", "coverage_hash"))
     funnel_value = dict(funnel) if funnel is not None else {"proposed": None, "risk_approved": None, "staged": None, "filled": None, "rejected": None, "expired": None}
     return {
         "fill_count": int(len(values)),
@@ -159,8 +194,8 @@ def build_risk_xray(
         "net_r": float(values.sum()) if len(values) else 0.0,
         "expectancy": None if no_trades else float(values.mean()),
         "expectancy_reason": "NO_CLOSED_TRADES" if no_trades else None,
-        "profit_factor": None if gross_loss == 0 else gross_profit / gross_loss,
-        "profit_factor_reason": ("NO_CLOSED_TRADES" if no_trades else "NO_GROSS_LOSS") if gross_loss == 0 else None,
+        "profit_factor": pf,
+        "profit_factor_reason": "NO_CLOSED_TRADES" if no_trades else pf_reason,
         "max_drawdown_r": None if no_trades else float(_drawdown(values).min()),
         "max_drawdown_r_reason": "NO_CLOSED_TRADES" if no_trades else None,
         "drawdown_duration": None if no_trades else _drawdown_duration(values),
@@ -172,16 +207,18 @@ def build_risk_xray(
         "daily_r_sharpe_rf0": None if daily_mean is None or not daily_std else daily_mean / daily_std * sqrt(252),
         "daily_r_sharpe_rf0_reason": daily_reason if daily_mean is None or not daily_std else None,
         "sortino": None if daily_mean is None or not downside_std else daily_mean / downside_std * sqrt(252),
-        "sortino_reason": "NO_ELIGIBLE_DAYS" if daily_mean is None else ("NO_DOWNSIDE_DAYS" if not downside_std else None),
+        "sortino_reason": sortino_reason,
         "cvar_95": cvar,
-        "cvar_95_reason": "NO_ELIGIBLE_DAYS" if cvar is None else None,
+        "cvar_95_reason": cvar_reason,
         "risk_concentration": {"risk_weighted_hhi": risk_hhi, "pnl_weighted_hhi": pnl_hhi, "risk_hhi_reason": None if risk_column is not None else "NO_RISK_CONTRIBUTION_EVIDENCE"},
-        "simultaneous_open_risk": _simultaneous_risk(frame),
-        "simultaneous_open_risk_reason": None if _simultaneous_risk(frame) is not None else "NO_OPEN_INTERVAL_EVIDENCE",
+        "simultaneous_open_risk": simultaneous_open_risk,
+        "simultaneous_open_risk_reason": None if simultaneous_open_risk is not None else "NO_OPEN_INTERVAL_EVIDENCE",
         "funnel": funnel_value,
         "funnel_evidence_reason": None if funnel is not None else "NO_LIFECYCLE_EVIDENCE_FOR_UNFILLED_STAGES",
         "coverage": None if coverage is None else dict(coverage),
-        "provenance_hashes": dict(provenance_hashes or {}),
+        "provenance_hashes": hashes | {"input_hash": hashes.get("input_hash") or _input_hash(frame)},
+        "provenance_complete": provenance_complete,
+        "provenance_reason": None if provenance_complete else "MISSING_INPUT_CODE_OR_COVERAGE_HASH",
     }
 
 

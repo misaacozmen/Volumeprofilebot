@@ -74,7 +74,10 @@ def quantize_price(value: Any, tick_size: Any) -> float:
     price, tick = _decimal(value, "price"), _decimal(tick_size, "tick_size")
     if price <= 0 or tick <= 0:
         raise FinancialMathError("price and tick_size must be positive")
-    return float((price / tick).to_integral_value(rounding=ROUND_HALF_EVEN) * tick)
+    result = float((price / tick).to_integral_value(rounding=ROUND_HALF_EVEN) * tick)
+    if not math.isfinite(result) or result <= 0:
+        raise FinancialMathError("quantized price is non-finite")
+    return result
 
 
 def quantize_volume_down(value: Any, step: Any, minimum: Any, maximum: Any) -> float:
@@ -90,12 +93,36 @@ def quantize_volume_down(value: Any, step: Any, minimum: Any, maximum: Any) -> f
 
 def safe_divide(numerator: Any, denominator: Any, *, reason: str) -> tuple[float | None, str | None]:
     top, bottom = finite_float(numerator, "numerator"), finite_float(denominator, "denominator")
+    if bottom < 0:
+        raise FinancialMathError("denominator must be non-negative")
     if bottom == 0:
         return None, reason
     result = top / bottom
     if not math.isfinite(result):
         raise FinancialMathError("division result is non-finite")
     return result, None
+
+
+def normalize_r(pnl: Any, risk: Any, *, name: str = "r_multiple") -> float:
+    """Normalize broker PnL by a strictly positive starting risk."""
+    pnl_value = finite_float(pnl, f"{name}.pnl")
+    risk_value = positive_float(risk, f"{name}.risk")
+    result = pnl_value / risk_value
+    if not math.isfinite(result):
+        raise FinancialMathError(f"{name} is non-finite")
+    return result
+
+
+def profit_factor(gross_profit: Any, gross_loss: Any) -> tuple[float | None, str | None]:
+    """Return PF, keeping undefined diagnostic divisions explicitly null."""
+    profit = nonnegative_float(gross_profit, "gross_profit")
+    loss = nonnegative_float(gross_loss, "gross_loss")
+    if loss == 0:
+        return None, "NO_GROSS_LOSS"
+    value = profit / loss
+    if not math.isfinite(value):
+        raise FinancialMathError("profit factor is non-finite")
+    return value, None
 
 
 def finite_vector(values: Any, name: str = "values") -> list[float]:
