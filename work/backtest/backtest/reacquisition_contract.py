@@ -5,6 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Iterable, Mapping
 
 import pandas as pd
@@ -22,6 +23,13 @@ MANIFEST_KEYS = frozenset({
 
 def digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
+
+
+def _require_digest(value: object, label: str) -> str:
+    text = str(value or "")
+    if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
+        raise ValueError(f"{label} is not a lowercase SHA-256 digest")
+    return text
 
 
 def target_key(value: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -74,7 +82,78 @@ def safe_provenance_path(root: Path, value: object, label: str) -> Path:
     return resolved
 
 
-def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path: Path) -> dict[str, Any]:
+def _manifest_artifact_path(root: Path, value: object, label: str) -> Path:
+    """Resolve a path stored by the bundle manifest without widening its trust root."""
+    relative = str(value or "")
+    prefix = "data/provenance/dukascopy_v4/"
+    if relative.startswith(prefix):
+        relative = relative[len(prefix):]
+    return safe_provenance_path(root, relative, label)
+
+
+def _validate_detached_attestation(
+    manifest_path: Path,
+    payload: Mapping[str, Any],
+    *,
+    attestation_path: Path | None,
+    signature_path: Path | None,
+    public_key_path: Path | None,
+    pinned_public_key_sha256: str | None,
+    expected_source_head_sha256: str | None,
+) -> None:
+    if not all((attestation_path, signature_path, public_key_path, pinned_public_key_sha256)):
+        raise ValueError("detached final attestation, signature, and pinned public key are required")
+    assert attestation_path is not None and signature_path is not None and public_key_path is not None
+    if not attestation_path.is_file() or not signature_path.is_file() or not public_key_path.is_file():
+        raise ValueError("detached final attestation, signature, or pinned public key is missing")
+    attestation_raw = attestation_path.read_bytes()
+    try:
+        attestation = json.loads(attestation_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("detached final attestation is not valid JSON") from exc
+    if not isinstance(attestation, dict) or attestation.get("schema_version") != 1:
+        raise ValueError("detached final attestation schema is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(attestation.get("run_nonce") or "")):
+        raise ValueError("detached final attestation run nonce is invalid")
+    if attestation.get("manifest_sha256") != sha256(manifest_path.read_bytes()).hexdigest():
+        raise ValueError("detached final attestation is not bound to final manifest bytes")
+    if attestation.get("inventory_sha256") != payload.get("inventory_sha256") or attestation.get("http_event_root_sha256") != payload.get("http_event_root_sha256"):
+        raise ValueError("detached final attestation inventory or HTTP event root differs")
+    source_head = _require_digest(attestation.get("source_head_sha256"), "detached final attestation source_head_sha256")
+    if expected_source_head_sha256 is not None and source_head != _require_digest(expected_source_head_sha256, "expected source head SHA-256"):
+        raise ValueError("detached final attestation source head differs from tested head")
+    if attestation.get("signature_algorithm") != "RSA-PSS-SHA256":
+        raise ValueError("detached final attestation signature algorithm is invalid")
+    observed_key_hash = sha256(public_key_path.read_bytes()).hexdigest()
+    pinned_key_hash = _require_digest(pinned_public_key_sha256, "pinned final public key SHA-256")
+    if observed_key_hash != pinned_key_hash or attestation.get("public_key_sha256") != pinned_key_hash:
+        raise ValueError("detached final attestation public key is not pinned")
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        public_key = serialization.load_pem_public_key(public_key_path.read_bytes())
+        public_key.verify(
+            signature_path.read_bytes(),
+            attestation_raw,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+    except Exception as exc:
+        raise ValueError("detached final attestation signature verification failed") from exc
+
+
+def validate_final_manifest(
+    path: Path,
+    *,
+    provenance_root: Path,
+    inventory_path: Path,
+    detached_attestation_path: Path | None = None,
+    detached_signature_path: Path | None = None,
+    pinned_public_key_path: Path | None = None,
+    pinned_public_key_sha256: str | None = None,
+    expected_source_head_sha256: str | None = None,
+) -> dict[str, Any]:
     resolved = path.resolve()
     root = provenance_root.resolve()
     try:
@@ -87,9 +166,18 @@ def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path
     if payload.get("schema_version") != 5 or payload.get("inventory_sha256") != INVENTORY_SHA256 or payload.get("target_count") != TARGET_COUNT or payload.get("residual_count") != 0:
         raise ValueError("schema-5 final manifest header is invalid")
     for field in ("semantic_root_sha256", "ordered_target_merkle_root_sha256", "calendar_sha256", "auditor_sha256", "node_helper_sha256", "package_lock_sha256", "http_event_root_sha256"):
-        value = str(payload.get(field) or "")
-        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-            raise ValueError(f"final manifest {field} is not a SHA-256 digest")
+        _require_digest(payload.get(field), f"final manifest {field}")
+    repository_root = root.parents[2]
+    external_files = {
+        "calendar_sha256": repository_root / "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
+        "auditor_sha256": repository_root / "scripts/audit_dukascopy_reacquisition_v5.py",
+        "node_helper_sha256": repository_root / "tools/dukascopy-downloader/acquire_v5.mjs",
+        "package_lock_sha256": repository_root / "tools/dukascopy-downloader/package-lock.json",
+        "http_event_root_sha256": repository_root / "outputs/reports/.dukascopy_acquisition_v5/http_events.jsonl",
+    }
+    for field, artifact in external_files.items():
+        if not artifact.is_file() or digest(artifact) != payload[field]:
+            raise ValueError(f"final manifest {field} is not bound to current bytes")
     inventory = load_inventory(inventory_path)
     target_rows = payload.get("targets")
     if not isinstance(target_rows, list) or len(target_rows) != TARGET_COUNT:
@@ -105,13 +193,9 @@ def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path
             if field not in row:
                 raise ValueError(f"final target is missing {field}")
         for field in ("attestation_sha256", "bundle_sha256"):
-            value = str(row[field])
-            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-                raise ValueError(f"final target {field} is invalid")
+            _require_digest(row[field], f"final target {field}")
         for field in ("manifest_sha256", "minute_sha256", "derived_sha256"):
-            value = str(row.get(field) or "")
-            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-                raise ValueError(f"final target {field} is invalid")
+            _require_digest(row.get(field), f"final target {field}")
         bundle_fields = {key: value for key, value in row.items() if key not in {"attestation_sha256", "bundle_sha256"}}
         expected_bundle_hash = sha256(json.dumps(bundle_fields, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if row["bundle_sha256"] != expected_bundle_hash:
@@ -133,6 +217,8 @@ def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path
             attestation = safe_provenance_path(root, row.get("acceptance_attestation_path"), "acceptance_attestation_path")
             if not attestation.is_file() or digest(attestation) != str(row.get("acceptance_attestation_sha256")):
                 raise ValueError("legacy acceptance attestation is missing or changed")
+            if row["attestation_sha256"] != str(row.get("acceptance_attestation_sha256")):
+                raise ValueError("legacy target attestation hash is not bound")
         else:
             if not bundle_dir.is_dir():
                 raise ValueError("V5 bundle path is not a directory")
@@ -142,7 +228,13 @@ def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path
             manifest_name = safe_provenance_path(root, row["manifest_path"], "manifest_path").name
             minute_name = safe_provenance_path(root, row["minute_path"], "minute_path").name
             derived_name = safe_provenance_path(root, row["derived_path"], "derived_path").name
-            allowed = {manifest_name, minute_name, derived_name, "COMMITTED.json"}
+            attestation_name = "ATTESTATION.json"
+            decoded_path = safe_provenance_path(root, row.get("decoded_path"), "decoded_path")
+            if not decoded_path.is_file() or digest(decoded_path) != str(row.get("decoded_sha256")):
+                raise ValueError("V5 decoded bytes do not match final target")
+            if decoded_path.parent != bundle_dir:
+                raise ValueError("V5 decoded file is not contained by its bundle")
+            allowed = {manifest_name, minute_name, derived_name, decoded_path.name, attestation_name, "COMMITTED.json"}
             if {item.name for item in bundle_dir.iterdir()} != allowed:
                 raise ValueError("V5 final target bundle contains extra files")
             committed_payload = json.loads(committed.read_text(encoding="utf-8"))
@@ -153,10 +245,61 @@ def validate_final_manifest(path: Path, *, provenance_root: Path, inventory_path
                 "manifest_sha256": row["manifest_sha256"],
                 "minute_sha256": row["minute_sha256"],
                 "derived_sha256": row["derived_sha256"],
+                "decoded_sha256": row["decoded_sha256"],
+                "attestation_name": attestation_name,
+                "decoded_name": decoded_path.name,
             }.items()):
                 raise ValueError("V5 COMMITTED evidence does not bind final target bytes")
+            bundle_manifest = json.loads(safe_provenance_path(root, row["manifest_path"], "manifest_path").read_text(encoding="utf-8"))
+            if not isinstance(bundle_manifest, dict) or bundle_manifest.get("schema_version") != 5:
+                raise ValueError("V5 bundle manifest schema is invalid")
+            raw_chunks = bundle_manifest.get("raw_chunks")
+            ordered_urls = bundle_manifest.get("ordered_urls")
+            plan_hashes = bundle_manifest.get("plan_url_sha256")
+            if not isinstance(raw_chunks, list) or not raw_chunks or not isinstance(ordered_urls, list) or len(raw_chunks) != len(ordered_urls):
+                raise ValueError("V5 raw CAS evidence is incomplete")
+            if not isinstance(plan_hashes, list) or plan_hashes != [sha256(str(url).encode()).hexdigest() for url in ordered_urls]:
+                raise ValueError("V5 URL plan evidence is invalid")
+            for index, chunk in enumerate(raw_chunks):
+                if not isinstance(chunk, dict) or str(chunk.get("url")) != str(ordered_urls[index]) or chunk.get("url_sha256") != plan_hashes[index]:
+                    raise ValueError("V5 raw chunk URL binding is invalid")
+                raw_path = _manifest_artifact_path(root, chunk.get("raw_path"), "raw_path")
+                raw_sha = _require_digest(chunk.get("raw_sha256"), "V5 raw_sha256")
+                if not raw_path.is_file() or digest(raw_path) != raw_sha or raw_path.stat().st_size != int(chunk.get("raw_byte_count", -1)):
+                    raise ValueError("V5 raw CAS bytes do not match attestation")
+                if "acquisition_v5/http_cas" not in raw_path.relative_to(root).as_posix():
+                    raise ValueError("V5 raw evidence is outside the HTTP CAS")
+            for field, file_name in (("derived_sha256", "derived_path"), ("minute_sha256", "minute_path")):
+                if bundle_manifest.get(field) != row[field]:
+                    raise ValueError(f"V5 bundle manifest {field} differs from final target")
+            attestation_path = row.get("attestation_path")
+            if not attestation_path:
+                raise ValueError("V5 detached acceptance attestation is missing")
+            attestation = safe_provenance_path(root, attestation_path, "attestation_path")
+            if not attestation.is_file() or digest(attestation) != row["attestation_sha256"]:
+                raise ValueError("V5 detached acceptance attestation is missing or changed")
+            attestation_payload = json.loads(attestation.read_text(encoding="utf-8"))
+            if attestation_payload != {
+                "schema_version": 1,
+                "attestation_type": "V5_BUNDLE_BYTES",
+                "target": {"date": target_key(row)[0], "leg": target_key(row)[1], "timeframe": target_key(row)[2]},
+                "manifest_sha256": row["manifest_sha256"],
+                "minute_sha256": row["minute_sha256"],
+                "derived_sha256": row["derived_sha256"],
+                "decoded_sha256": row["decoded_sha256"],
+            }:
+                raise ValueError("V5 byte attestation does not bind final target bytes")
     if semantic_root(target_rows) != payload["semantic_root_sha256"] or ordered_merkle(target_rows) != payload["ordered_target_merkle_root_sha256"]:
         raise ValueError("final manifest semantic root is invalid")
+    _validate_detached_attestation(
+        resolved,
+        payload,
+        attestation_path=detached_attestation_path,
+        signature_path=detached_signature_path,
+        public_key_path=pinned_public_key_path,
+        pinned_public_key_sha256=pinned_public_key_sha256,
+        expected_source_head_sha256=expected_source_head_sha256,
+    )
     return payload
 
 
@@ -170,12 +313,17 @@ def apply_verified_reacquisitions(
     """Apply only paths explicitly attested by the strict final manifest."""
     result = {key: frame.copy() for key, frame in loaded.items()}
     for row in manifest["targets"]:
-        timeframe = str(row["timeframe"])
-        leg = str(row["leg"])
+        if not isinstance(row, Mapping):
+            raise ValueError("verified target row is not an object")
+        date_text, leg, timeframe = target_key(row)
+        if date_text == "None" or leg == "None" or timeframe == "None":
+            raise ValueError("verified target key is incomplete")
         symbol = "DUKASCOPY_USATECHIDXUSD" if leg == "nq" else "DUKASCOPY_USA500IDXUSD"
         path = safe_provenance_path(provenance_root.resolve(), row["derived_path"], "derived_path")
         replacement = frame_loader(path)
         if replacement.empty:
             raise ValueError(f"verified replacement is empty: {target_key(row)}")
+        if (symbol, timeframe) not in result:
+            raise ValueError(f"verified target dataset is not loaded: {target_key(row)}")
         result[(symbol, timeframe)] = pd.concat([result[(symbol, timeframe)], replacement], ignore_index=True).sort_values("time", kind="mergesort").drop_duplicates("time", keep="last").reset_index(drop=True)
     return result

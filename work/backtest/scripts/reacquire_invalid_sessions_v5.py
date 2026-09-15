@@ -125,13 +125,18 @@ def _build_bundle(target: dict[str, object], plan: dict[str, object], cas_items:
         derived = minute.set_index("time").resample(f"{int(timeframe.removesuffix('m'))}min", label="left", closed="left").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open", "high", "low", "close"]).reset_index()
         minute_path = staging / f"{symbol}, 1m_{date_text}_{(date.fromisoformat(date_text) + timedelta(days=1)).isoformat()}.csv"
         derived_path = staging / f"{symbol}, {timeframe}_{date_text}_{(date.fromisoformat(date_text) + timedelta(days=1)).isoformat()}.csv"
+        decoded_path = staging / "DECODED_M1.csv"
         _write_csv(minute, minute_path)
         _write_csv(derived, derived_path)
+        shutil.copyfile(decoded_csv, decoded_path)
         manifest_path = staging / f"{symbol}, {timeframe}_{date_text}_{(date.fromisoformat(date_text) + timedelta(days=1)).isoformat()}.csv.manifest.json"
         raw_chunks = [{"url": item["url"], "url_sha256": item["url_sha256"], "raw_path": str(Path(item["cas_path"]).relative_to(ROOT)).replace("\\", "/"), "raw_sha256": item["sha256"], "raw_byte_count": item["byte_count"]} for item in cas_items]
-        manifest = {"schema_version": 5, "provider": "Dukascopy", "instrument": _instrument(leg), "symbol": symbol, "side": "BID", "source_granularity": "M1", "timezone": "America/New_York", "session_context_hours": 6, "request_range": {"start": date_text, "end_exclusive": (date.fromisoformat(date_text) + timedelta(days=1)).isoformat()}, "output_path": str(derived_path.relative_to(ROOT)).replace("\\", "/"), "raw_chunks": raw_chunks, "ordered_urls": [item["url"] for item in cas_items], "downloader": {"package": "dukascopy-node", "version": "1.50.0", "integrity": "sha512-o2Co/asUD/TXFNhblJUYkRseHMt/uvFrnhzOKWezLuiFJqbl4Zn2oJGL4/W+PY1b2YsI11+9+TO40qNQBAj8/w==", "lockfile_sha256": sha256((ROOT / "tools/dukascopy-downloader/package-lock.json").read_bytes()).hexdigest()}, "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "decoded_sha256": sha256(decoded_csv.read_bytes()).hexdigest(), "plan_url_sha256": [item["url_sha256"] for item in cas_items]}
+        manifest = {"schema_version": 5, "provider": "Dukascopy", "instrument": _instrument(leg), "symbol": symbol, "side": "BID", "source_granularity": "M1", "timezone": "America/New_York", "session_context_hours": 6, "request_range": {"start": date_text, "end_exclusive": (date.fromisoformat(date_text) + timedelta(days=1)).isoformat()}, "output_path": str(derived_path.relative_to(ROOT)).replace("\\", "/"), "decoded_path": str((final / decoded_path.name).relative_to(ROOT)).replace("\\", "/"), "raw_chunks": raw_chunks, "ordered_urls": [item["url"] for item in cas_items], "downloader": {"package": "dukascopy-node", "version": "1.50.0", "integrity": "sha512-o2Co/asUD/TXFNhblJUYkRseHMt/uvFrnhzOKWezLuiFJqbl4Zn2oJGL4/W+PY1b2YsI11+9+TO40qNQBAj8/w==", "lockfile_sha256": sha256((ROOT / "tools/dukascopy-downloader/package-lock.json").read_bytes()).hexdigest()}, "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "decoded_sha256": sha256(decoded_path.read_bytes()).hexdigest(), "plan_url_sha256": [item["url_sha256"] for item in cas_items]}
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-        committed = {"schema_version": 1, "manifest_name": manifest_path.name, "minute_name": minute_path.name, "derived_name": derived_path.name, "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "target": {"date": date_text, "leg": leg, "timeframe": timeframe}}
+        attestation_path = staging / "ATTESTATION.json"
+        attestation = {"schema_version": 1, "attestation_type": "V5_BUNDLE_BYTES", "target": {"date": date_text, "leg": leg, "timeframe": timeframe}, "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "decoded_sha256": sha256(decoded_path.read_bytes()).hexdigest()}
+        attestation_path.write_text(json.dumps(attestation, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        committed = {"schema_version": 1, "manifest_name": manifest_path.name, "minute_name": minute_path.name, "derived_name": derived_path.name, "decoded_name": decoded_path.name, "attestation_name": attestation_path.name, "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "decoded_sha256": sha256(decoded_path.read_bytes()).hexdigest(), "attestation_sha256": sha256(attestation_path.read_bytes()).hexdigest(), "target": {"date": date_text, "leg": leg, "timeframe": timeframe}}
         (staging / "COMMITTED.json").write_text(json.dumps(committed, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():
@@ -184,6 +189,7 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
                         wall_time.sleep(min(60.0, remaining))
                         continue
                     stage_root = ACQUISITION_ROOT / "staging"
+                    body_path: Path | None = None
                     try:
                         evidence = _run_node("fetch-one", "--plan", str(plan_path), "--index", str(index), "--url-sha256", url_hash, "--stage-root", str(stage_root))
                         status = int(evidence.get("status", 0))
@@ -210,31 +216,41 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
                         retry_index += 1
                         wall_time.sleep(retry_delay_for_attempt(retry_index))
                         continue
-                state = controller._load()
-                status_counts = dict(state.get("http_status_counts", {})); status_counts[str(status)] = int(status_counts.get(str(status), 0)) + 1; state["http_status_counts"] = status_counts
-                controller._write(state)
-                if status == 429:
-                    controller.record_429(HOST, (evidence.get("headers") or {}).get("retry-after"))
-                    raise AcquisitionDeferred(controller._load()["hosts"][HOST]["next_retry_at_utc"])
-                if status in {404, 410}:
-                    controller.record_terminal(HOST, "SOURCE_ARTIFACT_MISSING")
-                    raise RuntimeError("SOURCE_ARTIFACT_MISSING")
-                if status in RETRYABLE_STATUS:
-                    if retry_index >= 4:
-                        controller.record_terminal(HOST, f"HTTP_{status}_RETRY_EXHAUSTED")
-                        raise RuntimeError(f"provider HTTP status {status}; retry budget exhausted")
-                    retry_index += 1
-                    wall_time.sleep(retry_delay_for_attempt(retry_index))
-                    continue
-                if status not in {200, 206}:
-                    controller.record_terminal(HOST, f"HTTP_{status}")
-                    raise RuntimeError(f"provider HTTP status {status}")
-                if not body:
-                    controller.record_terminal(HOST, "EMPTY_ARTIFACT")
-                    raise RuntimeError("provider returned an empty artifact")
-                controller.record_success(HOST)
-                checkpoint_state = checkpoint.read(); checkpoint_state.setdefault("artifacts", {})[f"{key}|{index}"] = {"url_sha256": url_hash, "sha256": body_sha, "byte_count": len(body), "cas_path": str(cas_path), "status": "FETCHED_CAS"}; checkpoint.write(checkpoint_state)
-                cas_items.append({"url": url, "url_sha256": url_hash, "sha256": body_sha, "byte_count": len(body), "cas_path": str(cas_path)})
+                    finally:
+                        if body_path is not None:
+                            body_path.unlink(missing_ok=True)
+                    controller.record_http_status(status)
+                    if status == 429:
+                        controller.record_429(HOST, (evidence.get("headers") or {}).get("retry-after"))
+                        raise AcquisitionDeferred(controller._load()["hosts"][HOST]["next_retry_at_utc"])
+                    if status in {404, 410}:
+                        controller.record_terminal(HOST, "SOURCE_ARTIFACT_MISSING")
+                        raise RuntimeError("SOURCE_ARTIFACT_MISSING")
+                    if status in RETRYABLE_STATUS:
+                        if retry_index >= 4:
+                            controller.record_terminal(HOST, f"HTTP_{status}_RETRY_EXHAUSTED")
+                            raise RuntimeError(f"provider HTTP status {status}; retry budget exhausted")
+                        retry_index += 1
+                        wall_time.sleep(retry_delay_for_attempt(retry_index))
+                        continue
+                    if status not in {200, 206}:
+                        controller.record_terminal(HOST, f"HTTP_{status}")
+                        raise RuntimeError(f"provider HTTP status {status}")
+                    if not body:
+                        controller.record_terminal(HOST, "EMPTY_ARTIFACT")
+                        raise RuntimeError("provider returned an empty artifact")
+                    controller.record_success(HOST)
+                    checkpoint_state = checkpoint.read()
+                    checkpoint_state.setdefault("artifacts", {})[f"{key}|{index}"] = {
+                        "url_sha256": url_hash, "sha256": body_sha, "byte_count": len(body),
+                        "cas_path": str(cas_path), "status": "FETCHED_CAS",
+                    }
+                    checkpoint.write(checkpoint_state)
+                    cas_items.append({
+                        "url": url, "url_sha256": url_hash, "sha256": body_sha,
+                        "byte_count": len(body), "cas_path": str(cas_path),
+                    })
+                    break
             input_path = plan_path.with_suffix(".decode.json")
             input_path.write_text(json.dumps([{"index": index, "path": item["cas_path"], "sha256": item["sha256"]} for index, item in enumerate(cas_items)], indent=2) + "\n", encoding="utf-8")
             decoded_path = plan_path.with_suffix(".m1.csv")

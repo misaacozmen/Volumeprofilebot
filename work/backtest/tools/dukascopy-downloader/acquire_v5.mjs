@@ -98,20 +98,18 @@ async function fetchWithLimits(url, stageRoot, meta) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   let response;
+  let reader;
+  let complete = false;
   try {
     response = await fetch(parsed, { redirect: "error", signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-  const allowedHeaders = {};
-  for (const name of ["retry-after", "date", "content-type", "content-length", "etag"]) if (response.headers.has(name)) allowedHeaders[name] = response.headers.get(name);
-  const declared = Number(allowedHeaders["content-length"] || 0);
-  if (declared > MAX_BODY_BYTES) throw new Error("provider body exceeds 16 MiB");
-  const chunks = [];
-  let size = 0;
-  try {
+    const allowedHeaders = {};
+    for (const name of ["retry-after", "date", "content-type", "content-length", "etag"]) if (response.headers.has(name)) allowedHeaders[name] = response.headers.get(name);
+    const declared = Number(allowedHeaders["content-length"] || 0);
+    if (!Number.isFinite(declared) || declared < 0 || declared > MAX_BODY_BYTES) throw new Error("provider body exceeds 16 MiB");
+    const chunks = [];
+    let size = 0;
     if (!response.body) throw new Error("provider response has no body");
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     while (true) {
       const next = await reader.read();
       if (next.done) break;
@@ -119,16 +117,18 @@ async function fetchWithLimits(url, stageRoot, meta) {
       if (size > MAX_BODY_BYTES) throw new Error("provider body exceeds 16 MiB");
       chunks.push(Buffer.from(next.value));
     }
+    const body = Buffer.concat(chunks);
+    const bodySha = sha256(body);
+    await fs.mkdir(stageRoot, { recursive: true });
+    const staging = path.resolve(stageRoot, `${bodySha}.${process.pid}.${randomUUID()}.part`);
+    await fs.writeFile(staging, body, { flag: "wx" });
+    meta.push({ status: response.status, headers: allowedHeaders, endpoint: safeEndpoint(url), byte_count: body.length, body_sha256: bodySha, staging_path: staging, url_sha256: sha256(Buffer.from(url)) });
+    complete = true;
+    return body;
   } finally {
     clearTimeout(timer);
+    if (!complete && reader) await reader.cancel().catch(() => {});
   }
-  const body = Buffer.concat(chunks);
-  const bodySha = sha256(body);
-  await fs.mkdir(stageRoot, { recursive: true });
-  const staging = path.resolve(stageRoot, `${bodySha}.${process.pid}.${randomUUID()}.part`);
-  await fs.writeFile(staging, body, { flag: "wx" });
-  meta.push({ status: response.status, headers: allowedHeaders, endpoint: safeEndpoint(url), byte_count: body.length, body_sha256: bodySha, staging_path: staging, url_sha256: sha256(Buffer.from(url)) });
-  return body;
 }
 
 async function readJson(pathname) {

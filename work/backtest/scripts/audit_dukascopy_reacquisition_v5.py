@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backtest.reacquisition_contract import (  # noqa: E402
-    INVENTORY_SHA256, TARGET_COUNT, digest, load_inventory, ordered_merkle, semantic_root, target_key,
+    INVENTORY_SHA256, TARGET_COUNT, digest, load_inventory, ordered_merkle, semantic_root, target_key, validate_final_manifest,
 )
 
 SYMBOLS = {"nq": ("usatechidxusd", "DUKASCOPY_USATECHIDXUSD", "3m"), "spx": ("usa500idxusd", "DUKASCOPY_USA500IDXUSD", "5m")}
@@ -161,15 +161,29 @@ def verify_bundle(row: dict[str, Any], *, bundle_root: Path, legacy_root: Path |
         if kind == "V5" and (require_committed or True) and not committed_path.is_file():
             raise ValueError("V5 bundle is not committed")
         if kind == "V5":
-            allowed = {manifest_path.name, minute_path.name, derived_path.name, "COMMITTED.json"}
+            attestation_path = _safe_child(directory / "ATTESTATION.json", directory)
+            if not attestation_path.is_file():
+                raise ValueError("V5 bundle is missing detached byte attestation")
+            attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+            decoded_name = Path(str(manifest.get("decoded_path") or "")).name
+            decoded_path = _safe_child(directory / decoded_name, directory)
+            if not decoded_name or not decoded_path.is_file() or digest(decoded_path) != str(manifest.get("decoded_sha256")):
+                raise ValueError("V5 decoded bytes do not match attestation")
+            expected_attestation = {"schema_version": 1, "attestation_type": "V5_BUNDLE_BYTES", "target": target, "manifest_sha256": digest(manifest_path), "minute_sha256": digest(minute_path), "derived_sha256": digest(derived_path), "decoded_sha256": digest(decoded_path)}
+            if attestation != expected_attestation:
+                raise ValueError("V5 byte attestation does not bind exact bundle bytes")
+            allowed = {manifest_path.name, minute_path.name, derived_path.name, decoded_path.name, attestation_path.name, "COMMITTED.json"}
             if {item.name for item in directory.iterdir()} != allowed:
                 raise ValueError("V5 bundle contains extra or missing files")
             committed = json.loads(committed_path.read_text(encoding="utf-8"))
-            expected = {"manifest_sha256": digest(manifest_path), "minute_sha256": digest(minute_path), "derived_sha256": digest(derived_path), "manifest_name": manifest_path.name, "minute_name": minute_path.name, "derived_name": derived_path.name}
+            expected = {"manifest_sha256": digest(manifest_path), "minute_sha256": digest(minute_path), "derived_sha256": digest(derived_path), "decoded_sha256": digest(decoded_path), "attestation_sha256": digest(attestation_path), "manifest_name": manifest_path.name, "minute_name": minute_path.name, "derived_name": derived_path.name, "decoded_name": decoded_path.name, "attestation_name": attestation_path.name}
             if any(committed.get(key) != value for key, value in expected.items()):
                 raise ValueError("COMMITTED.json does not attest exact bundle bytes")
         provenance_root = ROOT / "data/provenance/dukascopy_v4"
         observed = {"target": target, "bundle_path": directory.relative_to(provenance_root).as_posix(), "manifest_path": manifest_path.relative_to(provenance_root).as_posix(), "minute_path": minute_path.relative_to(provenance_root).as_posix(), "derived_path": derived_path.relative_to(provenance_root).as_posix(), "manifest_sha256": digest(manifest_path), "minute_sha256": digest(minute_path), "derived_sha256": digest(derived_path), "minute_semantic_sha256": semantic_hash(minute), "derived_semantic_sha256": semantic_hash(derived), "raw_sha256": raw_hashes, "auditor_sha256": digest(Path(__file__)), "calendar_sha256": digest(ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v4.json"), "node_helper_sha256": digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), "package_lock_sha256": digest(ROOT / "tools/dukascopy-downloader/package-lock.json")}
+        if kind == "V5":
+            observed["decoded_path"] = decoded_path.relative_to(provenance_root).as_posix()
+            observed["decoded_sha256"] = digest(decoded_path)
         if kind == "LEGACY":
             if attestation_root is None:
                 attestation_root = ROOT / "data/provenance/dukascopy_v4/acquisition_v5/legacy_acceptance"
@@ -178,6 +192,8 @@ def verify_bundle(row: dict[str, Any], *, bundle_root: Path, legacy_root: Path |
             observed["acceptance_attestation_sha256"] = digest(attestation)
             observed["state"] = "VERIFIED_LEGACY"
         else:
+            observed["attestation_path"] = attestation_path.relative_to(provenance_root).as_posix()
+            observed["attestation_sha256"] = digest(attestation_path)
             observed["state"] = "VERIFIED_V5_BUNDLE"
         return observed
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -202,7 +218,9 @@ def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, 
     return result
 
 
-def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str) -> Path:
+def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str, detached_attestation_path: Path | None = None, detached_signature_path: Path | None = None, pinned_public_key_path: Path | None = None, pinned_public_key_sha256: str | None = None, source_head_sha256: str | None = None) -> Path:
+    if not all((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256, source_head_sha256)):
+        raise ValueError("finalize requires external detached attestation, signature, pinned key, and tested source head")
     first = json.loads((first_report / "bundle_audit.json").read_text(encoding="utf-8"))
     second = json.loads((second_report / "bundle_audit.json").read_text(encoding="utf-8"))
     if first != second:
@@ -225,9 +243,12 @@ def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, 
         raise ValueError("final manifest output must remain under the provenance root") from exc
     targets = []
     for row in sorted(rows, key=target_key):
-        target = {key: row[key] for key in ("target", "state", "bundle_path", "manifest_path", "minute_path", "derived_path", "manifest_sha256", "minute_sha256", "derived_sha256", "minute_semantic_sha256", "derived_semantic_sha256", "acceptance_attestation_path", "acceptance_attestation_sha256") if key in row}
+        target = {key: row[key] for key in ("target", "state", "bundle_path", "manifest_path", "minute_path", "derived_path", "decoded_path", "manifest_sha256", "minute_sha256", "derived_sha256", "decoded_sha256", "minute_semantic_sha256", "derived_semantic_sha256", "attestation_path", "acceptance_attestation_path", "acceptance_attestation_sha256") if key in row}
         bundle_hash = sha256(json.dumps(target, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        target.update({"attestation_sha256": row.get("acceptance_attestation_sha256") or sha256(json.dumps(row, sort_keys=True).encode()).hexdigest(), "bundle_sha256": bundle_hash})
+        attestation_sha256 = row.get("acceptance_attestation_sha256") or row.get("attestation_sha256")
+        if not attestation_sha256:
+            raise ValueError("verified target is missing byte attestation")
+        target.update({"attestation_sha256": attestation_sha256, "bundle_sha256": bundle_hash})
         targets.append(target)
     payload = {"schema_version": 5, "inventory_sha256": INVENTORY_SHA256, "target_count": TARGET_COUNT, "residual_count": 0, "targets": targets, "semantic_root_sha256": semantic_root(targets), "ordered_target_merkle_root_sha256": ordered_merkle(targets), "calendar_sha256": calendar_sha256, "auditor_sha256": auditor_sha256, "node_helper_sha256": node_helper_sha256, "package_lock_sha256": package_lock_sha256, "http_event_root_sha256": http_event_root_sha256}
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -235,6 +256,16 @@ def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, 
         raise ValueError("refusing to overwrite a different final reacquisition manifest")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(encoded, encoding="utf-8", newline="\n")
+    validate_final_manifest(
+        output,
+        provenance_root=provenance_root,
+        inventory_path=inventory_path,
+        detached_attestation_path=detached_attestation_path,
+        detached_signature_path=detached_signature_path,
+        pinned_public_key_path=pinned_public_key_path,
+        pinned_public_key_sha256=pinned_public_key_sha256,
+        expected_source_head_sha256=source_head_sha256,
+    )
     return output
 
 
@@ -248,6 +279,11 @@ def main() -> None:
     parser.add_argument("--second-report-root", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json")
     parser.add_argument("--calendar", type=Path, default=ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v4.json")
+    parser.add_argument("--detached-attestation", type=Path)
+    parser.add_argument("--detached-signature", type=Path)
+    parser.add_argument("--pinned-public-key", type=Path)
+    parser.add_argument("--pinned-public-key-sha256")
+    parser.add_argument("--source-head-sha256")
     args = parser.parse_args()
     if args.command == "audit":
         result = audit_inventory(args.inventory.resolve(), args.bundle_root.resolve(), args.report_root.resolve(), legacy_root=args.legacy_root.resolve())
@@ -258,7 +294,7 @@ def main() -> None:
     calendar_sha = digest(args.calendar.resolve())
     event_path = ROOT / "outputs/reports/.dukascopy_acquisition_v5/http_events.jsonl"
     event_root = digest(event_path) if event_path.is_file() else sha256(b"").hexdigest()
-    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root)
+    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root, detached_attestation_path=args.detached_attestation.resolve() if args.detached_attestation else None, detached_signature_path=args.detached_signature.resolve() if args.detached_signature else None, pinned_public_key_path=args.pinned_public_key.resolve() if args.pinned_public_key else None, pinned_public_key_sha256=args.pinned_public_key_sha256, source_head_sha256=args.source_head_sha256)
 
 
 if __name__ == "__main__":

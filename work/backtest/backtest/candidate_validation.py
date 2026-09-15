@@ -152,6 +152,34 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _evidence_root(root: Path, value: Any) -> Path:
+    if not isinstance(value, str) or not value:
+        raise CandidateValidationError("V4 promotion evidence private root is missing")
+    candidate = Path(value)
+    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    if not resolved.is_dir():
+        raise CandidateValidationError("V4 promotion evidence private root is missing")
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return resolved
+    raise CandidateValidationError("V4 promotion evidence root must be external to the repository")
+
+
+def _evidence_file(evidence_root: Path, value: Any, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise CandidateValidationError(f"{label} path is missing")
+    candidate = Path(value)
+    resolved = (candidate if candidate.is_absolute() else evidence_root / candidate).resolve()
+    try:
+        resolved.relative_to(evidence_root)
+    except ValueError as exc:
+        raise CandidateValidationError(f"{label} escapes the private evidence root") from exc
+    if not resolved.is_file():
+        raise CandidateValidationError(f"{label} is missing")
+    return resolved
+
+
 def validate_super1_v4_candidate(
     path: str | Path,
     root: str | Path,
@@ -282,17 +310,36 @@ def validate_super1_v4_candidate(
         evidence = manifest.get("promotion_evidence")
         if not isinstance(evidence, Mapping):
             raise CandidateValidationError("V4 fresh promotion evidence is missing")
-        for field in ("reacquisition_manifest_sha256", "reacquisition_semantic_root_sha256", "full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256"):
+        evidence_root = _evidence_root(root_path, evidence.get("private_evidence_root"))
+        hash_fields = ("reacquisition_manifest_sha256", "reacquisition_semantic_root_sha256", "full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256")
+        for field in hash_fields:
             _require_hash(evidence.get(field), f"V4 promotion evidence {field}")
-        reacquisition_path = root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
+        for field in ("full_history_determinism_a_sha256", "full_history_determinism_b_sha256", "reliability_determinism_a_sha256", "reliability_determinism_b_sha256", "risk_xray_sha256", "security_history_attestation_sha256", "account_rotation_attestation_sha256"):
+            path_field = field.removesuffix("_sha256") + "_path"
+            observed = sha256(_evidence_file(evidence_root, evidence.get(path_field), f"V4 promotion evidence {path_field}").read_bytes()).hexdigest()
+            if observed != str(evidence[field]).lower():
+                raise CandidateValidationError(f"V4 promotion evidence {field} is not bound to the attested file")
+        _require_hash(evidence.get("final_manifest_source_head_sha256"), "V4 final manifest source head SHA-256")
+        reacquisition_path = _file(root_path, str(evidence.get("reacquisition_manifest_path") or ""), "V4 reacquisition manifest evidence")
+        expected_reacquisition = root_path / "data/provenance/dukascopy_v4/acquisition_v5/reacquisition_manifest_v5.json"
+        if reacquisition_path != expected_reacquisition:
+            raise CandidateValidationError("V4 reacquisition evidence path is not the canonical final manifest")
         if not reacquisition_path.is_file() or sha256(reacquisition_path.read_bytes()).hexdigest() != str(evidence["reacquisition_manifest_sha256"]).lower():
             raise CandidateValidationError("V4 reacquisition promotion evidence is not bound to the final manifest bytes")
         try:
             from .reacquisition_contract import validate_final_manifest
+            final_attestation = _evidence_file(evidence_root, evidence.get("final_manifest_attestation_path"), "V4 final manifest attestation")
+            final_signature = _evidence_file(evidence_root, evidence.get("final_manifest_signature_path"), "V4 final manifest signature")
+            final_public_key = _evidence_file(evidence_root, evidence.get("final_manifest_public_key_path"), "V4 final manifest public key")
             reacquisition = validate_final_manifest(
                 reacquisition_path,
                 provenance_root=root_path / "data/provenance/dukascopy_v4",
                 inventory_path=root_path / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv",
+                detached_attestation_path=final_attestation,
+                detached_signature_path=final_signature,
+                pinned_public_key_path=final_public_key,
+                pinned_public_key_sha256=_require_hash(evidence.get("final_manifest_public_key_sha256"), "V4 final manifest public key SHA-256"),
+                expected_source_head_sha256=_require_hash(evidence.get("final_manifest_source_head_sha256"), "V4 final manifest source head SHA-256"),
             )
         except Exception as exc:
             raise CandidateValidationError("V4 reacquisition promotion evidence is not a strict verified manifest") from exc

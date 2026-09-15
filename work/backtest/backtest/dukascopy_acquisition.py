@@ -291,28 +291,32 @@ class RateLimitController:
     def _write(self, state: Mapping[str, Any]) -> None:
         self.store.write(_strict_state(state))
 
+    def _state_lock_path(self) -> Path:
+        return self.store.path.with_name(f"{self.store.path.name}.state.lock")
+
     def migrate_legacy_log(self, log_path: str | Path, *, now: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
-        state = self._load()
-        migration = state["migration"]
-        if migration.get("completed"):
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            migration = state["migration"]
+            if migration.get("completed"):
+                return state
+            digest = sha256(Path(log_path).read_bytes()).hexdigest()
+            if digest != LEGACY_LOG_SHA256:
+                raise ValueError("legacy rate-limit log hash mismatch")
+            observed = validate_clock(now=now, transport_fixture=transport_fixture)
+            host = next(iter(DEFAULT_HOST_ALLOWLIST))
+            existing = dict(state["hosts"].get(host, {}))
+            existing_deadline = existing.get("next_retry_at_utc")
+            migration_deadline = parse_utc(MIGRATION_COOLDOWN_UTC)
+            if existing_deadline and parse_utc(str(existing_deadline)) > migration_deadline:
+                deadline_text = str(existing_deadline)
+            else:
+                deadline_text = MIGRATION_COOLDOWN_UTC
+            existing.update({"circuit": "OPEN", "consecutive_429": max(5, int(existing.get("consecutive_429", 0))), "next_retry_at_utc": deadline_text, "migration_log_sha256": digest})
+            state["hosts"][host] = existing
+            state["migration"] = {"completed": True, "source_sha256": digest, "completed_at_utc": iso_utc(observed)}
+            self._write(state)
             return state
-        digest = sha256(Path(log_path).read_bytes()).hexdigest()
-        if digest != LEGACY_LOG_SHA256:
-            raise ValueError("legacy rate-limit log hash mismatch")
-        observed = validate_clock(now=now, transport_fixture=transport_fixture)
-        host = next(iter(DEFAULT_HOST_ALLOWLIST))
-        existing = dict(state["hosts"].get(host, {}))
-        existing_deadline = existing.get("next_retry_at_utc")
-        migration_deadline = parse_utc(MIGRATION_COOLDOWN_UTC)
-        if existing_deadline and parse_utc(str(existing_deadline)) > migration_deadline:
-            deadline_text = str(existing_deadline)
-        else:
-            deadline_text = MIGRATION_COOLDOWN_UTC
-        existing.update({"circuit": "OPEN", "consecutive_429": max(5, int(existing.get("consecutive_429", 0))), "next_retry_at_utc": deadline_text, "migration_log_sha256": digest})
-        state["hosts"][host] = existing
-        state["migration"] = {"completed": True, "source_sha256": digest, "completed_at_utc": iso_utc(observed)}
-        self._write(state)
-        return state
 
     def _recover_unknown_attempts(self, state: dict[str, Any], observed: datetime) -> None:
         for event in state["request_events"]:
@@ -328,18 +332,18 @@ class RateLimitController:
             state["hosts"][host] = item
 
     def start_run(self, run_id: str) -> dict[str, Any]:
-        state = self._load()
-        state["runs"].setdefault(str(run_id), {"provider_call_count": 0, "artifacts": {}, "started_at_utc": iso_utc(utc_now())})
-        self._write(state)
-        return state["runs"][str(run_id)]
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            state["runs"].setdefault(str(run_id), {"provider_call_count": 0, "artifacts": {}, "started_at_utc": iso_utc(utc_now())})
+            self._write(state)
+            return state["runs"][str(run_id)]
 
     def before_request(self, host: str, *, now: datetime | None = None, run_id: str = "default", artifact_id: str = "unknown", transport_fixture: bool = False) -> dict[str, Any]:
         if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
             raise ValueError("provider host is outside the locked allowlist")
         host = str(host).lower()
         validate_clock(now=now, transport_fixture=transport_fixture)
-        lock_path = self.store.path.with_name(f"{self.store.path.name}.state.lock")
-        with ProviderProcessLock(lock_path):
+        with ProviderProcessLock(self._state_lock_path()):
             return self._before_request_locked(host, now=now, run_id=run_id, artifact_id=artifact_id, transport_fixture=transport_fixture)
 
     def _before_request_locked(self, host: str, *, now: datetime | None, run_id: str, artifact_id: str, transport_fixture: bool) -> dict[str, Any]:
@@ -386,59 +390,81 @@ class RateLimitController:
         return {"event_id": event["event_id"], "provider_call_count": call_count, "half_open": half_open, "run_id": run_id, "artifact_id": artifact_id}
 
     def finish_request(self, request: Mapping[str, Any], *, status: int | None = None, error_code: str | None = None, body_sha256: str | None = None, body_byte_count: int | None = None, headers: Mapping[str, Any] | None = None, endpoint: str | None = None, request_url_sha256: str | None = None, finished_at: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
-        state = self._load()
-        event = next((item for item in state["request_events"] if item.get("event_id") == request.get("event_id")), None)
-        if event is None or event.get("terminal"):
-            raise ValueError("request event is missing or already terminal")
-        if body_sha256 is not None:
-            body_sha256 = require_sha256(body_sha256, "body_sha256")
-        if request_url_sha256 is not None:
-            request_url_sha256 = require_sha256(request_url_sha256, "request_url_sha256")
-        if endpoint is not None:
-            endpoint = validate_provider_url(endpoint)
-        finished = validate_clock(now=finished_at, transport_fixture=transport_fixture)
-        headers = headers or {}
-        event.update({"terminal": True, "event_type": "RESPONSE_RECEIVED" if status is not None else "REQUEST_FAILED", "finished_at_utc": iso_utc(finished), "status": status, "error_code": error_code, "body_sha256": body_sha256, "body_byte_count": body_byte_count, "retry_after": headers.get("retry-after"), "date": headers.get("date"), "content_type": headers.get("content-type"), "content_length": headers.get("content-length"), "etag": headers.get("etag"), "endpoint": endpoint, "request_url_sha256": request_url_sha256})
-        run = state["runs"].get(str(event["run_id"]), {})
-        artifact = run.get("artifacts", {}).get(str(event["artifact_id"]), {})
-        artifact.update({"status": event["event_type"], "status_code": status})
-        self._write(state)
-        self.events.append(event)
-        return event
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            event = next((item for item in state["request_events"] if item.get("event_id") == request.get("event_id")), None)
+            if event is None or event.get("terminal"):
+                raise ValueError("request event is missing or already terminal")
+            if body_sha256 is not None:
+                body_sha256 = require_sha256(body_sha256, "body_sha256")
+            if request_url_sha256 is not None:
+                request_url_sha256 = require_sha256(request_url_sha256, "request_url_sha256")
+            if endpoint is not None:
+                endpoint = validate_provider_url(endpoint)
+            finished = validate_clock(now=finished_at, transport_fixture=transport_fixture)
+            headers = headers or {}
+            event.update({"terminal": True, "event_type": "RESPONSE_RECEIVED" if status is not None else "REQUEST_FAILED", "finished_at_utc": iso_utc(finished), "status": status, "error_code": error_code, "body_sha256": body_sha256, "body_byte_count": body_byte_count, "retry_after": headers.get("retry-after"), "date": headers.get("date"), "content_type": headers.get("content-type"), "content_length": headers.get("content-length"), "etag": headers.get("etag"), "endpoint": endpoint, "request_url_sha256": request_url_sha256})
+            run = state["runs"].get(str(event["run_id"]), {})
+            artifact = run.get("artifacts", {}).get(str(event["artifact_id"]), {})
+            artifact.update({"status": event["event_type"], "status_code": status})
+            self._write(state)
+            self.events.append(event)
+            return event
 
     def record_429(self, host: str, retry_after: str | None, *, now: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
         if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
             raise ValueError("provider host is outside the locked allowlist")
+        host = str(host).lower()
         observed = validate_clock(now=now, transport_fixture=transport_fixture)
-        state = self._load()
-        item = dict(state["hosts"].get(host, {"circuit": "CLOSED", "consecutive_429": 0}))
-        count = int(item.get("consecutive_429", 0)) + 1
-        delay, parsed = rate_limit_delay(count, retry_after, now=observed, rng=self.rng)
-        delay = max(delay, UNKNOWN_ATTEMPT_COOLDOWN_SECONDS) if count >= 5 else delay
-        item.update({"circuit": "OPEN", "consecutive_429": count, "raw_retry_after": None if retry_after is None else str(retry_after), "parsed_retry_after_seconds": parsed, "selected_delay_seconds": delay, "next_retry_at_utc": iso_utc(datetime.fromtimestamp(observed.timestamp() + delay, timezone.utc)), "half_open_claimed": False, "unknown_attempt": False})
-        state["hosts"][host] = item
-        self._write(state)
-        return item
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            item = dict(state["hosts"].get(host, {"circuit": "CLOSED", "consecutive_429": 0}))
+            count = int(item.get("consecutive_429", 0)) + 1
+            delay, parsed = rate_limit_delay(count, retry_after, now=observed, rng=self.rng)
+            delay = max(delay, UNKNOWN_ATTEMPT_COOLDOWN_SECONDS) if count >= 5 else delay
+            item.update({"circuit": "OPEN", "consecutive_429": count, "raw_retry_after": None if retry_after is None else str(retry_after), "parsed_retry_after_seconds": parsed, "selected_delay_seconds": delay, "next_retry_at_utc": iso_utc(datetime.fromtimestamp(observed.timestamp() + delay, timezone.utc)), "half_open_claimed": False, "unknown_attempt": False})
+            state["hosts"][host] = item
+            self._write(state)
+            return item
 
     def record_success(self, host: str, *, now: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
         if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
             raise ValueError("provider host is outside the locked allowlist")
+        host = str(host).lower()
         observed = validate_clock(now=now, transport_fixture=transport_fixture)
-        state = self._load()
-        state["hosts"][host] = {"circuit": "CLOSED", "consecutive_429": 0, "last_success_at_utc": iso_utc(observed), "half_open_claimed": False}
-        self._write(state)
-        return state["hosts"][host]
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            item = dict(state["hosts"].get(host, {}))
+            item.update({"circuit": "CLOSED", "consecutive_429": 0, "last_success_at_utc": iso_utc(observed), "half_open_claimed": False, "unknown_attempt": False})
+            state["hosts"][host] = item
+            self._write(state)
+            return item
 
     def record_terminal(self, host: str, code: str, *, now: datetime | None = None, transport_fixture: bool = False) -> dict[str, Any]:
         if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
             raise ValueError("provider host is outside the locked allowlist")
+        host = str(host).lower()
         observed = validate_clock(now=now, transport_fixture=transport_fixture)
-        state = self._load()
-        item = dict(state["hosts"].get(host, {"consecutive_429": 0}))
-        item.update({"circuit": "TERMINAL", "terminal_error": code, "terminal_at_utc": iso_utc(observed), "half_open_claimed": False})
-        state["hosts"][host] = item
-        self._write(state)
-        return item
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            item = dict(state["hosts"].get(host, {"consecutive_429": 0}))
+            item.update({"circuit": "TERMINAL", "terminal_error": code, "terminal_at_utc": iso_utc(observed), "half_open_claimed": False})
+            state["hosts"][host] = item
+            self._write(state)
+            return item
+
+    def record_http_status(self, status: int) -> dict[str, Any]:
+        status_code = int(status)
+        if status_code < 100 or status_code > 599:
+            raise ValueError("HTTP status is invalid")
+        with ProviderProcessLock(self._state_lock_path()):
+            state = self._load()
+            counts = dict(state.get("http_status_counts", {}))
+            key = str(status_code)
+            counts[key] = int(counts.get(key, 0)) + 1
+            state["http_status_counts"] = counts
+            self._write(state)
+            return state
 
 
 @dataclass(frozen=True, slots=True)
