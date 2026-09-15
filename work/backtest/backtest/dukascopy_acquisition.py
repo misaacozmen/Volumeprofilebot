@@ -14,6 +14,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
@@ -543,7 +544,16 @@ class AcquisitionRunLedger:
         self.connection.execute("PRAGMA foreign_keys=ON")
         if int(self.connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise ValueError("acquisition ledger requires SQLite foreign keys")
-        if str(self.connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":
+        journal_mode = None
+        deadline = time.monotonic() + 30.0
+        while journal_mode is None:
+            try:
+                journal_mode = str(self.connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        if journal_mode != "wal":
             raise ValueError("acquisition ledger requires SQLite WAL")
         self._lock = threading.RLock()
         self.connection.executescript(
