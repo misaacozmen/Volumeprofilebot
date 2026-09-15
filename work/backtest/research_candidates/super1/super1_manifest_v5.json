@@ -10,12 +10,12 @@
   "candidate_file_sha256": "1794ec151dfeced2cc3532647c8b25c6e8ac1ff8b6479646d0d38784d196a8a4",
   "candidate_artifact_sha256": "3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract_v5.json",
-  "signal_contract_sha256": "1729cc1bdd6681ca5e27bdc7e55a86fc88fe1ed445e4c6714c0cea7b4d165086",
+  "signal_contract_sha256": "f8680a772498e65b47b84796ceeff56272902924637cbf5d02063921bca8e78f",
   "config_path": "live_forward/super1_xm_mt5_demo_config_v5.json",
-  "config_sha256": "edaca0816ca1c924f9d7b8d3f14464c820f5c03b28969740a1eb917e2a869f77",
-  "engine_source_sha256": "93a00f809624e8e47b568a6da87a138e16299c5be8f13805782705e5ca1ac313",
-  "source_commit": "aaa7b3e448d1bd0a4193dd12ee4955b899b7863b",
-  "source_tree_sha256": "651af73fe9e780b9d9a92c455a22e13492222ab0",
+  "config_sha256": "f838e3a7db28e832b3247425ee0c8b93d7fc20a14e11f31d2b44c550a30ca90b",
+  "engine_source_sha256": "7e653988972692356d8967090fac0539ccec09324f2dcf267fd16e0ccad1359a",
+  "source_commit": "8d1ae6e0631e20d567c40cb7788e75ab5c006d93",
+  "source_tree_sha256": "fb3067044e199a9324a6397f08e347272e4ff3ae",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
     "sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d"
