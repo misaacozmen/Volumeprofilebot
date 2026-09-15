@@ -1,8 +1,9 @@
 # SUPER1 — 1–22 Durum ve Kabul Kanıtı
 
 Tarih: 2026-09-15
-Promotion HEAD with V5 bindings: `ea81bd76076fd4ee14ef3aafef690eef26d05e92`
-Promotion tree: `aa513237932704230744af9d6e45e70562589c06`
+Promotion final HEAD: `14397a789adee8b5c76e7c7156e2801b46d68af4`
+Promotion final tree: `0e9b0ee96cf5dd4f6924eb630cc831374018b591`
+V5 binding commit: `ea81bd76076fd4ee14ef3aafef690eef26d05e92`
 Bound/tested production source commit: `8d1ae6e0631e20d567c40cb7788e75ab5c006d93`
 Bound/tested production source tree: `fb3067044e199a9324a6397f08e347272e4ff3ae`
 Risk branch commit tested: `064e1a81117576a05559c05976b609c37c5db60`
