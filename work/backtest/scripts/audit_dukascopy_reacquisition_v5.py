@@ -6,9 +6,12 @@ import argparse
 from datetime import date, timedelta
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping
+from uuid import uuid4
 
 import pandas as pd
 
@@ -16,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backtest.reacquisition_contract import (  # noqa: E402
-    INVENTORY_SHA256, TARGET_COUNT, digest, load_inventory, ordered_merkle, semantic_root, target_key, validate_final_manifest,
+    INVENTORY_SHA256, TARGET_COUNT, digest, load_inventory, ordered_merkle, process_start_token, semantic_root, target_key, validate_final_manifest,
 )
 
 SYMBOLS = {"nq": ("usatechidxusd", "DUKASCOPY_USATECHIDXUSD", "3m"), "spx": ("usa500idxusd", "DUKASCOPY_USA500IDXUSD", "5m")}
@@ -123,6 +126,11 @@ def verify_bundle(row: dict[str, Any], *, bundle_root: Path, legacy_root: Path |
             raise ValueError("bundle is missing minute or derived CSV")
         derived = _read_frame(derived_path)
         minute = _read_frame(minute_path)
+        target_start = pd.Timestamp(date.fromisoformat(date_text), tz="UTC")
+        target_end = target_start + pd.Timedelta(days=1)
+        for label, frame in (("minute", minute), ("derived", derived)):
+            if bool((frame["time"] < target_start).any()) or bool((frame["time"] >= target_end).any()):
+                raise ValueError(f"{label} timestamps escape replacement target date bounds")
         regenerated = _resample(minute, timeframe)
         if list(regenerated["time"]) != list(derived["time"]):
             raise ValueError("derived timestamp set differs from regenerated timestamp set")
@@ -201,7 +209,9 @@ def verify_bundle(row: dict[str, Any], *, bundle_root: Path, legacy_root: Path |
         return {"state": state, "target": target, "reason": str(exc)}
 
 
-def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, *, legacy_root: Path | None = None) -> dict[str, Any]:
+def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, *, legacy_root: Path | None = None, run_id: str | None = None, audit_nonce: str | None = None, source_commit: str | None = None, source_tree_sha256: str | None = None) -> dict[str, Any]:
+    if not run_id or not re.fullmatch(r"[0-9a-f]{64}", str(audit_nonce or "")) or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit or "")) or not re.fullmatch(r"[0-9a-f]{40}", str(source_tree_sha256 or "")):
+        raise ValueError("audit requires one run_id, a 64-hex nonce, source commit, and source tree")
     inventory = load_inventory(inventory_path)
     rows = [verify_bundle(item, bundle_root=bundle_root, legacy_root=legacy_root, require_committed=False) for item in sorted(inventory, key=target_key)]
     counts: dict[str, int] = {}
@@ -211,6 +221,22 @@ def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, 
     inventory_payload = {"schema_version": 2, "inventory_path": inventory_path.relative_to(ROOT).as_posix(), "inventory_sha256": INVENTORY_SHA256, "target_count": TARGET_COUNT, "unique_target_count": TARGET_COUNT, "distribution": {"nq/3m": 69, "spx/5m": 44}, "contains_2025_04_16_nq_3m": True, "class_counts": counts}
     (report_root / "inventory_audit.json").write_text(json.dumps(inventory_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (report_root / "bundle_audit.json").write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    frozen_input_hashes = {
+        "inventory_sha256": INVENTORY_SHA256,
+        "calendar_sha256": digest(ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v4.json"),
+        "node_helper_sha256": digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"),
+        "package_lock_sha256": digest(ROOT / "tools/dukascopy-downloader/package-lock.json"),
+    }
+    identity = {
+        "schema_version": 1,
+        "run_id": str(run_id),
+        "audit_nonce": str(audit_nonce),
+        "source_commit": str(source_commit),
+        "source_tree_sha256": str(source_tree_sha256),
+        "process_identity": {"pid": os.getpid(), "process_start_token": process_start_token(), "host": __import__("platform").node()},
+        "frozen_input_hashes": frozen_input_hashes,
+    }
+    (report_root / "audit_identity.json").write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     residual = [row for row in rows if row["state"] not in {"VERIFIED_LEGACY", "VERIFIED_V5_BUNDLE"}]
     pd.DataFrame([next(item for item in inventory if target_key(item) == target_key(row["target"])) for row in residual]).to_csv(report_root / "residual_leg_days.csv", index=False)
     root_rows = [row for row in rows if row["state"] in {"VERIFIED_LEGACY", "VERIFIED_V5_BUNDLE"}]
@@ -218,11 +244,20 @@ def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, 
     return result
 
 
-def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str, detached_attestation_path: Path | None = None, detached_signature_path: Path | None = None, pinned_public_key_path: Path | None = None, pinned_public_key_sha256: str | None = None, source_head_sha256: str | None = None) -> Path:
-    if not all((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256, source_head_sha256)):
-        raise ValueError("finalize requires external detached attestation, signature, pinned key, and tested source head")
+def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str, owner_trust_policy_path: Path, owner_replay_ledger_path: Path, detached_attestation_path: Path | None = None, detached_signature_path: Path | None = None, pinned_public_key_path: Path | None = None, pinned_public_key_sha256: str | None = None, source_head_sha256: str | None = None) -> Path:
+    if not owner_trust_policy_path.is_file() or not owner_replay_ledger_path.is_file():
+        raise ValueError("external owner trust policy and replay ledger are required")
+    signature_inputs = (detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256, source_head_sha256)
+    if any(signature_inputs) and not all(signature_inputs):
+        raise ValueError("owner signature inputs must be supplied together")
     first = json.loads((first_report / "bundle_audit.json").read_text(encoding="utf-8"))
     second = json.loads((second_report / "bundle_audit.json").read_text(encoding="utf-8"))
+    first_identity_path = first_report / "audit_identity.json"
+    second_identity_path = second_report / "audit_identity.json"
+    first_identity = json.loads(first_identity_path.read_text(encoding="utf-8"))
+    second_identity = json.loads(second_identity_path.read_text(encoding="utf-8"))
+    if not isinstance(first_identity, dict) or not isinstance(second_identity, dict) or first_identity.get("schema_version") != 1 or second_identity.get("schema_version") != 1 or first_identity.get("run_id") != second_identity.get("run_id") or first_identity.get("audit_nonce") == second_identity.get("audit_nonce") or first_identity.get("source_commit") != second_identity.get("source_commit") or second_identity.get("source_commit") != first_identity.get("source_commit") or first_identity.get("source_tree_sha256") != second_identity.get("source_tree_sha256") or first_identity.get("frozen_input_hashes") != second_identity.get("frozen_input_hashes") or first_identity.get("process_identity") == second_identity.get("process_identity"):
+        raise ValueError("independent audit identities differ or are not independent")
     if first != second:
         raise ValueError("independent audit bundle results differ")
     rows = first
@@ -250,7 +285,8 @@ def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, 
             raise ValueError("verified target is missing byte attestation")
         target.update({"attestation_sha256": attestation_sha256, "bundle_sha256": bundle_hash})
         targets.append(target)
-    payload = {"schema_version": 5, "inventory_sha256": INVENTORY_SHA256, "target_count": TARGET_COUNT, "residual_count": 0, "targets": targets, "semantic_root_sha256": semantic_root(targets), "ordered_target_merkle_root_sha256": ordered_merkle(targets), "calendar_sha256": calendar_sha256, "auditor_sha256": auditor_sha256, "node_helper_sha256": node_helper_sha256, "package_lock_sha256": package_lock_sha256, "http_event_root_sha256": http_event_root_sha256}
+    owner_signed = all(signature_inputs)
+    payload = {"schema_version": 5, "inventory_sha256": INVENTORY_SHA256, "target_count": TARGET_COUNT, "residual_count": 0, "targets": targets, "semantic_root_sha256": semantic_root(targets), "ordered_target_merkle_root_sha256": ordered_merkle(targets), "calendar_sha256": calendar_sha256, "auditor_sha256": auditor_sha256, "node_helper_sha256": node_helper_sha256, "package_lock_sha256": package_lock_sha256, "http_event_root_sha256": http_event_root_sha256, "run_id": first_identity["run_id"], "audit_nonce_a": first_identity["audit_nonce"], "audit_nonce_b": second_identity["audit_nonce"], "audit_process_identity_a": first_identity["process_identity"], "audit_process_identity_b": second_identity["process_identity"], "audit_identity_a_path": first_identity_path.relative_to(ROOT).as_posix(), "audit_identity_a_sha256": digest(first_identity_path), "audit_identity_b_path": second_identity_path.relative_to(ROOT).as_posix(), "audit_identity_b_sha256": digest(second_identity_path), "source_commit": first_identity["source_commit"], "source_tree_sha256": first_identity["source_tree_sha256"], "frozen_input_hashes": first_identity["frozen_input_hashes"], "trust_state": "OWNER_SIGNED" if owner_signed else "AWAITING_OWNER_SIGNATURE", "owner_signature_status": "SIGNED" if owner_signed else "AWAITING_OWNER_SIGNATURE", "owner_trust_policy_path": str(owner_trust_policy_path.resolve()), "owner_trust_policy_sha256": digest(owner_trust_policy_path), "owner_replay_ledger_path": str(owner_replay_ledger_path.resolve()), "owner_replay_ledger_sha256": digest(owner_replay_ledger_path)}
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if output.exists() and output.read_text(encoding="utf-8") != encoded:
         raise ValueError("refusing to overwrite a different final reacquisition manifest")
@@ -265,6 +301,7 @@ def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, 
         pinned_public_key_path=pinned_public_key_path,
         pinned_public_key_sha256=pinned_public_key_sha256,
         expected_source_head_sha256=source_head_sha256,
+        require_owner_signature=owner_signed,
     )
     return output
 
@@ -284,17 +321,25 @@ def main() -> None:
     parser.add_argument("--pinned-public-key", type=Path)
     parser.add_argument("--pinned-public-key-sha256")
     parser.add_argument("--source-head-sha256")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--audit-nonce")
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--source-tree-sha256", required=True)
+    parser.add_argument("--owner-trust-policy", type=Path)
+    parser.add_argument("--owner-replay-ledger", type=Path)
     args = parser.parse_args()
     if args.command == "audit":
-        result = audit_inventory(args.inventory.resolve(), args.bundle_root.resolve(), args.report_root.resolve(), legacy_root=args.legacy_root.resolve())
+        result = audit_inventory(args.inventory.resolve(), args.bundle_root.resolve(), args.report_root.resolve(), legacy_root=args.legacy_root.resolve(), run_id=args.run_id, audit_nonce=args.audit_nonce or (uuid4().hex + uuid4().hex), source_commit=args.source_commit, source_tree_sha256=args.source_tree_sha256)
         print(json.dumps({"target_count": TARGET_COUNT, "residual_count": result["residual_count"], "class_counts": result["inventory"]["class_counts"]}, sort_keys=True))
         raise SystemExit(2 if result["residual_count"] else 0)
     if args.second_report_root is None:
         raise SystemExit("finalize requires --second-report-root")
+    if args.owner_trust_policy is None or args.owner_replay_ledger is None:
+        raise SystemExit("finalize requires --owner-trust-policy and --owner-replay-ledger")
     calendar_sha = digest(args.calendar.resolve())
     event_path = ROOT / "outputs/reports/.dukascopy_acquisition_v5/http_events.jsonl"
     event_root = digest(event_path) if event_path.is_file() else sha256(b"").hexdigest()
-    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root, detached_attestation_path=args.detached_attestation.resolve() if args.detached_attestation else None, detached_signature_path=args.detached_signature.resolve() if args.detached_signature else None, pinned_public_key_path=args.pinned_public_key.resolve() if args.pinned_public_key else None, pinned_public_key_sha256=args.pinned_public_key_sha256, source_head_sha256=args.source_head_sha256)
+    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root, owner_trust_policy_path=args.owner_trust_policy.resolve(), owner_replay_ledger_path=args.owner_replay_ledger.resolve(), detached_attestation_path=args.detached_attestation.resolve() if args.detached_attestation else None, detached_signature_path=args.detached_signature.resolve() if args.detached_signature else None, pinned_public_key_path=args.pinned_public_key.resolve() if args.pinned_public_key else None, pinned_public_key_sha256=args.pinned_public_key_sha256, source_head_sha256=args.source_head_sha256)
 
 
 if __name__ == "__main__":

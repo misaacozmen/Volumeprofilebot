@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import run_capital_forward as core
 import run_xm_mt5_forward as xm
 from candidate_artifact import ArtifactValidationError, load_artifact
-from backtest.candidate_validation import CandidateValidationError, validate_super1_v4_candidate
+from backtest.candidate_validation import CandidateValidationError, validate_super1_v4_candidate, validate_super1_v5_candidate
 from super1_runtime_guard import (
     AccountBindingMismatchError,
     Super1RuntimeError,
@@ -54,8 +54,8 @@ from super1_runtime_guard import (
 )
 
 
-RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json"
-SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest_v4.json"
+RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v5.json"
+SUPER1_MANIFEST = ROOT / "research_candidates" / "super1" / "super1_manifest_v5.json"
 FORWARD_SHADOW_ADAPTER = ROOT / "scripts" / "run_forward_shadow.py"
 DEPLOYMENT_MODE = "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY"
 REQUIRED_ENV: tuple[str, ...] = ()
@@ -342,6 +342,35 @@ def load_verified_rth_calendar(runtime: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
+    if runtime.get("schema_version") == 5:
+        relative = runtime.get("candidate_path")
+        if not isinstance(relative, str) or not relative:
+            raise Super1FeatureError("Super1 V5 runtime has no candidate_path.")
+        candidate_path = _safe_repo_file(relative, "Super1 V5 candidate")
+        try:
+            signal_probe = core.read_json(ROOT / str(runtime.get("signal_contract_path") or ""))
+            signal_source_probe = signal_probe.get("signal_source", {})
+            if signal_source_probe.get("engine_source_sha256") != core.source_code_hash() or core.file_hash(FORWARD_SHADOW_ADAPTER) != signal_source_probe.get("payload_adapter_sha256"):
+                raise Super1FeatureError("Super1 signal contract is invalid or does not match runtime bytes.")
+            candidate = load_artifact(
+                candidate_path,
+                ROOT,
+                artifact_type="strategy_candidate",
+                verify_inputs=True,
+            )
+            return validate_super1_v5_candidate(
+                candidate,
+                root=ROOT,
+                runtime=runtime,
+                candidate_path=candidate_path,
+                manifest_path=SUPER1_MANIFEST,
+            )
+        except (ArtifactValidationError, CandidateValidationError, OSError, ValueError) as exc:
+            raise Super1FeatureError(f"Super1 V5 artifact chain is invalid: {exc}") from exc
+    return _validate_super1_v4_candidate(runtime)
+
+
+def _validate_super1_v4_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     relative = runtime.get("candidate_path")
     if not isinstance(relative, str) or not relative:
         raise Super1FeatureError("Super1 runtime has no candidate_path.")
@@ -354,15 +383,12 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if not candidate_path.is_file() or core.file_hash(candidate_path) != expected_file_hash:
         raise Super1FeatureError("Super1 candidate file hash mismatch.")
     try:
-        if int(runtime.get("schema_version", 0)) == 4:
-            candidate = core.read_json(candidate_path)
-        else:
-            candidate = load_artifact(
-                candidate_path,
-                ROOT,
-                artifact_type="strategy_candidate",
-                verify_inputs=True,
-            )
+        candidate = load_artifact(
+            candidate_path,
+            ROOT,
+            artifact_type="strategy_candidate",
+            verify_inputs=True,
+        )
     except (ArtifactValidationError, OSError, ValueError) as exc:
         raise Super1FeatureError(f"Super1 candidate artifact is invalid: {exc}") from exc
     if candidate.get("artifact_sha256") != runtime.get("candidate_artifact_sha256"):
@@ -2789,7 +2815,7 @@ def configure_core() -> None:
     runtime = core.read_json(RUNTIME_CONFIG)
     validate_super1_candidate(runtime)
     if runtime.get("deployment_binding_required") is not True:
-        raise Super1FeatureError("Super1 V4 requires a private signed deployment binding.")
+        raise Super1FeatureError("Super1 V5 requires a private signed deployment binding.")
     def load_bound_runtime() -> dict[str, Any]:
         try:
             binding = load_verified_deployment_binding(

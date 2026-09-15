@@ -180,6 +180,127 @@ def _evidence_file(evidence_root: Path, value: Any, label: str) -> Path:
     return resolved
 
 
+def validate_super1_v5_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    root: str | Path,
+    runtime: Mapping[str, Any],
+    candidate_path: str | Path,
+    manifest_path: str | Path,
+) -> dict[str, Any]:
+    """Validate the active V5 chain after the generic artifact loader ran.
+
+    V5 is deliberately structural and unsigned: it can authorize only the
+    fresh-forward validation path, never a historical result or promotion.
+    """
+    root_path = Path(root).resolve()
+    candidate_file = _file(root_path, Path(candidate_path).resolve().relative_to(root_path).as_posix(), "V5 candidate")
+    if sha256(candidate_file.read_bytes()).hexdigest() != str(runtime.get("candidate_file_sha256") or "").lower():
+        raise CandidateValidationError("V5 candidate file hash mismatch")
+    if candidate.get("schema_version") != 2 or candidate.get("artifact_type") != "strategy_candidate":
+        raise CandidateValidationError("V5 candidate must use the generic schema-2 strategy artifact")
+    if candidate.get("status") != "UNSIGNED_VALIDATION_ONLY" or candidate.get("unsigned") is not True:
+        raise CandidateValidationError("V5 candidate unsigned status is invalid")
+    if candidate.get("live_enabled") is not False or candidate.get("proven") is not False or candidate.get("fresh_forward_required") is not True:
+        raise CandidateValidationError("V5 candidate safety flags are invalid")
+    if candidate.get("artifact_sha256") != sha256(
+        json.dumps({key: value for key, value in candidate.items() if key != "artifact_sha256"}, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    ).hexdigest():
+        raise CandidateValidationError("V5 candidate artifact hash mismatch")
+    forbidden = ("promotion", "development_result", "full_evaluation", "locked_oos", "result_sha256")
+
+    def assert_no_legacy_keys(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if any(token in str(key).lower() for token in forbidden):
+                    raise CandidateValidationError("V5 chain contains legacy OOS or promotion fields")
+                assert_no_legacy_keys(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_no_legacy_keys(item)
+
+    assert_no_legacy_keys(candidate)
+    if candidate.get("artifact_sha256") != runtime.get("candidate_artifact_sha256") or candidate.get("setup_rules") != runtime.get("setup_rules"):
+        raise CandidateValidationError("V5 runtime is not bound to the candidate")
+    manifest_file = _file(root_path, Path(manifest_path).resolve().relative_to(root_path).as_posix(), "V5 manifest")
+    manifest = _read_object(manifest_file, "V5 manifest")
+    signal_relative = str(runtime.get("signal_contract_path") or "")
+    config_relative = str(runtime.get("config_path") or "")
+    signal_file = _file(root_path, signal_relative, "V5 signal contract")
+    config_file = _file(root_path, config_relative, "V5 config")
+    if sha256(signal_file.read_bytes()).hexdigest() != str(runtime.get("signal_contract_sha256") or "").lower():
+        raise CandidateValidationError("V5 signal contract hash mismatch")
+    config = _read_object(config_file, "V5 config")
+    signal = _read_object(signal_file, "V5 signal contract")
+    assert_no_legacy_keys(manifest)
+    assert_no_legacy_keys(signal)
+    assert_no_legacy_keys(config)
+    if (
+        manifest.get("schema_version") != 5
+        or manifest.get("name") != "Super1 V5"
+        or manifest.get("status") != "UNSIGNED_VALIDATION_ONLY"
+        or manifest.get("unsigned") is not True
+        or manifest.get("live_enabled") is not False
+        or manifest.get("proven") is not False
+        or manifest.get("fresh_forward_required") is not True
+        or manifest.get("candidate_path") != candidate_file.relative_to(root_path).as_posix()
+        or manifest.get("candidate_file_sha256") != sha256(candidate_file.read_bytes()).hexdigest()
+        or manifest.get("candidate_artifact_sha256") != candidate.get("artifact_sha256")
+        or manifest.get("signal_contract_path") != signal_relative
+        or manifest.get("signal_contract_sha256") != sha256(signal_file.read_bytes()).hexdigest()
+        or manifest.get("config_path") != config_relative
+        or manifest.get("config_sha256") != sha256(config_file.read_bytes()).hexdigest()
+        or manifest.get("engine_source_sha256") != source_code_hash()
+    ):
+        raise CandidateValidationError("V5 manifest bindings are invalid")
+    signal_source = signal.get("signal_source")
+    overlay = signal.get("overlay_candidate")
+    transport = signal.get("demo_order_transport")
+    calendar = signal.get("rth_session_calendar")
+    if not isinstance(signal_source, Mapping) or not isinstance(overlay, Mapping) or not isinstance(transport, Mapping) or not isinstance(calendar, Mapping):
+        raise CandidateValidationError("V5 signal contract sections are incomplete")
+    source_config = _file(root_path, str(signal_source.get("config_path") or ""), "V5 source config")
+    source_generator = _file(root_path, str(signal_source.get("generator_path") or ""), "V5 source generator")
+    source_adapter = _file(root_path, str(signal_source.get("payload_adapter_path") or ""), "V5 source adapter")
+    transport_file = _file(root_path, str(transport.get("path") or ""), "V5 transport")
+    calendar_file = _file(root_path, str(calendar.get("path") or ""), "V5 calendar")
+    source_hashes = (
+        (source_config, signal_source.get("config_sha256")),
+        (source_generator, signal_source.get("generator_sha256")),
+        (source_adapter, signal_source.get("payload_adapter_sha256")),
+        (transport_file, transport.get("sha256")),
+        (calendar_file, calendar.get("sha256")),
+    )
+    if any(sha256(path.read_bytes()).hexdigest() != str(expected).lower() for path, expected in source_hashes):
+        raise CandidateValidationError("V5 signal source hash binding is invalid")
+    if signal_source.get("engine_source_sha256") != source_code_hash() or overlay.get("path") != candidate_file.relative_to(root_path).as_posix() or overlay.get("file_sha256") != sha256(candidate_file.read_bytes()).hexdigest() or overlay.get("artifact_sha256") != candidate.get("artifact_sha256"):
+        raise CandidateValidationError("V5 overlay binding is invalid")
+    if config.get("schema_version") != 5 or config.get("status") != "UNSIGNED_VALIDATION_ONLY" or config.get("unsigned") is not True or config.get("live_enabled") is not False or config.get("proven") is not False or config.get("fresh_forward_required") is not True:
+        raise CandidateValidationError("V5 runtime config safety flags are invalid")
+    baseline = config.get("strategy_health_baseline")
+    if (
+        not isinstance(baseline, Mapping)
+        or baseline.get("candidate_hash") != candidate.get("artifact_sha256")
+        or baseline.get("closed_trades") != 0
+        or baseline.get("valid_sessions") != 0
+        or baseline.get("years") != []
+        or baseline.get("rolling_net_r_p05") != 0.0
+        or baseline.get("drawdown_p95") != 0.0
+        or baseline.get("drawdown_p99") != 0.0
+        or baseline.get("locked") is not True
+    ):
+        raise CandidateValidationError("V5 strategy-health baseline must be an empty fresh-forward baseline")
+    if config.get("candidate_path") != candidate_file.relative_to(root_path).as_posix() or config.get("candidate_file_sha256") != sha256(candidate_file.read_bytes()).hexdigest() or config.get("candidate_artifact_sha256") != candidate.get("artifact_sha256") or config.get("signal_contract_path") != signal_relative or config.get("signal_contract_sha256") != sha256(signal_file.read_bytes()).hexdigest():
+        raise CandidateValidationError("V5 runtime config bindings are invalid")
+    if config.get("rth_session_calendar") != dict(calendar) or config.get("setup_rules") != runtime.get("setup_rules"):
+        raise CandidateValidationError("V5 calendar or setup binding is invalid")
+    safety = signal.get("safety")
+    deployment = manifest.get("deployment")
+    if not isinstance(safety, Mapping) or not isinstance(deployment, Mapping) or safety.get("real_money_live_enabled") is not False or safety.get("real_money_execution_allowed") is not False or deployment.get("real_money_live_enabled") is not False or deployment.get("real_money_execution_allowed") is not False:
+        raise CandidateValidationError("V5 live-money safety binding is invalid")
+    return dict(candidate)
+
+
 def validate_super1_v4_candidate(
     path: str | Path,
     root: str | Path,

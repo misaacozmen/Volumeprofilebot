@@ -1,22 +1,40 @@
 {
   "artifact_id": "super1_unsigned_candidate_v4",
-  "artifact_sha256": "e0aa5d771befad1b8017d61b78a0f4732b7e7c4f9f40b7995da0de0509bd1b8c",
+  "artifact_sha256": "dc42f51b53f2d036a6d76374c03a530aa28394500aee348dd03ff9b21be73aeb",
   "artifact_type": "strategy_candidate",
   "checks": {
-    "candidate_chain_current_source_bound": true,
-    "fresh_forward_not_performed": true,
-    "live_execution_disabled": true,
-    "performance_evidence_not_reused": true
+    "criteria_pass": true,
+    "data_invalid_excluded": true,
+    "deterministic": true,
+    "development_prefix_matches_frozen_result": true,
+    "graph_evidence_pass": true,
+    "rolling_all_dd_at_most_13": true,
+    "rolling_all_positive": true,
+    "rolling_windows": 18
   },
   "criteria": {
-    "fresh_forward_required": true,
-    "historical_performance_claim": false
+    "development_max_drawdown_9_13": true,
+    "development_net_r_above_263_baseline": true,
+    "development_retention_at_least_70pct": true,
+    "development_win_rate_40_45": true
   },
-  "development_result_sha256": null,
+  "development_result_sha256": "2f346bbb20184f0989e5539984b7c79054aa92aa703f05a8e57b0493fec9e284",
   "fresh_forward_required": true,
-  "full_evaluation_result_sha256": null,
+  "full_evaluation_result_sha256": "29e1e327240adbda26fd3cbb845bd7f118102cbb46efae2b0c594bf1a35a145a",
   "live_enabled": false,
-  "name": "SUPER1_UNSIGNED_CURRENT_SOURCE_CHAIN_V4",
+  "name": "SUPER1_UNSIGNED_CANDIDATE_V4",
+  "promotion_bindings": {
+    "account_binding_schema_path": "live_forward/account_binding_schema_v4.json",
+    "calendar_path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
+    "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
+    "config_path": "live_forward/super1_xm_mt5_demo_config_v4.json",
+    "data_manifest_path": "data/provenance/dukascopy_v4/data_manifest_v4.json",
+    "deal_schema_path": "backtest/live/deal_ingestion.py",
+    "instrument_registry_path": "live_forward/instrument_registry_v4.json",
+    "locked_oos_baseline_path": "research_candidates/super1/super1_locked_oos_baseline_v4.json",
+    "sandbox_protocol_path": "backtest/live_signal_protocol.py",
+    "signal_contract_path": "research_candidates/super1/super1_signal_contract_v4.json"
+  },
   "proven": false,
   "provenance": {
     "environment": {
@@ -30,22 +48,64 @@
     },
     "inputs": [
       {
-        "bytes": 1230092,
-        "path": "data/raw/spx/CAPITALCOM_SPX500, 5_c1e05.csv",
-        "role": "research_dataset",
-        "sha256": "22ae16f0fdc4909419a28b5ce1e7303eea3f5f62034c00e3d7b49bbac2374ef7"
+        "bytes": 340042,
+        "path": "outputs/reports/strategy_improvement_loop_v2/body_plus_classic_quota_day1_v1/audit/trade_evidence_index.csv",
+        "role": "trade_evidence",
+        "sha256": "4c6c9024ab5676099ec22b863be482d1977b7fa45f3500673a485677d3942a3c"
       },
       {
-        "bytes": 11112,
+        "bytes": 821586,
+        "path": "outputs/reports/strategy_improvement_loop_v2/body_plus_classic_quota_day1_v1/selected_trades.csv",
+        "role": "research_dataset",
+        "sha256": "5162bde26ad62a1481691cf96d58980de0a1f8c8874a07f7d7e45695bd745483"
+      },
+      {
+        "bytes": 652268,
+        "path": "outputs/reports/strategy_improvement_loop_v4/iteration_096/locked_conservative_rolling_v1/selected_trades_pre2025.csv",
+        "role": "frozen_development_result",
+        "sha256": "782d8c0d3f2f403b20889c605e396e9535877ce71c13f57e35311b6e906e40e6"
+      },
+      {
+        "bytes": 10828,
         "path": "scripts/candidate_artifact.py",
         "role": "artifact_code",
-        "sha256": "bcb0336999566f3d6e7d1c1208af83e77872ad0c2c28b88c878c757e539de60f"
+        "sha256": "26e08cafc94df9c89400677881c66b855f37ad32552abdb8841a907ab570ac5a"
       },
       {
-        "bytes": 11123,
-        "path": "backtest/engine_pipeline.py",
-        "role": "engine_source",
-        "sha256": "e389840233c953ccf617051574daa8ff079914abaa676154faf8d16bd0b5d9c2"
+        "bytes": 6012,
+        "path": "scripts/evaluate_conservative_rolling_candidate_v4.py",
+        "role": "evaluator_code",
+        "sha256": "82f4912dd863ce5f39a5ab65a7d0ff284564fe5173db1a114133b9a17af12af5"
+      },
+      {
+        "bytes": 11185,
+        "path": "scripts/finalize_strategy_improvement_loop_v4.py",
+        "role": "finalizer_code",
+        "sha256": "f19624b255b0e09f5cb829667cd2851456a94fdd8161cf8a8d32938260d0f9f0"
+      },
+      {
+        "bytes": 4892,
+        "path": "scripts/freeze_conservative_rolling_state_v4.py",
+        "role": "risk_config_code",
+        "sha256": "2904d7e05b540ef7471aeaea6ed2b1177653a3f3d91ea25bdadfd2629cbb0272"
+      },
+      {
+        "bytes": 4735,
+        "path": "scripts/freeze_risk_overlay_v4.py",
+        "role": "metric_code",
+        "sha256": "0fcc3b6eb35f7af89f8ff85726eceb0ef8d78c2dd74e40d35a2e716d0ed66630"
+      },
+      {
+        "bytes": 6285,
+        "path": "scripts/freeze_strategy_improvement_loop_v4.py",
+        "role": "selector_code",
+        "sha256": "0453b5f4e5663eddf2d33dff6bbb0ea16cb1749099562cfcb3de914fcdf165c7"
+      },
+      {
+        "bytes": 24377,
+        "path": "scripts/run_strategy_improvement_loop_v4.py",
+        "role": "strategy_code",
+        "sha256": "cfd0a5a493d171ba6a8ca8b6518eb35dd5bda7d0cc3b7018b0f792c2a0266db1"
       }
     ]
   },
@@ -54,10 +114,10 @@
     "negative_scale": 0.75,
     "nonnegative_scale": 1.1
   },
-  "schema_version": 2,
+  "schema_version": 4,
   "selection_protocol": {
-    "development_period": "NOT_PERFORMED",
-    "final_holdout_period": "NOT_USED",
+    "development_period": "2016-2024",
+    "final_holdout_period": "2025-2026",
     "final_holdout_used_for_publication": false,
     "final_holdout_used_for_selection": false
   },

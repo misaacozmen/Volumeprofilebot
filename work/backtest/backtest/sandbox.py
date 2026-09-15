@@ -28,6 +28,16 @@ def windows_appcontainer_available() -> bool:
     return False
 
 
+def posix_namespace_available() -> bool:
+    """Return whether a real namespace/ACL worker launcher is configured.
+
+    RLIMIT-only subprocesses are not an isolation boundary.  This repository
+    has no verified user/mount/network namespace launcher, so POSIX execution
+    is blocked until one is explicitly provisioned and audited.
+    """
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxProfile:
     wall_seconds: int
@@ -128,7 +138,9 @@ def run_isolated_worker(
     if limits is None:
         raise SandboxError("unknown sandbox profile")
     if os.name == "nt" and not windows_appcontainer_available():
-        raise SandboxError("Windows AppContainer isolation is unavailable; sandboxed backtest is BLOCKED")
+        raise SandboxError("Windows AppContainer isolation is unavailable; sandboxed backtest is BLOCKED_PLATFORM")
+    if os.name == "posix" and not posix_namespace_available():
+        raise SandboxError("POSIX namespace/ACL isolation is unavailable; sandboxed backtest is BLOCKED_PLATFORM")
     payload = _canonical_json({**dict(request), "limits": {"output_mb": limits.output_mb}})
     max_payload_bytes = limits.output_mb * 1024 * 1024
     if len(payload) > max_payload_bytes:

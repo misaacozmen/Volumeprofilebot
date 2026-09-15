@@ -18,7 +18,24 @@ MANIFEST_KEYS = frozenset({
     "schema_version", "inventory_sha256", "target_count", "residual_count", "targets",
     "semantic_root_sha256", "ordered_target_merkle_root_sha256", "calendar_sha256",
     "auditor_sha256", "node_helper_sha256", "package_lock_sha256", "http_event_root_sha256",
+    "run_id", "audit_nonce_a", "audit_nonce_b", "audit_process_identity_a", "audit_process_identity_b",
+    "audit_identity_a_path", "audit_identity_a_sha256", "audit_identity_b_path", "audit_identity_b_sha256",
+    "source_commit", "source_tree_sha256", "frozen_input_hashes", "trust_state",
+    "owner_trust_policy_path", "owner_trust_policy_sha256", "owner_replay_ledger_path", "owner_replay_ledger_sha256",
+    "owner_signature_status",
 })
+
+
+class ValidatedFinalManifest(dict[str, Any]):
+    """Runtime type for a final manifest after every trust-chain check passed."""
+
+    @property
+    def run_id(self) -> str:
+        return str(self["run_id"])
+
+    @property
+    def trust_state(self) -> str:
+        return str(self["trust_state"])
 
 
 def digest(path: Path) -> str:
@@ -30,6 +47,63 @@ def _require_digest(value: object, label: str) -> str:
     if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
         raise ValueError(f"{label} is not a lowercase SHA-256 digest")
     return text
+
+
+def _external_file(value: object, *, repository_root: Path, expected_sha256: object, label: str) -> Path:
+    raw = str(value or "")
+    raw_path = Path(raw)
+    if not raw_path.is_absolute():
+        raise ValueError(f"{label} path must be absolute and external")
+    path = raw_path.resolve()
+    if not path.is_file():
+        raise ValueError(f"{label} is missing")
+    try:
+        path.relative_to(repository_root.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"{label} must remain outside the repository")
+    if digest(path) != _require_digest(expected_sha256, f"{label} SHA-256"):
+        raise ValueError(f"{label} hash mismatch")
+    return path
+
+
+def _validate_owner_trust(
+    payload: Mapping[str, Any],
+    *,
+    repository_root: Path,
+    require_signature: bool,
+) -> None:
+    policy_path = _external_file(
+        payload.get("owner_trust_policy_path"),
+        repository_root=repository_root,
+        expected_sha256=payload.get("owner_trust_policy_sha256"),
+        label="owner trust policy",
+    )
+    replay_path = _external_file(
+        payload.get("owner_replay_ledger_path"),
+        repository_root=repository_root,
+        expected_sha256=payload.get("owner_replay_ledger_sha256"),
+        label="owner replay ledger",
+    )
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("owner trust inputs are unreadable") from exc
+    if not isinstance(policy, dict) or policy.get("schema_version") != 1 or policy.get("status") != "ACTIVE":
+        raise ValueError("owner trust policy is invalid")
+    if not isinstance(replay, dict) or replay.get("schema_version") != 1 or not isinstance(replay.get("entries"), list):
+        raise ValueError("owner replay ledger is invalid")
+    replayed = replay["entries"]
+    if any(not isinstance(item, dict) for item in replayed):
+        raise ValueError("owner replay ledger entries are invalid")
+    run_id = str(payload.get("run_id") or "")
+    nonces = {str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")}
+    if any(str(item.get("run_id") or "") == run_id or str(item.get("nonce") or "") in nonces for item in replayed):
+        raise ValueError("owner replay ledger already contains this audit identity")
+    if require_signature and payload.get("owner_signature_status") != "SIGNED":
+        raise ValueError("owner signature is not complete")
 
 
 def target_key(value: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -119,6 +193,8 @@ def _validate_detached_attestation(
         raise ValueError("detached final attestation is not bound to final manifest bytes")
     if attestation.get("inventory_sha256") != payload.get("inventory_sha256") or attestation.get("http_event_root_sha256") != payload.get("http_event_root_sha256"):
         raise ValueError("detached final attestation inventory or HTTP event root differs")
+    if attestation.get("run_id") != payload.get("run_id") or attestation.get("audit_nonces") != sorted((payload.get("audit_nonce_a"), payload.get("audit_nonce_b"))) or attestation.get("source_commit") != payload.get("source_commit") or attestation.get("source_tree_sha256") != payload.get("source_tree_sha256") or attestation.get("frozen_input_hashes") != payload.get("frozen_input_hashes") or attestation.get("audit_process_identities") != [payload.get("audit_process_identity_a"), payload.get("audit_process_identity_b")]:
+        raise ValueError("detached final attestation trust identity differs")
     source_head = _require_digest(attestation.get("source_head_sha256"), "detached final attestation source_head_sha256")
     if expected_source_head_sha256 is not None and source_head != _require_digest(expected_source_head_sha256, "expected source head SHA-256"):
         raise ValueError("detached final attestation source head differs from tested head")
@@ -153,7 +229,8 @@ def validate_final_manifest(
     pinned_public_key_path: Path | None = None,
     pinned_public_key_sha256: str | None = None,
     expected_source_head_sha256: str | None = None,
-) -> dict[str, Any]:
+    require_owner_signature: bool = True,
+) -> ValidatedFinalManifest:
     resolved = path.resolve()
     root = provenance_root.resolve()
     try:
@@ -165,9 +242,53 @@ def validate_final_manifest(
         raise ValueError("schema-5 final manifest has an incomplete or extra top-level key set")
     if payload.get("schema_version") != 5 or payload.get("inventory_sha256") != INVENTORY_SHA256 or payload.get("target_count") != TARGET_COUNT or payload.get("residual_count") != 0:
         raise ValueError("schema-5 final manifest header is invalid")
+    if (
+        not re.fullmatch(r"[0-9a-f]{32,64}", str(payload.get("run_id") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("audit_nonce_a") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("audit_nonce_b") or ""))
+        or payload.get("audit_nonce_a") == payload.get("audit_nonce_b")
+        or payload.get("trust_state") not in {"AWAITING_OWNER_SIGNATURE", "OWNER_SIGNED"}
+        or payload.get("owner_signature_status") not in {"AWAITING_OWNER_SIGNATURE", "SIGNED"}
+        or (payload.get("trust_state") == "OWNER_SIGNED") != (payload.get("owner_signature_status") == "SIGNED")
+        or not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_commit") or ""))
+        or not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_tree_sha256") or ""))
+    ):
+        raise ValueError("final manifest trust identity header is invalid")
+    for field in ("audit_process_identity_a", "audit_process_identity_b"):
+        identity = payload.get(field)
+        if not isinstance(identity, dict) or set(identity) != {"pid", "process_start_token", "host"} or isinstance(identity.get("pid"), bool) or not isinstance(identity.get("pid"), int) or identity["pid"] <= 0 or not all(isinstance(identity.get(key), str) and identity[key] for key in ("process_start_token", "host")):
+            raise ValueError(f"{field} is invalid")
+    frozen = payload.get("frozen_input_hashes")
+    if not isinstance(frozen, dict) or not frozen or any(not isinstance(key, str) or not key or not SHA256_RE.fullmatch(str(value)) for key, value in frozen.items()):
+        raise ValueError("final manifest frozen input hash set is invalid")
     for field in ("semantic_root_sha256", "ordered_target_merkle_root_sha256", "calendar_sha256", "auditor_sha256", "node_helper_sha256", "package_lock_sha256", "http_event_root_sha256"):
         _require_digest(payload.get(field), f"final manifest {field}")
     repository_root = root.parents[2]
+    audit_a_path = Path(str(payload.get("audit_identity_a_path") or ""))
+    audit_b_path = Path(str(payload.get("audit_identity_b_path") or ""))
+    if audit_a_path.is_absolute() or audit_b_path.is_absolute():
+        raise ValueError("audit identity paths must be repository-relative")
+    audit_a_path = (repository_root / audit_a_path).resolve()
+    audit_b_path = (repository_root / audit_b_path).resolve()
+    for audit_path in (audit_a_path, audit_b_path):
+        try:
+            audit_path.relative_to(repository_root)
+        except ValueError as exc:
+            raise ValueError("audit identity path escapes repository") from exc
+    for audit_path, expected_hash, label in ((audit_a_path, payload.get("audit_identity_a_sha256"), "audit identity A"), (audit_b_path, payload.get("audit_identity_b_sha256"), "audit identity B")):
+        if not audit_path.is_file() or digest(audit_path) != _require_digest(expected_hash, f"{label} SHA-256"):
+            raise ValueError(f"{label} is missing or changed")
+    audit_payloads = []
+    for audit_path, label in ((audit_a_path, "audit identity A"), (audit_b_path, "audit identity B")):
+        try:
+            identity = json.loads(audit_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{label} is unreadable") from exc
+        if not isinstance(identity, dict) or identity.get("schema_version") != 1:
+            raise ValueError(f"{label} schema is invalid")
+        audit_payloads.append(identity)
+    if audit_payloads[0].get("run_id") != payload["run_id"] or audit_payloads[1].get("run_id") != payload["run_id"] or audit_payloads[0].get("audit_nonce") != payload["audit_nonce_a"] or audit_payloads[1].get("audit_nonce") != payload["audit_nonce_b"] or audit_payloads[0].get("source_commit") != payload["source_commit"] or audit_payloads[1].get("source_commit") != payload["source_commit"] or audit_payloads[0].get("source_tree_sha256") != payload["source_tree_sha256"] or audit_payloads[1].get("source_tree_sha256") != payload["source_tree_sha256"] or audit_payloads[0].get("frozen_input_hashes") != payload["frozen_input_hashes"] or audit_payloads[1].get("frozen_input_hashes") != payload["frozen_input_hashes"] or audit_payloads[0].get("process_identity") != payload["audit_process_identity_a"] or audit_payloads[1].get("process_identity") != payload["audit_process_identity_b"]:
+        raise ValueError("final manifest independent audit identity bindings differ")
     external_files = {
         "calendar_sha256": repository_root / "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
         "auditor_sha256": repository_root / "scripts/audit_dukascopy_reacquisition_v5.py",
@@ -294,16 +415,21 @@ def validate_final_manifest(
                 raise ValueError("V5 byte attestation does not bind final target bytes")
     if semantic_root(target_rows) != payload["semantic_root_sha256"] or ordered_merkle(target_rows) != payload["ordered_target_merkle_root_sha256"]:
         raise ValueError("final manifest semantic root is invalid")
-    _validate_detached_attestation(
-        resolved,
-        payload,
-        attestation_path=detached_attestation_path,
-        signature_path=detached_signature_path,
-        public_key_path=pinned_public_key_path,
-        pinned_public_key_sha256=pinned_public_key_sha256,
-        expected_source_head_sha256=expected_source_head_sha256,
-    )
-    return payload
+    signature_required = require_owner_signature or payload.get("owner_signature_status") == "SIGNED"
+    _validate_owner_trust(payload, repository_root=repository_root, require_signature=signature_required)
+    if signature_required:
+        _validate_detached_attestation(
+            resolved,
+            payload,
+            attestation_path=detached_attestation_path,
+            signature_path=detached_signature_path,
+            public_key_path=pinned_public_key_path,
+            pinned_public_key_sha256=pinned_public_key_sha256,
+            expected_source_head_sha256=expected_source_head_sha256,
+        )
+    elif any((detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256)):
+        raise ValueError("owner signature inputs must be supplied together")
+    return ValidatedFinalManifest(payload)
 
 
 def apply_verified_reacquisitions(

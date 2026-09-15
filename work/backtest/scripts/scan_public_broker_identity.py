@@ -19,6 +19,23 @@ def tracked_files(root: Path) -> list[Path]:
     return [root / item.decode("utf-8") for item in output.split(b"\0") if item]
 
 
+def untracked_files(root: Path) -> list[Path]:
+    output = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    paths: list[Path] = []
+    for item in output.split(b"\0"):
+        if not item.startswith(b"?? "):
+            continue
+        path = root / item[3:].decode("utf-8")
+        if path.is_file():
+            paths.append(path)
+    return paths
+
+
 def concrete_paths(value: object, prefix: str = "$") -> list[str]:
     found: list[str] = []
     if isinstance(value, dict):
@@ -41,7 +58,12 @@ def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
         payload = json.loads(denylist.read_text(encoding="utf-8"))
         denied = [str(item).encode() for item in payload.get("denylist", []) if str(item)]
     matches: list[dict[str, object]] = []
-    for path in tracked_files(root):
+    seen: set[Path] = set()
+    files = [(path, "tracked") for path in tracked_files(root)] + [(path, "untracked") for path in untracked_files(root)]
+    for path, scope in files:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
         relative = path.relative_to(root).as_posix()
         raw = path.read_bytes()
         locations: list[str] = []
@@ -54,6 +76,7 @@ def scan(root: Path, denylist: Path | None = None) -> list[dict[str, object]]:
         if locations or denied_count:
             matches.append({
                 "path": relative,
+                "scope": scope,
                 "field_paths": locations,
                 "denylist_match_count": denied_count,
                 "file_sha256": sha256(raw).hexdigest(),

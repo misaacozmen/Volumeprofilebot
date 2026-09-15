@@ -243,22 +243,48 @@ def run_dukascopy_cli(
         if remaining > 0:
             time.sleep(remaining)
     args._last_request_monotonic = time.monotonic()
-    process = subprocess.Popen(command)
-    try:
-        return_code = process.wait(timeout=args.chunk_timeout_seconds)
-    except subprocess.TimeoutExpired as error:
-        terminate_process_tree(process.pid)
-        raise subprocess.CalledProcessError(
-            returncode=1,
-            cmd=command,
-            output=f"Timed out after {args.chunk_timeout_seconds} seconds",
-        ) from error
+    return_code, stdout, stderr = run_provider_process(command, args.chunk_timeout_seconds)
     if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command)
+        raise subprocess.CalledProcessError(return_code, command, output=stdout, stderr=stderr)
     csv_path = Path(tmp_dir) / f"{output_name}.csv"
     if not csv_path.exists():
         raise SystemExit(f"dukascopy-node did not create expected file: {csv_path}")
     return csv_path
+
+
+def run_provider_process(command: list[str], timeout_seconds: int) -> tuple[int, bytes, bytes]:
+    """Run one locked downloader with a hard deadline and complete cleanup."""
+    if int(timeout_seconds) <= 0:
+        raise ValueError("provider process timeout must be positive")
+    creationflags = 0x00000200 if __import__("os").name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        creationflags=creationflags,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=int(timeout_seconds))
+    except subprocess.TimeoutExpired as error:
+        terminate_process_tree(process.pid)
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=command,
+            output=stdout + b"\nTimed out after " + str(timeout_seconds).encode("ascii") + b" seconds",
+            stderr=stderr,
+        ) from error
+    finally:
+        if process.poll() is None:
+            terminate_process_tree(process.pid)
+            process.wait(timeout=10)
+    return int(process.returncode), stdout, stderr
 
 
 def terminate_process_tree(process_id: int) -> None:

@@ -1,0 +1,46 @@
+{
+  "schema_version": 5,
+  "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V5",
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "unsigned": true,
+  "live_enabled": false,
+  "proven": false,
+  "fresh_forward_required": true,
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "execution_scope": "XM_MT5_DEMO_ONLY",
+  "overlay_candidate": {
+    "artifact_sha256": "3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440",
+    "defines_base_signals": false,
+    "file_sha256": "1794ec151dfeced2cc3532647c8b25c6e8ac1ff8b6479646d0d38784d196a8a4",
+    "path": "research_candidates/super1/super1_unsigned_candidate_v5.json",
+    "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
+    "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
+  },
+  "rth_session_calendar": {
+    "calendar_id": "US_EQUITY_RTH_2022_2026_V4",
+    "path": "live_forward/calendars/us_equity_rth_2022_2026_v4.json",
+    "sha256": "fc5c7a2b6881dccef0b99ca33e2948528d87e22d14b65db4b0a85d954578875d"
+  },
+  "signal_source": {
+    "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",
+    "config_path": "forward_shadow/frozen_config.json",
+    "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
+    "generator_path": "scripts/run_capital_forward.py",
+    "generator_sha256": "ae608cabe5fcce40895972f66bf714cb2d2f638e084f99e88e8bcb95059ebe91",
+    "payload_adapter_path": "scripts/run_forward_shadow.py",
+    "payload_adapter_sha256": "4bdabaad2a8c43b6469f8c743eea11c5ed6f428ae2731786754a131d6ad00107",
+    "engine_source_sha256": "2330d9eb9466dc624fbbbefeb77704d03b2e614fd10d933f465623a74f892124"
+  },
+  "demo_order_transport": {
+    "path": "scripts/run_xm_mt5_forward.py",
+    "sha256": "5b1698201c05d625a9e53010d44884f3c3fca213a76d736a16868958e495a395",
+    "account_identity_gate": "DETACHED_SIGNED_PRIVATE_BINDING_EQUALITY"
+  },
+  "safety": {
+    "independent_super1_signal_producer_present": false,
+    "demo_order_execution_enabled": true,
+    "real_money_live_enabled": false,
+    "real_money_execution_allowed": false,
+    "fresh_forward_required": true
+  }
+}

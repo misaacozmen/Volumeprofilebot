@@ -12,6 +12,8 @@ from pathlib import Path
 import platform
 import re
 import secrets
+import sqlite3
+import threading
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
@@ -245,19 +247,21 @@ class HttpEventLog:
         self.path = Path(path)
 
     def append(self, event: Mapping[str, Any]) -> dict[str, Any]:
-        clean = {key: event[key] for key in event if key in self.ALLOWED_FIELDS and key != "event_sha256"}
-        clean.setdefault("event_id", uuid4().hex)
-        previous = ""
-        if self.path.is_file() and self.path.read_text(encoding="utf-8").splitlines():
-            previous = require_sha256(json.loads(self.path.read_text(encoding="utf-8").splitlines()[-1]).get("event_sha256"), "previous event SHA")
-        clean["previous_event_sha256"] = previous
-        clean["event_sha256"] = sha256_bytes(_canonical(clean))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("ab") as handle:
-            handle.write(_canonical(clean) + b"\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        return clean
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        with ProviderProcessLock(lock_path):
+            clean = {key: event[key] for key in event if key in self.ALLOWED_FIELDS and key != "event_sha256"}
+            clean.setdefault("event_id", uuid4().hex)
+            previous = ""
+            if self.path.is_file() and self.path.read_text(encoding="utf-8").splitlines():
+                previous = require_sha256(json.loads(self.path.read_text(encoding="utf-8").splitlines()[-1]).get("event_sha256"), "previous event SHA")
+            clean["previous_event_sha256"] = previous
+            clean["event_sha256"] = sha256_bytes(_canonical(clean))
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("ab") as handle:
+                handle.write(_canonical(clean) + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            return clean
 
 
 def _default_state() -> dict[str, Any]:
@@ -332,11 +336,19 @@ class RateLimitController:
             state["hosts"][host] = item
 
     def start_run(self, run_id: str) -> dict[str, Any]:
+        run_id = str(run_id).strip()
+        if not run_id:
+            raise ValueError("acquisition run_id is required")
         with ProviderProcessLock(self._state_lock_path()):
             state = self._load()
-            state["runs"].setdefault(str(run_id), {"provider_call_count": 0, "artifacts": {}, "started_at_utc": iso_utc(utc_now())})
+            active = str(state.get("active_run_id") or "")
+            if active and active != run_id:
+                raise ValueError("acquisition state is bound to one run_id")
+            state["active_run_id"] = run_id
+            state["run_identity"] = {"pid": os.getpid(), "process_start_token": process_start_token(), "host": platform.node()}
+            state["runs"].setdefault(run_id, {"run_id": run_id, "provider_call_count": 0, "artifacts": {}, "started_at_utc": iso_utc(utc_now())})
             self._write(state)
-            return state["runs"][str(run_id)]
+            return state["runs"][run_id]
 
     def before_request(self, host: str, *, now: datetime | None = None, run_id: str = "default", artifact_id: str = "unknown", transport_fixture: bool = False) -> dict[str, Any]:
         if str(host).lower() not in DEFAULT_HOST_ALLOWLIST:
@@ -349,6 +361,10 @@ class RateLimitController:
     def _before_request_locked(self, host: str, *, now: datetime | None, run_id: str, artifact_id: str, transport_fixture: bool) -> dict[str, Any]:
         observed = now or utc_now()
         state = self._load()
+        active_run_id = str(state.get("active_run_id") or "")
+        if active_run_id and active_run_id != str(run_id):
+            raise ValueError("acquisition request uses a foreign run_id")
+        state["active_run_id"] = str(run_id)
         self._recover_unknown_attempts(state, observed)
         item = dict(state["hosts"].get(host, {"circuit": "CLOSED", "consecutive_429": 0}))
         retry_at = item.get("next_retry_at_utc")
@@ -513,6 +529,164 @@ class HttpCas:
         finally:
             part.unlink(missing_ok=True)
         return digest, target
+
+
+class AcquisitionRunLedger:
+    """SQLite-WAL source of truth for resumable acquisition progress."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None, check_same_thread=False)
+        self.connection.execute("PRAGMA busy_timeout=30000")
+        if int(self.connection.execute("PRAGMA foreign_keys=ON").fetchone()[0]) != 1:
+            raise ValueError("acquisition ledger requires SQLite foreign keys")
+        if str(self.connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":
+            raise ValueError("acquisition ledger requires SQLite WAL")
+        self._lock = threading.RLock()
+        self.connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS acquisition_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at_utc TEXT NOT NULL,
+                source_commit TEXT NOT NULL,
+                source_tree_sha256 TEXT NOT NULL,
+                process_identity_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS acquisition_artifacts (
+                run_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                body_sha256 TEXT,
+                body_bytes INTEGER,
+                fixture_path TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL,
+                PRIMARY KEY (run_id, artifact_id),
+                FOREIGN KEY (run_id) REFERENCES acquisition_runs(run_id)
+            );
+            """
+        )
+
+    def _transaction(self):
+        class Transaction:
+            def __init__(self, owner: "AcquisitionRunLedger") -> None:
+                self.owner = owner
+
+            def __enter__(self):
+                self.owner._lock.acquire()
+                self.owner.connection.execute("BEGIN IMMEDIATE")
+                return self.owner.connection
+
+            def __exit__(self, exc_type, exc, tb):
+                try:
+                    self.owner.connection.rollback() if exc_type else self.owner.connection.commit()
+                finally:
+                    self.owner._lock.release()
+
+        return Transaction(self)
+
+    def start_run(self, run_id: str, *, source_commit: str, source_tree_sha256: str) -> dict[str, Any]:
+        run_id = str(run_id).strip()
+        if not run_id or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit)) or not SHA256_RE.fullmatch(str(source_tree_sha256)):
+            raise ValueError("acquisition run identity is incomplete")
+        identity = _canonical({"pid": os.getpid(), "process_start_token": process_start_token(), "host": platform.node()}).decode("utf-8")
+        with self._transaction() as connection:
+            existing = connection.execute("SELECT source_commit, source_tree_sha256 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone()
+            if existing is not None and tuple(existing) != (source_commit, source_tree_sha256):
+                raise ValueError("acquisition run identity differs from the persisted source")
+            connection.execute(
+                "INSERT OR IGNORE INTO acquisition_runs(run_id,started_at_utc,source_commit,source_tree_sha256,process_identity_json) VALUES(?,?,?,?,?)",
+                (run_id, iso_utc(utc_now()), source_commit, source_tree_sha256, identity),
+            )
+            row = connection.execute("SELECT run_id,started_at_utc,source_commit,source_tree_sha256,process_identity_json FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone()
+        assert row is not None
+        return {"run_id": row[0], "started_at_utc": row[1], "source_commit": row[2], "source_tree_sha256": row[3], "process_identity": json.loads(row[4])}
+
+    def reserve_artifact(self, run_id: str, artifact_id: str, fixture_path: str) -> str:
+        run_id, artifact_id, fixture_path = str(run_id).strip(), str(artifact_id).strip(), str(fixture_path).strip()
+        if not run_id or not artifact_id or not fixture_path:
+            raise ValueError("acquisition artifact identity is incomplete")
+        with self._transaction() as connection:
+            if connection.execute("SELECT 1 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone() is None:
+                raise ValueError("acquisition artifact references an unknown run")
+            existing = connection.execute("SELECT state FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?", (run_id, artifact_id)).fetchone()
+            if existing is not None:
+                return str(existing[0])
+            connection.execute(
+                "INSERT INTO acquisition_artifacts(run_id,artifact_id,state,fixture_path,updated_at_utc) VALUES(?,?,?,?,?)",
+                (run_id, artifact_id, "IN_PROGRESS", fixture_path, iso_utc(utc_now())),
+            )
+        return "IN_PROGRESS"
+
+    def complete_artifact(self, run_id: str, artifact_id: str, *, body_sha256: str, body_bytes: int) -> None:
+        require_sha256(body_sha256, "acquisition body hash")
+        if int(body_bytes) < 0:
+            raise ValueError("acquisition body byte count is invalid")
+        with self._transaction() as connection:
+            updated = connection.execute(
+                "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=?,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
+                (body_sha256, int(body_bytes), iso_utc(utc_now()), str(run_id), str(artifact_id)),
+            ).rowcount
+            if updated == 0:
+                existing = connection.execute("SELECT state,body_sha256,body_bytes FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?", (str(run_id), str(artifact_id))).fetchone()
+                if existing is not None and existing[0] == "COMMITTED" and existing[1] == body_sha256 and int(existing[2]) == int(body_bytes):
+                    return
+                raise ValueError("acquisition artifact is not an in-progress row")
+
+    def close(self) -> None:
+        self.connection.close()
+
+
+class AcquisitionCoordinator:
+    """Offline fixture coordinator; it never owns or invokes a provider client."""
+
+    def __init__(self, *, fixture_root: str | Path | None, cas_root: str | Path, ledger_path: str | Path, provider: Callable[..., Any] | None = None) -> None:
+        if provider is not None:
+            raise ValueError("provider calls are forbidden; acquisition requires a fixture root")
+        if fixture_root is None:
+            raise ValueError("fixture root is required")
+        self.fixture_root = Path(fixture_root).resolve()
+        if not self.fixture_root.is_dir():
+            raise ValueError("fixture root is missing")
+        self.cas = HttpCas(cas_root)
+        self.ledger = AcquisitionRunLedger(ledger_path)
+
+    def _fixture_bytes(self, fixture_path: str, *, expected_sha256: str, expected_bytes: int) -> bytes:
+        relative = Path(str(fixture_path))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("fixture path escapes fixture root")
+        path = (self.fixture_root / relative).resolve()
+        try:
+            path.relative_to(self.fixture_root)
+        except ValueError as exc:
+            raise ValueError("fixture path escapes fixture root") from exc
+        if not path.is_file():
+            raise ValueError("fixture file is missing")
+        body = path.read_bytes()
+        if len(body) != int(expected_bytes) or sha256_bytes(body) != require_sha256(expected_sha256, "fixture body hash"):
+            raise ValueError("fixture bytes do not match the declared CAS identity")
+        return body
+
+    def run(self, *, run_id: str, source_commit: str, source_tree_sha256: str, artifacts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        self.ledger.start_run(run_id, source_commit=source_commit, source_tree_sha256=source_tree_sha256)
+        output: list[dict[str, Any]] = []
+        for item in artifacts:
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            fixture_path = str(item.get("fixture_path") or "").strip()
+            state = self.ledger.reserve_artifact(run_id, artifact_id, fixture_path)
+            if state == "COMMITTED":
+                output.append({"run_id": run_id, "artifact_id": artifact_id, "state": state})
+                continue
+            body = self._fixture_bytes(fixture_path, expected_sha256=str(item.get("sha256") or ""), expected_bytes=int(item.get("bytes", -1)))
+            body_sha256, cas_path = self.cas.put(body)
+            if not cas_path.is_file() or sha256_bytes(cas_path.read_bytes()) != body_sha256:
+                raise ValueError("CAS readback verification failed")
+            self.ledger.complete_artifact(run_id, artifact_id, body_sha256=body_sha256, body_bytes=len(body))
+            output.append({"run_id": run_id, "artifact_id": artifact_id, "state": "COMMITTED", "body_sha256": body_sha256, "body_bytes": len(body), "cas_path": str(cas_path)})
+        return output
+
+    def close(self) -> None:
+        self.ledger.close()
 
 
 def checkpoint_key(host: str, instrument: str, timeframe: str, utc_hour: str) -> str:

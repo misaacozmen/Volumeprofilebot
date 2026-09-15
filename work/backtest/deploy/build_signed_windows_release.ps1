@@ -173,7 +173,7 @@ $gitDirty = [bool]($gitStatus -or $repoGitStatus)
 # Promotion is a prerequisite for every Super1 release mode, including
 # ValidateOnly. Keep this before environment checks, staging, and signing.
 if ($Profile -eq "super1") {
-    $promotionValidationCommand = "from pathlib import Path; from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(Path(r'$SourceRoot') / 'research_candidates' / 'super1' / 'super1_unsigned_candidate_v4.json', Path(r'$SourceRoot'), True)"
+    $promotionValidationCommand = "import json, sys; from pathlib import Path; sys.path.insert(0, r'$SourceRoot'); from scripts.run_super1_xm_mt5_forward import validate_super1_candidate; runtime=json.loads((Path(r'$SourceRoot') / 'live_forward' / 'super1_xm_mt5_demo_config_v5.json').read_text(encoding='utf-8')); validate_super1_candidate(runtime)"
     $promotionValidationOutput = & $Python -E -B -c $promotionValidationCommand 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Super1 promotion gate failed: $($promotionValidationOutput -join ' ')"
@@ -467,9 +467,7 @@ try {
         }
     }
     if ($Profile -eq "super1") {
-        $candidatePath = Join-Path $Stage "research_candidates\super1\super1_unsigned_candidate_v4.json"
-        $requirePromotable = "True"
-        $candidateValidationOutput = & $Python -E -B -c "from backtest.candidate_validation import validate_super1_v4_candidate; validate_super1_v4_candidate(r'$candidatePath', root=r'$Stage', require_promotable=$requirePromotable)" 2>&1
+        $candidateValidationOutput = & $Python -E -B -c "import json,sys; from pathlib import Path; sys.path.insert(0,r'$Stage'); from scripts.run_super1_xm_mt5_forward import validate_super1_candidate; validate_super1_candidate(json.loads((Path(r'$Stage')/'live_forward'/'super1_xm_mt5_demo_config_v5.json').read_text(encoding='utf-8')))" 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Unsigned Super1 candidate validation failed: $($candidateValidationOutput -join ' ')"
         }

@@ -6,11 +6,11 @@
   },
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "execution_scope": "XM_MT5_DEMO_ONLY",
-    "name": "SUPER1_CANONICAL_OVERLAY_CURRENT_SOURCE_CHAIN_V4",
+  "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V4",
   "overlay_candidate": {
-    "artifact_sha256": "e0aa5d771befad1b8017d61b78a0f4732b7e7c4f9f40b7995da0de0509bd1b8c",
+    "artifact_sha256": "dc42f51b53f2d036a6d76374c03a530aa28394500aee348dd03ff9b21be73aeb",
     "defines_base_signals": false,
-    "file_sha256": "7e1d175bdc10142058c07f72abd3500cdd35aae58b8f26e4f52786aa16099f10",
+    "file_sha256": "d7c0358951a09c4920aad82e2ddec9705311590fcd4b76b554eddd1e331ca13c",
     "path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
@@ -33,7 +33,7 @@
   "signal_source": {
     "config_path": "forward_shadow/frozen_config.json",
     "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
-    "engine_source_sha256": "0de20902eade693fb0a4688dd5fda505fe97e2497994293fde5f3fd20bdef194",
+    "engine_source_sha256": "5014525ee259b4b6f59e95b54a4b9bdb7d30d4c6476d72e7ae50b66e5637eee8",
     "generator_path": "scripts/run_capital_forward.py",
     "generator_sha256": "ae608cabe5fcce40895972f66bf714cb2d2f638e084f99e88e8bcb95059ebe91",
     "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",

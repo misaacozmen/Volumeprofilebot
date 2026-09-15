@@ -1,0 +1,74 @@
+{
+  "artifact_id": "super1_unsigned_candidate_v5",
+  "artifact_sha256": "3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440",
+  "artifact_type": "strategy_candidate",
+  "checks": {
+    "candidate_chain_current_source_bound": true,
+    "fresh_forward_not_performed": true,
+    "live_execution_disabled": true,
+    "performance_evidence_not_reused": true
+  },
+  "criteria": {
+    "fresh_forward_required": true,
+    "historical_performance_claim": false
+  },
+  "fresh_forward_required": true,
+  "live_enabled": false,
+  "name": "SUPER1_UNSIGNED_CANDIDATE_V5",
+  "proven": false,
+  "provenance": {
+    "environment": {
+      "dependencies": {
+        "pandas": "3.0.3",
+        "pytest": "9.1.1"
+      },
+      "git_commit": null,
+      "python_implementation": "CPython",
+      "python_version": "3.14.5"
+    },
+    "inputs": [
+      {
+        "bytes": 1208806,
+        "path": "data/raw/spx/CAPITALCOM_SPX500, 5_c1e05.csv",
+        "role": "research_dataset",
+        "sha256": "2340b41425a8617eb8afb031cdea8f62d8c6aafd075a0700edbc3d1463dd74dc"
+      },
+      {
+        "bytes": 10828,
+        "path": "scripts/candidate_artifact.py",
+        "role": "artifact_code",
+        "sha256": "26e08cafc94df9c89400677881c66b855f37ad32552abdb8841a907ab570ac5a"
+      },
+      {
+        "bytes": 10871,
+        "path": "backtest/engine_pipeline.py",
+        "role": "engine_source",
+        "sha256": "3fdea6c32b3755fcc50451a40bc5ee2a0fda65d20bd5fb4eae528231b9f4e4e1"
+      }
+    ]
+  },
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "schema_version": 2,
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "unsigned": true
+}

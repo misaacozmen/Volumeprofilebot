@@ -146,8 +146,8 @@ if ([string]$release.release_id -cne [string]$signedRelease.release_id) {
     throw "Installed release manifest does not match the signed release archive."
 }
 foreach ($sealedPath in @(
-    "live_forward/super1_xm_mt5_demo_config_v4.json",
-    "research_candidates/super1/super1_manifest_v4.json"
+    "live_forward/super1_xm_mt5_demo_config_v5.json",
+    "research_candidates/super1/super1_manifest_v5.json"
 )) {
     $entry = @($signedRelease.files | Where-Object { [string]$_.path -ceq $sealedPath })
     $localPath = Get-Super1RuntimeAppPath -RelativePath $sealedPath
