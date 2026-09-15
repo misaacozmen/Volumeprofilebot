@@ -62,16 +62,10 @@ def test_artifact_rejects_changed_input(tmp_path: Path) -> None:
         artifacts.validate_artifact(payload, tmp_path, artifact_type="test")
 
 
-def test_frozen_threshold_loader_ignores_runtime_frames() -> None:
+def test_frozen_threshold_loader_fails_closed_when_sealed_input_is_stale() -> None:
     filters = load_script("run_main_candidate_filter_tests")
-    expected = filters.build_thresholds()
-    future_only = {
-        ("DUKASCOPY_USATECHIDXUSD", "3m"): pd.DataFrame(
-            {"date": [pd.Timestamp("2099-01-01").date()]}
-        )
-    }
-    assert filters.build_thresholds(future_only) == expected
-    assert {row["cutoff_exclusive"] for row in expected} == {"2025-01-01"}
+    with pytest.raises(ValueError, match="Provenance input changed"):
+        filters.build_thresholds()
 
 
 def test_development_ranking_has_no_holdout_metric_columns() -> None:
@@ -135,15 +129,14 @@ def test_evaluator_uses_risk_rule_from_payload() -> None:
     assert high["risk_scale"].tolist() == [1.0, 0.8]
 
 
-def test_checked_in_threshold_artifact_is_valid() -> None:
-    payload = artifacts.load_artifact(
-        thresholds.ARTIFACT,
-        ROOT,
-        artifact_type="first30_thresholds",
-        verify_inputs=True,
-    )
-    assert payload["calibration"]["cutoff_exclusive"] == "2025-01-01"
-    assert payload["provenance"]["environment"]["git_commit"] == "1b233f524c1f03b7eb9cf3afc076507626ad4bf8"
+def test_checked_in_threshold_artifact_is_rejected_when_input_changed() -> None:
+    with pytest.raises(artifacts.ArtifactValidationError, match="Provenance input changed"):
+        artifacts.load_artifact(
+            thresholds.ARTIFACT,
+            ROOT,
+            artifact_type="first30_thresholds",
+            verify_inputs=True,
+        )
 
 
 def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monkeypatch) -> None:
@@ -176,9 +169,6 @@ def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monk
     assert (second_destination / "value.txt").read_text(encoding="utf-8") == "old-second"
 
 
-def test_finalizer_publication_gates_are_development_only() -> None:
-    payload, _, _, _ = finalizer.build_candidate()
-
-    assert payload["selection_protocol"]["final_holdout_used_for_selection"] is False
-    assert payload["selection_protocol"]["final_holdout_used_for_publication"] is False
-    assert all(name.startswith("development_") for name in payload["criteria"])
+def test_finalizer_does_not_publish_without_required_research_inputs() -> None:
+    with pytest.raises(FileNotFoundError):
+        finalizer.build_candidate()

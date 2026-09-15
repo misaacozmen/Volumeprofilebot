@@ -198,6 +198,21 @@ def test_super1_contract_binds_runtime_implementation_bytes() -> None:
     assert MODULE.validate_super1_candidate(runtime)["artifact_sha256"] == runtime["candidate_artifact_sha256"]
 
 
+def test_stale_source_hash_is_rejected_as_no_send(monkeypatch) -> None:
+    runtime = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    real_read_json = MODULE.core.read_json
+
+    def stale_contract(path: Path):
+        value = real_read_json(path)
+        if Path(path).resolve() == (ROOT / runtime["signal_contract_path"]).resolve():
+            value["signal_source"]["engine_source_sha256"] = "8258e7b7d0aa6c88f5a0c6675dd270a3052fb38a1010104767d2f19fa5e3abf1"
+        return value
+
+    monkeypatch.setattr(MODULE.core, "read_json", stale_contract)
+    with pytest.raises(MODULE.Super1FeatureError, match="signal contract is invalid"):
+        MODULE.validate_super1_candidate(runtime)
+
+
 def test_super1_contract_rejects_changed_forward_shadow_adapter(monkeypatch) -> None:
     runtime = _runtime_fixture()
     real_file_hash = MODULE.core.file_hash

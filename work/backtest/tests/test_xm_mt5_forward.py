@@ -27,6 +27,7 @@ SPEC = importlib.util.spec_from_file_location("run_xm_mt5_forward", ROOT / "scri
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+MODULE.RUNTIME_CONFIG = ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json"
 MODULE.configure_core()
 
 

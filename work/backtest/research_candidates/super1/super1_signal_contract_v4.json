@@ -6,11 +6,11 @@
   },
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "execution_scope": "XM_MT5_DEMO_ONLY",
-  "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V4",
+    "name": "SUPER1_CANONICAL_OVERLAY_CURRENT_SOURCE_CHAIN_V4",
   "overlay_candidate": {
-    "artifact_sha256": "dc42f51b53f2d036a6d76374c03a530aa28394500aee348dd03ff9b21be73aeb",
+    "artifact_sha256": "e0aa5d771befad1b8017d61b78a0f4732b7e7c4f9f40b7995da0de0509bd1b8c",
     "defines_base_signals": false,
-    "file_sha256": "d7c0358951a09c4920aad82e2ddec9705311590fcd4b76b554eddd1e331ca13c",
+    "file_sha256": "7e1d175bdc10142058c07f72abd3500cdd35aae58b8f26e4f52786aa16099f10",
     "path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"

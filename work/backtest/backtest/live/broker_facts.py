@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
 from numbers import Real
 from typing import Any, Callable, Mapping
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from .contracts import BrokerSnapshot, InstrumentContract
-from .deal_ingestion import TerminalFactSnapshot
+from .deal_ingestion import DealIngestionError, daily_deals, last_strategy_times, realized_r
 
 
 class BrokerFactsError(RuntimeError):
@@ -68,7 +70,7 @@ class BrokerFactsBuilder:
         order_calc_margin: Callable[..., Any],
         halt_reader: Callable[[], bool],
         strategy_health_reader: Callable[[], str],
-        terminal_fact_reader: Callable[[datetime], TerminalFactSnapshot],
+        starting_risk_reader: Callable[[str], float | None],
         strategy_matcher: Callable[[Mapping[str, Any]], bool],
         mutex: Callable[[], Any] | None = None,
         contract_resolver: Callable[[str], InstrumentContract] | None = None,
@@ -82,7 +84,7 @@ class BrokerFactsBuilder:
         self.order_calc_margin = order_calc_margin
         self.halt_reader = halt_reader
         self.strategy_health_reader = strategy_health_reader
-        self.terminal_fact_reader = terminal_fact_reader
+        self.starting_risk_reader = starting_risk_reader
         self.strategy_matcher = strategy_matcher
         self.mutex = mutex or (lambda: nullcontext())
         self.contract_resolver = contract_resolver
@@ -99,6 +101,18 @@ class BrokerFactsBuilder:
             raise BrokerFactsError(f"broker {operation} returned a non-collection")
         return tuple(value)
 
+    def _daily_realized_r(self, deals: tuple[dict[str, Any], ...]) -> float:
+        try:
+            return realized_r(
+                deals,
+                exit_values=self.deal_out_values,
+                inout_values=self.deal_inout_values,
+                out_by_values=self.deal_out_by_values,
+                known_values=self.deal_in_values | self.deal_out_values | self.deal_inout_values | self.deal_out_by_values,
+                starting_risk_reader=self.starting_risk_reader,
+            )
+        except DealIngestionError as exc:
+            raise BrokerFactsError(str(exc)) from exc
     def _stop_risk(self, rows: tuple[dict[str, Any], ...], default_contract: InstrumentContract) -> float:
         total = 0.0
         for row in rows:
@@ -169,7 +183,7 @@ class BrokerFactsBuilder:
         """
         known = self.deal_in_values | self.deal_inout_values | self.deal_out_values | self.deal_out_by_values
         entry_keys: set[tuple[str, str]] = set()
-        entry_counts: dict[str, int] = {}
+        entry_counts: dict[str, int] = {default_contract.instrument_id: 0}
         for deal in deals:
             entry = deal.get("entry")
             if entry not in known:
@@ -190,7 +204,7 @@ class BrokerFactsBuilder:
             entry_counts[resolved.instrument_id] = entry_counts.get(resolved.instrument_id, 0) + 1
 
         def exposure_counts(rows: tuple[dict[str, Any], ...], field: str) -> dict[str, int]:
-            result: dict[str, int] = {}
+            result: dict[str, int] = {default_contract.instrument_id: 0}
             for row in rows:
                 symbol = str(row.get("symbol") or "")
                 resolved = self._resolve_contract(symbol, default_contract)
@@ -205,21 +219,30 @@ class BrokerFactsBuilder:
         now: datetime,
         contract: InstrumentContract,
         candidate_hash: str,
+        deals_start: datetime,
+        deals_end: datetime,
         approval: bool | None = None,
         policy_hash: str = "",
     ) -> BrokerSnapshot:
         current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        if not isinstance(deals_start, datetime) or not isinstance(deals_end, datetime):
+            raise BrokerFactsError("broker history interval is missing")
+        start = deals_start if deals_start.tzinfo is not None else deals_start.replace(tzinfo=timezone.utc)
+        end = deals_end if deals_end.tzinfo is not None else deals_end.replace(tzinfo=timezone.utc)
+        if start > end:
+            raise BrokerFactsError("broker history interval is invalid")
         with self.mutex():
             account = self.read("account_info")
             if account is None:
                 raise BrokerFactsError("broker account snapshot is unknown")
             positions_raw = self._collection("positions_get")
             pending_raw = self._collection("orders_get")
-            terminal = self.terminal_fact_reader(current)
-            if not isinstance(terminal, TerminalFactSnapshot):
-                raise BrokerFactsError("canonical terminal fact snapshot is missing")
-            if terminal.as_of > current or current - terminal.reconciliation_at > timedelta(hours=24):
-                raise BrokerFactsError("canonical terminal fact snapshot is stale")
+            daily_start = current.astimezone(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc)
+            history_start = min(start, daily_start)
+            history_end = max(end, current)
+            deals_raw = self._collection("history_deals_get", history_start, history_end)
             account_login = _value(account, "login")
             if isinstance(account_login, bool) or not isinstance(account_login, (str, int)) or not str(account_login).strip():
                 raise BrokerFactsError("account login is missing")
@@ -229,10 +252,19 @@ class BrokerFactsBuilder:
             leverage = None if raw_leverage is None else _number(raw_leverage, "account leverage", positive=True)
             positions = tuple(_row(item) for item in positions_raw)
             pending = tuple(_row(item) for item in pending_raw)
-            deals = tuple(dict(item) for item in terminal.closed_episodes)
+            deals = tuple(_row(item) for item in deals_raw)
+            try:
+                daily_deal_rows = daily_deals(deals, day_start=daily_start, day_end=current)
+            except DealIngestionError as exc:
+                raise BrokerFactsError(str(exc)) from exc
+            owned_deals = tuple(item for item in deals if self.strategy_matcher(item))
             owned_positions = tuple(item for item in positions if self.strategy_matcher(item))
             owned_pending = tuple(item for item in pending if self.strategy_matcher(item))
-            daily_realized_r = float(terminal.daily_realized_r)
+            # Validate every account closing deal, not only today's slice.
+            # A malformed historical deal must never disappear behind a
+            # campaign filter or become a healthy zero.
+            self._daily_realized_r(deals)
+            daily_realized_r = self._daily_realized_r(daily_deal_rows)
             total_stop_risk = self._stop_risk(positions + pending, contract)
             pair_exposure_percent, concentration_percent = self._exposure_metrics(positions + pending, contract, equity)
             halt = self.halt_reader()
@@ -245,14 +277,36 @@ class BrokerFactsBuilder:
                 symbol = str(row.get("symbol") or "")
                 return self._resolve_contract(symbol, contract).instrument_id
 
-            owned_deal_ids = list(terminal.owned_deal_ids)
-            last_entry: datetime | None = None
-            last_loss: datetime | None = None
-            entry_counts = dict(terminal.entry_counts_by_instrument)
-            position_counts: dict[str, int] = {}
-            pending_counts: dict[str, int] = {}
-            for row in owned_positions: position_counts[instrument_id(row)] = position_counts.get(instrument_id(row), 0) + 1
-            for row in owned_pending: pending_counts[instrument_id(row)] = pending_counts.get(instrument_id(row), 0) + 1
+            owned_deal_ids: list[str] = []
+            for deal in owned_deals:
+                owned_deal_ids.append(str(deal.get("deal_id") or deal.get("ticket") or ""))
+            try:
+                last_entry, last_loss = last_strategy_times(
+                    deals,
+                    strategy_matcher=self.strategy_matcher,
+                    in_values=self.deal_in_values,
+                    inout_values=self.deal_inout_values,
+                    exit_values=self.deal_out_values,
+                    out_by_values=self.deal_out_by_values,
+                )
+            except DealIngestionError as exc:
+                raise BrokerFactsError(str(exc)) from exc
+            total_entry_count, entry_counts, position_counts, pending_counts = self._account_entry_counts(
+                daily_deal_rows, positions, pending, contract
+            )
+            query_id = uuid4().hex
+            deal_facts_hash = hashlib.sha256(
+                json.dumps(deals, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode("utf-8")
+            ).hexdigest()
+            watermark_time_msc = 0
+            watermark_ticket = 0
+            for deal in deals:
+                timestamp = deal.get("time_msc")
+                if timestamp is not None:
+                    watermark_time_msc = max(watermark_time_msc, int(timestamp))
+                ticket = deal.get("ticket", deal.get("deal_id"))
+                if isinstance(ticket, int) and not isinstance(ticket, bool):
+                    watermark_ticket = max(watermark_ticket, ticket)
             payload = {
                 "as_of": current.isoformat(), "account_login": account_login, "equity": equity,
                 "margin_free": margin_free, "positions": positions, "pending_orders": pending,
@@ -262,15 +316,17 @@ class BrokerFactsBuilder:
                 "leverage": leverage,
                 "pair_exposure_percent": pair_exposure_percent,
                 "concentration_percent": concentration_percent,
-                "total_entry_count": terminal.total_entry_count, "entry_counts_by_instrument": entry_counts,
+                "total_entry_count": total_entry_count, "entry_counts_by_instrument": entry_counts,
                 "open_position_counts_by_instrument": position_counts, "pending_order_counts_by_instrument": pending_counts,
                 "last_accepted_entry_at": None if last_entry is None else last_entry.isoformat(),
                 "last_terminal_loss_at": None if last_loss is None else last_loss.isoformat(),
                 "owned_deal_ids": owned_deal_ids, "policy_hash": policy_hash,
                 "instrument_contract_hash": contract.contract_hash,
-                "deal_facts_hash": terminal.deal_facts_hash,
-                "deal_reconciliation_at": terminal.reconciliation_at.isoformat(),
-                "deal_watermark": [terminal.high_water_time_msc, terminal.high_water_ticket],
+                "account_login": str(account_login), "broker_query_id": query_id,
+                "history_start": history_start.isoformat(), "history_end": history_end.isoformat(),
+                "deal_facts_hash": deal_facts_hash,
+                "deal_reconciliation_at": current.isoformat(),
+                "deal_watermark": [watermark_time_msc, watermark_ticket],
             }
             return BrokerSnapshot(
                 current, equity, margin_free, open_positions=positions, pending_orders=pending,
@@ -281,13 +337,14 @@ class BrokerFactsBuilder:
                 concentration_percent=concentration_percent,
                 snapshot_hash=hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode("utf-8")).hexdigest(),
                 order_calc_profit=self.order_calc_profit, order_calc_margin=self.order_calc_margin,
-                total_entry_count=terminal.total_entry_count, entry_counts_by_instrument=entry_counts,
+                total_entry_count=total_entry_count, entry_counts_by_instrument=entry_counts,
                 open_position_counts_by_instrument=position_counts, pending_order_counts_by_instrument=pending_counts,
                 last_accepted_entry_at=last_entry, last_terminal_loss_at=last_loss,
                 owned_deal_ids=tuple(owned_deal_ids), policy_hash=policy_hash,
                 instrument_contract_hash=contract.contract_hash,
-                deal_facts_hash=terminal.deal_facts_hash,
-                deal_reconciliation_at=terminal.reconciliation_at,
-                deal_watermark_time_msc=terminal.high_water_time_msc,
-                deal_watermark_ticket=terminal.high_water_ticket,
+                account_login=str(account_login), broker_query_id=query_id,
+                deal_facts_hash=deal_facts_hash,
+                deal_reconciliation_at=current,
+                deal_watermark_time_msc=watermark_time_msc,
+                deal_watermark_ticket=watermark_ticket,
             )

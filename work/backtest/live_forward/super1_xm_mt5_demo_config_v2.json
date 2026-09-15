@@ -30,7 +30,7 @@
   "signal_contract_path": "research_candidates/super1/super1_signal_contract.json",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2022_2026_v2.json",
-    "sha256": "00720155a8ff465cbd679b8fc2f21f50730d0d478e7db0802aa3a86a0e0e2ea0",
+    "sha256": "9adf5d0881e5a0a9f459f6af2beaff63157497cf76914fcfda2620edc76131b0",
     "calendar_id": "US_EQUITY_RTH_2022_2026_V2"
   },
   "risk_limits": {

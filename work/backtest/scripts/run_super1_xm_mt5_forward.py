@@ -346,11 +346,6 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relative, str) or not relative:
         raise Super1FeatureError("Super1 runtime has no candidate_path.")
     candidate_path = (ROOT / relative).resolve()
-    if int(runtime.get("schema_version", 0)) == 4:
-        try:
-            validate_super1_v4_candidate(candidate_path, ROOT, require_promotable=False)
-        except CandidateValidationError as exc:
-            raise Super1FeatureError(f"Super1 V4 hash chain is invalid: {exc}") from exc
     try:
         candidate_path.relative_to(ROOT.resolve())
     except ValueError as exc:
@@ -381,11 +376,15 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
     if {key: runtime_risk.get(key) for key in candidate_risk} != candidate_risk:
         raise Super1FeatureError("Super1 risk rule differs from the sealed candidate.")
     if (
-        candidate.get("status") != "UNSIGNED_VALIDATION_ONLY"
+        runtime.get("schema_version") != 4
+        or runtime.get("status") != "UNSIGNED_VALIDATION_ONLY"
+        or candidate.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or candidate.get("unsigned") is not True
         or candidate.get("live_enabled") is not False
         or candidate.get("proven") is not False
         or candidate.get("fresh_forward_required") is not True
+        or candidate.get("development_result_sha256") is not None
+        or candidate.get("full_evaluation_result_sha256") is not None
         or not all(bool(value) for value in candidate.get("checks", {}).values())
     ):
         raise Super1FeatureError("Super1 candidate safety status is invalid.")
@@ -427,7 +426,7 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         raise Super1FeatureError("Super1 signal contract path escapes the repository.") from exc
     if (
         int(contract.get("schema_version", 0)) != 4
-        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V4"
+        or contract.get("name") != "SUPER1_CANONICAL_OVERLAY_CURRENT_SOURCE_CHAIN_V4"
         or contract.get("status") != "UNSIGNED_VALIDATION_ONLY"
         or contract.get("execution_scope") != "XM_MT5_DEMO_ONLY"
         or contract.get("deployment_mode") != DEPLOYMENT_MODE
@@ -491,6 +490,14 @@ def validate_super1_candidate(runtime: dict[str, Any]) -> dict[str, Any]:
         or manifest.get("calendar_sha256") != calendar_contract.get("sha256")
         or manifest.get("engine_source_sha256") != core.source_code_hash()
         or manifest.get("account_binding_schema_sha256") != runtime.get("account_binding_schema_sha256")
+        or manifest.get("overlay_candidate_research_dataset_sha256")
+        != research_inputs[0].get("sha256")
+        or manifest.get("overlay_candidate_research_result_sha256") is not None
+        or manifest.get("deployed_pipeline_historical_parity_proven") is not False
+        or "deployed_pipeline_result_sha256" not in manifest
+        or manifest.get("deployed_pipeline_result_sha256") is not None
+        or "data_sha256" in manifest
+        or "result_sha256" in manifest
         or deployment.get("demo_order_execution_enabled") is not True
         or deployment.get("real_money_live_enabled") is not False
         or deployment.get("real_money_execution_allowed") is not False

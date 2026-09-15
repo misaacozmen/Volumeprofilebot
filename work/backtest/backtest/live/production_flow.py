@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from ..signals import SignalProposal
@@ -124,6 +124,27 @@ class ProductionOrderFlow:
         if not callable(getattr(self.dependencies.execution_adapter, "reconcile", None)):
             raise ProductionFlowError("execution adapter has no broker reconciliation method")
 
+    @staticmethod
+    def _validate_broker_query(
+        snapshot: BrokerSnapshot,
+        *,
+        account_key: str,
+        previous: BrokerSnapshot | None = None,
+    ) -> None:
+        account_login = str(snapshot.account_login or "").strip()
+        if not account_login or account_login != str(account_key):
+            raise ProductionFlowError("broker account identity is missing or differs from the signed account")
+        query_id = str(snapshot.broker_query_id or "").strip()
+        if not query_id:
+            raise ProductionFlowError("broker query identity is missing")
+        if not isinstance(snapshot.as_of, datetime):
+            raise ProductionFlowError("broker query time is missing")
+        if previous is not None:
+            if query_id == str(previous.broker_query_id or "").strip():
+                raise ProductionFlowError("approval final check reused the prior broker query")
+            if snapshot.as_of < previous.as_of:
+                raise ProductionFlowError("approval final broker query is older than the precheck")
+
     def send(
         self,
         proposal: SignalProposal,
@@ -149,6 +170,7 @@ class ProductionOrderFlow:
         first = snapshot_provider()
         if not isinstance(first, BrokerSnapshot):
             raise ProductionFlowError("first broker snapshot is not typed")
+        self._validate_broker_query(first, account_key=account_key)
         self._event("first RiskGuard")
         precheck = d.risk_guard.precheck(proposal, first)
         if not precheck.approved:
@@ -212,8 +234,9 @@ class ProductionOrderFlow:
         state.transition(OrderState.OPERATOR_APPROVED)
         self._audit_state(proposal, state.state, campaign_id=campaign_id, account_key=account_key, payload={"approval_id": approval_id})
         second = snapshot_provider()
-        if second is first or not isinstance(second, BrokerSnapshot):
+        if not isinstance(second, BrokerSnapshot):
             raise ProductionFlowError("final risk check did not use a fresh broker snapshot")
+        self._validate_broker_query(second, account_key=account_key, previous=first)
         self._event("fresh broker snapshot")
         order = d.risk_guard.approve(proposal, second, approval_id=approval_id)
         request_for_order = getattr(d.execution_adapter, "request_for_order", None)
@@ -319,10 +342,14 @@ class ProductionOrderFlow:
                 order_id=proposal.proposal_id,
                 request=wire_request,
                 arm=arm,
-                slot_date_ny=(order.approved_at.astimezone(ZoneInfo("America/New_York")).date().isoformat() if policy is not None else None),
+                slot_date_ny=(second.as_of.astimezone(ZoneInfo("America/New_York")).date().isoformat() if policy is not None else None),
                 slot_instrument_id=proposal.instrument_id if policy is not None else None,
                 slot_instrument_limit=None if policy is None else policy_limits[proposal.instrument_id],
                 slot_total_limit=None if policy is None else policy.max_total_trades_per_day,
+                broker_instrument_entry_count=(
+                    None if policy is None else self._broker_count(second.entry_counts_by_instrument, proposal.instrument_id)
+                ),
+                broker_total_entry_count=(None if policy is None else self._broker_count_value(second.total_entry_count)),
             )
         except ApprovalError as exc:
             raise ProductionFlowError("approval consumption failed closed") from exc
@@ -410,6 +437,17 @@ class ProductionOrderFlow:
             raise ProductionFlowError("post-write persistence failed; HALT is active") from exc
         self._event("broker reconciliation")
         return result
+
+    @staticmethod
+    def _broker_count(values: Mapping[str, int], instrument_id: str) -> int:
+        value = values.get(instrument_id)
+        return ProductionOrderFlow._broker_count_value(value)
+
+    @staticmethod
+    def _broker_count_value(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ProductionFlowError("fresh broker entry count is missing or invalid")
+        return value
 
 
 def utc_now() -> datetime:

@@ -150,6 +150,8 @@ class BrokerSnapshot:
     deal_reconciliation_at: datetime | None = None
     deal_watermark_time_msc: int | None = None
     deal_watermark_ticket: int | None = None
+    account_login: str = ""
+    broker_query_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

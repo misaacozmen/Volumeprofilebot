@@ -385,11 +385,15 @@ class ApprovalStore:
         instrument_limit: int,
         total_limit: int,
         at_utc: str,
+        broker_instrument_entry_count: int = 0,
+        broker_total_entry_count: int = 0,
     ) -> None:
         if (
             not account_key or not trade_date_ny or not order_id or not instrument_id or not campaign_id
             or isinstance(instrument_limit, bool) or not isinstance(instrument_limit, int) or instrument_limit < 1
             or isinstance(total_limit, bool) or not isinstance(total_limit, int) or total_limit < 1
+            or isinstance(broker_instrument_entry_count, bool) or not isinstance(broker_instrument_entry_count, int) or broker_instrument_entry_count < 0
+            or isinstance(broker_total_entry_count, bool) or not isinstance(broker_total_entry_count, int) or broker_total_entry_count < 0
         ):
             raise ApprovalError("daily entry-slot binding is incomplete")
         existing = self.connection.execute(
@@ -408,14 +412,17 @@ class ApprovalStore:
             "SELECT COUNT(*) FROM entry_slot_reservations WHERE account_key=? AND trade_date_ny=? AND state='RESERVED'",
             (account_key, trade_date_ny),
         ).fetchone()[0])
-        if instrument_count >= instrument_limit or total_count >= total_limit:
+        if (
+            broker_instrument_entry_count + instrument_count >= instrument_limit
+            or broker_total_entry_count + total_count >= total_limit
+        ):
             raise ApprovalError("daily entry slot limit is active")
         self.connection.execute(
             "INSERT INTO entry_slot_reservations(account_key,trade_date_ny,order_id,instrument_id,campaign_id,state,created_at_utc) VALUES(?,?,?,?,?,?,?)",
             (account_key, trade_date_ny, order_id, instrument_id, campaign_id, "RESERVED", at_utc),
         )
 
-    def consume_and_arm(self, approval_id: str, *, proposal: Mapping[str, Any], campaign_id: str, account_key: str, release_id: str, candidate_hash: str, lease_nonce: str, operator_sid: str, order_id: str, request: Mapping[str, Any], arm: Callable[[sqlite3.Connection, str, str], Any], now: datetime | None = None, slot_date_ny: str | None = None, slot_instrument_id: str | None = None, slot_instrument_limit: int | None = None, slot_total_limit: int | None = None) -> ApprovalRecord:
+    def consume_and_arm(self, approval_id: str, *, proposal: Mapping[str, Any], campaign_id: str, account_key: str, release_id: str, candidate_hash: str, lease_nonce: str, operator_sid: str, order_id: str, request: Mapping[str, Any], arm: Callable[[sqlite3.Connection, str, str], Any], now: datetime | None = None, slot_date_ny: str | None = None, slot_instrument_id: str | None = None, slot_instrument_limit: int | None = None, slot_total_limit: int | None = None, broker_instrument_entry_count: int | None = None, broker_total_entry_count: int | None = None) -> ApprovalRecord:
         current = now or self.now()
         current = current if current.tzinfo is not None else current.replace(tzinfo=timezone.utc)
         request_digest = wire_request_hash(request)
@@ -443,8 +450,8 @@ class ApprovalStore:
             stored_wire_hash = str(row[15] or "")
             if stored_wire_hash != request_digest:
                 raise ApprovalError("exact wire request hash differs from the operator approval")
-            if any(value is not None for value in (slot_date_ny, slot_instrument_id, slot_instrument_limit, slot_total_limit)):
-                if None in (slot_date_ny, slot_instrument_id, slot_instrument_limit, slot_total_limit):
+            if any(value is not None for value in (slot_date_ny, slot_instrument_id, slot_instrument_limit, slot_total_limit, broker_instrument_entry_count, broker_total_entry_count)):
+                if None in (slot_date_ny, slot_instrument_id, slot_instrument_limit, slot_total_limit, broker_instrument_entry_count, broker_total_entry_count):
                     raise ApprovalError("entry-slot reservation binding is incomplete")
                 self._reserve_entry_slot(
                     account_key=account_key,
@@ -455,6 +462,8 @@ class ApprovalStore:
                     instrument_limit=slot_instrument_limit,  # type: ignore[arg-type]
                     total_limit=slot_total_limit,  # type: ignore[arg-type]
                     at_utc=current.astimezone(timezone.utc).isoformat(),
+                    broker_instrument_entry_count=0 if broker_instrument_entry_count is None else broker_instrument_entry_count,
+                    broker_total_entry_count=0 if broker_total_entry_count is None else broker_total_entry_count,
                 )
             if self.connection.execute("UPDATE approvals SET state='CONSUMED' WHERE approval_id=? AND state='APPROVED'", (approval_id,)).rowcount != 1:
                 raise ApprovalError("approval replay rejected")

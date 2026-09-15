@@ -3,7 +3,7 @@
   "source_id": "NASDAQ_TRADING_CALENDAR_2026",
   "source_url": "https://www.nasdaqtrader.com/Trader.aspx?id=calendar",
   "raw_source_path": "live_forward/calendars/provenance/nasdaq-trading-calendar-2026.html",
-  "raw_source_sha256": "7157170ba5963e269401ad01f2b4215d1fffbf7408fa2187b2f74a04fafbb0b3",
+  "raw_source_sha256": "6888e0c098c72f551502abb531b6b20ba2f2bcd8f3b90fa8f3020486c5706ad2",
   "extraction_method": "HTML table row extraction from the downloaded 2026 holiday table",
   "visual_manual_review": false,
   "source_table": "2026 Holiday / Status",

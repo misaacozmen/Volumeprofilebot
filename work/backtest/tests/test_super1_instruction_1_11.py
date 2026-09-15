@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import date, datetime, timedelta, timezone
 import threading
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from backtest.evaluation_window import EvaluationWindow, EvaluationWindowError, 
 from backtest.live.approval import ApprovalError, ApprovalStore
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy
-from backtest.live.deal_ingestion import TerminalFactSnapshot
 from backtest.live.instruments import InstrumentContractError, InstrumentRegistry, validate_current_tick, validate_economic_semantics
 from backtest.live.retry import AllowedTransportError, NonRetryableReadError, RetryPolicy, write_once
 from backtest.live.risk_guard import RiskGuard
@@ -62,7 +60,7 @@ def test_account_daily_counts_include_foreign_campaign_and_unknown_facts_fail_cl
         "account_info": {"login": 123, "equity": 10_000.0, "margin_free": 5_000.0},
         "positions_get": (), "orders_get": (),
         "history_deals_get": ({
-            "deal_id": "foreign-entry", "order": "foreign-order", "entry": "IN",
+            "deal_id": "foreign-entry", "order": "foreign-order", "entry": "IN", "time": int((NOW - pd.Timedelta(minutes=1)).timestamp()),
             "symbol": "US500Cash", "magic": 999,
         },),
     }
@@ -71,22 +69,21 @@ def test_account_daily_counts_include_foreign_campaign_and_unknown_facts_fail_cl
         order_calc_profit=lambda *_args: -1.0,
         order_calc_margin=lambda *_args: 1.0,
         halt_reader=lambda: False, strategy_health_reader=lambda: "ACTIVE",
-        terminal_fact_reader=lambda _now: TerminalFactSnapshot(
-            NOW, "d" * 64, NOW, 1, 1, Decimal(0), 1, {"spx": 1},
-            ("foreign-entry",), (rows["history_deals_get"][0],),
-        ),
+        starting_risk_reader=lambda _position_id: None,
         strategy_matcher=lambda row: row.get("magic") == 7,
         contract_resolver=lambda symbol: {"US500Cash": spx}[symbol],
     )
     snapshot = builder.build(
         now=NOW, contract=contract(), candidate_hash="c" * 64,
+        deals_start=NOW - timedelta(days=1), deals_end=NOW,
     )
     assert snapshot.total_entry_count == 1
-    assert snapshot.entry_counts_by_instrument == {"spx": 1}
+    assert snapshot.entry_counts_by_instrument == {"nq": 0, "spx": 1}
 
     rows["orders_get"] = ({"symbol": "UNKNOWN.SUFFIX", "type": 2, "volume": 1.0, "price_open": 100.0, "sl": 99.0},)
     with pytest.raises(BrokerFactsError, match="no signed contract"):
-        builder.build(now=NOW, contract=contract(), candidate_hash="c" * 64)
+        builder.build(now=NOW, contract=contract(), candidate_hash="c" * 64,
+                      deals_start=NOW - timedelta(days=1), deals_end=NOW)
 
 
 def test_risk_guard_rejects_account_cap_and_outside_whitelist() -> None:

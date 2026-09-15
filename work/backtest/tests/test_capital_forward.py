@@ -416,7 +416,7 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
     request,
 ) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    runtime = json.loads((ROOT / "live_forward" / "capital_demo_config.json").read_text(encoding="utf-8"))
+    runtime = json.loads((ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json").read_text(encoding="utf-8"))
     runtime["manual_required"] = False
     monkeypatch.setattr(MODULE, "runtime_config", lambda: runtime)
     parent_lock = copy.deepcopy(MODULE.read_json(MODULE.PARENT_BASELINE))
@@ -439,7 +439,7 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
             }
             for index, item in enumerate(source_times)
         ]
-        for epic in ("US100", "US500")
+        for epic in (runtime["legs"]["nq"]["epic"], runtime["legs"]["spx"]["epic"])
     }
 
     class TwoLegFetchClient:

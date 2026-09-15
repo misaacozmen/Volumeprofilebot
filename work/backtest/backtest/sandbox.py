@@ -20,6 +20,14 @@ class SandboxError(RuntimeError):
     pass
 
 
+def windows_appcontainer_available() -> bool:
+    """Return whether this process has a real OS AppContainer launcher."""
+    # A Job Object only limits resources; it does not provide the required
+    # Windows token/network/filesystem boundary.  This host has no checked-in
+    # AppContainer launcher, so Windows backtest execution must fail closed.
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxProfile:
     wall_seconds: int
@@ -119,6 +127,8 @@ def run_isolated_worker(
     limits = PROFILES.get(profile)
     if limits is None:
         raise SandboxError("unknown sandbox profile")
+    if os.name == "nt" and not windows_appcontainer_available():
+        raise SandboxError("Windows AppContainer isolation is unavailable; sandboxed backtest is BLOCKED")
     payload = _canonical_json({**dict(request), "limits": {"output_mb": limits.output_mb}})
     max_payload_bytes = limits.output_mb * 1024 * 1024
     if len(payload) > max_payload_bytes:

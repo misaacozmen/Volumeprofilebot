@@ -82,8 +82,8 @@ def policy() -> LiveRiskPolicy:
 def policy_snapshot(**updates: object) -> BrokerSnapshot:
     signed = policy()
     values = {
-        "total_entry_count": 0, "entry_counts_by_instrument": {},
-        "open_position_counts_by_instrument": {}, "pending_order_counts_by_instrument": {},
+        "total_entry_count": 0, "entry_counts_by_instrument": {contract().instrument_id: 0},
+        "open_position_counts_by_instrument": {contract().instrument_id: 0}, "pending_order_counts_by_instrument": {contract().instrument_id: 0},
         "policy_hash": signed.policy_hash, "instrument_contract_hash": contract().contract_hash,
         "leverage": 2.0, "pair_exposure_percent": 0.0, "concentration_percent": 0.0,
         "deal_facts_hash": "d" * 64, "deal_reconciliation_at": NOW,

@@ -20,7 +20,7 @@ import run_super1_xm_mt5_forward as super1
 CANDIDATE = ROOT / "research_candidates/super1/super1_unsigned_candidate_v2.json"
 CONFIG = ROOT / "live_forward/super1_xm_mt5_demo_config_v2.json"
 CALENDAR = ROOT / "live_forward/calendars/us_equity_rth_2022_2026_v2.json"
-MANIFEST = ROOT / "outputs/reports/engine_reliability_audit_fresh_20260908_final5/run_manifest.json"
+MANIFEST = ROOT / "tests/fixtures/engine_reliability_audit_fresh_20260908_final5/run_manifest.json"
 
 
 def _copy_candidate_inputs(root: Path) -> Path:
@@ -41,6 +41,8 @@ def _rebind_fixture_to_current_source(root: Path, candidate: Path) -> None:
     code_hash = source_code_hash()
     config_path = root / "live_forward/super1_xm_mt5_demo_config_v2.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    current_calendar = root / "live_forward/calendars/us_equity_rth_2022_2026_v2.json"
+    config["rth_session_calendar"]["sha256"] = sha256(current_calendar.read_bytes()).hexdigest()
     config["strategy_health_baseline"]["candidate_hash"] = code_hash
     config_path.write_text(json.dumps(config, sort_keys=True), encoding="utf-8")
     manifest_path = root / "outputs/reports/engine_reliability_audit_fresh_20260908_final5/run_manifest.json"
@@ -51,6 +53,7 @@ def _rebind_fixture_to_current_source(root: Path, candidate: Path) -> None:
     payload["code_hash"] = code_hash
     payload["health_baseline_candidate_hash"] = code_hash
     payload["config_sha256"] = sha256(config_path.read_bytes()).hexdigest()
+    payload["calendar_sha256"] = sha256(current_calendar.read_bytes()).hexdigest()
     payload["data_manifest_sha256"] = sha256(manifest_path.read_bytes()).hexdigest()
     payload["candidate_artifact_sha256"] = candidate_artifact_hash(payload)
     candidate.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")

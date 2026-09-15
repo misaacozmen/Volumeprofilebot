@@ -1,0 +1,13 @@
+{
+  "code_hash": "05d6d45c165299c9dbde71edbbe3dd27d837a8502d96ecd85789406b8370adac",
+  "data_hashes": {
+    "nq": "a2cbee9f3d7032c6d1044be940afa58cb7eb6eaa18e3cf67e7501345b12bbce4",
+    "spx": "8dbdc7e16d0800428d8583ea51eb9a52cd73a5296f6fb335901b171b7daf9f19"
+  },
+  "forward_shadow_ready": false,
+  "result_hash": "b55a980e89bf31f31047558b804a183a95d359a1865dd095388eed93cc0682f2",
+  "coverage": {
+    "invalid_sessions": 0,
+    "missing_sessions": 0
+  }
+}
