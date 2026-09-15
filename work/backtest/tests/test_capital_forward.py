@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -410,6 +411,10 @@ def test_finalize_waits_for_complete_shared_fetch_scope_without_marker(tmp_path,
     record_if_enabled(request, evidence_token)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows AppContainer isolation is unavailable; sandboxed live signal is BLOCKED",
+)
 def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
     tmp_path,
     monkeypatch,
@@ -417,6 +422,11 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
 ) -> None:
     evidence_token = checkpoint_if_enabled(request)
     runtime = json.loads((ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json").read_text(encoding="utf-8"))
+    runtime.update({
+        "account_login": 12345678,
+        "expected_server": "fixture-demo-server",
+        "expected_company": "Fixture Broker Ltd",
+    })
     runtime["manual_required"] = False
     monkeypatch.setattr(MODULE, "runtime_config", lambda: runtime)
     parent_lock = copy.deepcopy(MODULE.read_json(MODULE.PARENT_BASELINE))
@@ -426,7 +436,11 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
     trade_date = pd.Timestamp("2026-07-29", tz=MODULE.TZ).date()
     profile_start = pd.Timestamp("2026-07-28 18:00", tz=MODULE.TZ)
     full_end = pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ)
-    source_times = pd.date_range(profile_start, full_end - pd.Timedelta(minutes=1), freq="1min")
+    source_times = [
+        item
+        for item in pd.date_range(profile_start, full_end - pd.Timedelta(minutes=1), freq="1min")
+        if not (item.strftime("%H:%M") >= "20:00" and item.strftime("%H:%M") < "21:00")
+    ]
     source_rows = {
         epic: [
             {

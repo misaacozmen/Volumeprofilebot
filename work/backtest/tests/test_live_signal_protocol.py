@@ -4,6 +4,7 @@ import ast
 from copy import deepcopy
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -56,6 +57,10 @@ def test_live_signal_profile_is_fixed() -> None:
     assert (profile.wall_seconds, profile.cpu_seconds, profile.memory_mb, profile.output_mb, profile.child_processes) == (20, 15, 1024, 16, 0)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows AppContainer isolation is unavailable; sandboxed live signal is BLOCKED",
+)
 def test_live_signal_worker_is_deterministic_and_schema_closed() -> None:
     result = evaluate_live_signal_twice(protocol_request())
     assert result["semantic_output_hash"]

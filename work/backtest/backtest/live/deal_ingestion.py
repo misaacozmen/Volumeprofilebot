@@ -306,6 +306,22 @@ class TerminalDealIngestor:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    def starting_risk_cash(self, position_id: str) -> float | None:
+        """Return canonical allocated starting risk for a broker position."""
+        identity = str(position_id or "").strip()
+        if not identity:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT SUM(CAST(allocated_risk_cash AS REAL)) FROM position_entry_allocations "
+                "WHERE account_key=? AND position_id=?",
+                (self.account_key, identity),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        value = float(row[0])
+        return value if math.isfinite(value) and value > 0 else None
+
     @staticmethod
     def _schema(connection: sqlite3.Connection) -> None:
         connection.executescript(

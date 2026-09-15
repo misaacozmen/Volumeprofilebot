@@ -62,8 +62,20 @@ def test_artifact_rejects_changed_input(tmp_path: Path) -> None:
         artifacts.validate_artifact(payload, tmp_path, artifact_type="test")
 
 
-def test_frozen_threshold_loader_fails_closed_when_sealed_input_is_stale() -> None:
+def test_frozen_threshold_loader_fails_closed_when_sealed_input_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     filters = load_script("run_main_candidate_filter_tests")
+    stale = json.loads(thresholds.ARTIFACT.read_text(encoding="utf-8"))
+    stale["provenance"]["inputs"][0]["sha256"] = "0" * 64
+    stale = artifacts.seal_artifact(stale)
+    stale_path = tmp_path / thresholds.ARTIFACT.name
+    stale_path.write_text(json.dumps(stale), encoding="utf-8")
+    monkeypatch.setattr(
+        filters,
+        "load_thresholds",
+        lambda: thresholds.load_thresholds(artifact_path=stale_path, verify_sources=True),
+    )
     with pytest.raises(ValueError, match="Provenance input changed"):
         filters.build_thresholds()
 
@@ -129,10 +141,15 @@ def test_evaluator_uses_risk_rule_from_payload() -> None:
     assert high["risk_scale"].tolist() == [1.0, 0.8]
 
 
-def test_checked_in_threshold_artifact_is_rejected_when_input_changed() -> None:
+def test_checked_in_threshold_artifact_is_rejected_when_input_changed(tmp_path: Path) -> None:
+    stale = json.loads(thresholds.ARTIFACT.read_text(encoding="utf-8"))
+    stale["provenance"]["inputs"][0]["sha256"] = "0" * 64
+    stale = artifacts.seal_artifact(stale)
+    stale_path = tmp_path / thresholds.ARTIFACT.name
+    stale_path.write_text(json.dumps(stale), encoding="utf-8")
     with pytest.raises(artifacts.ArtifactValidationError, match="Provenance input changed"):
         artifacts.load_artifact(
-            thresholds.ARTIFACT,
+            stale_path,
             ROOT,
             artifact_type="first30_thresholds",
             verify_inputs=True,
@@ -169,6 +186,9 @@ def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monk
     assert (second_destination / "value.txt").read_text(encoding="utf-8") == "old-second"
 
 
-def test_finalizer_does_not_publish_without_required_research_inputs() -> None:
+def test_finalizer_does_not_publish_without_required_research_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(finalizer, "SOURCE", tmp_path / "missing-selected-trades.csv")
     with pytest.raises(FileNotFoundError):
         finalizer.build_candidate()

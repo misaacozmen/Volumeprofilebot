@@ -32,7 +32,7 @@
   "signal_contract_sha256": "c168b59b2bb425ea6acead4bcf559f4952da08afbb213edc85a21d6e086b772c",
   "rth_session_calendar": {
     "path": "live_forward/calendars/us_equity_rth_2026.json",
-    "sha256": "2fd06f1cf4b9250c9ed4fd6e30d78f99bd499065bbafecbc44180d1ae889cf83",
+    "sha256": "0bb5bbe771e6ea4d7f6345cc56232f711195e652d6a13d021d372156280a3e8d",
     "calendar_id": "US_EQUITY_RTH_2026"
   },
   "deviation_points": 20,

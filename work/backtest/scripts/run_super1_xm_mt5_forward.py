@@ -1119,7 +1119,10 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
     ) -> BrokerSnapshot:
         controller = HaltController(output_root)
         ingestor = self._terminal_deal_ingestor(output_root, now)
-        terminal_facts = ingestor.ingest(observed_at=now.to_pydatetime())
+        ingestor.ingest(observed_at=now.to_pydatetime())
+        history_days = int(self.config.get("risk_rule", {}).get("terminal_history_days", 365))
+        history_start = (now - pd.Timedelta(days=history_days)).to_pydatetime()
+        history_end = now.to_pydatetime()
 
         def belongs_to_super1(row: dict[str, Any]) -> bool:
             return (
@@ -1135,7 +1138,7 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 order_calc_margin=self.mt5.order_calc_margin,
                 halt_reader=lambda: controller.read() is not None,
                 strategy_health_reader=lambda: health.state,
-                terminal_fact_reader=lambda _current: terminal_facts,
+                starting_risk_reader=ingestor.starting_risk_cash,
                 strategy_matcher=belongs_to_super1,
                 mutex=order_mutex,
                 contract_resolver=lambda broker_symbol: registry.symbol_info(
@@ -1145,6 +1148,8 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
                 now=now.to_pydatetime(),
                 contract=contract,
                 candidate_hash=str(self.config.get("candidate_artifact_sha256") or ""),
+                deals_start=history_start,
+                deals_end=history_end,
                 approval=approval,
                 policy_hash=policy.policy_hash,
             )
@@ -1769,20 +1774,24 @@ class Super1XmMt5DemoOrderClient(xm.XmMt5DemoOrderClient):
             def snapshot(approval: bool) -> BrokerSnapshot:
                 try:
                     policy = _signed_live_risk_policy(self.config)
-                    terminal_facts = self._terminal_deal_ingestor(output_root, now).ingest(observed_at=now.to_pydatetime())
+                    ingestor = self._terminal_deal_ingestor(output_root, now)
+                    ingestor.ingest(observed_at=now.to_pydatetime())
+                    history_days = int(self.config.get("risk_rule", {}).get("terminal_history_days", 365))
                     return BrokerFactsBuilder(
                         read=self._retry_mt5_read,
                         order_calc_profit=self.mt5.order_calc_profit,
                         order_calc_margin=self.mt5.order_calc_margin,
                         halt_reader=lambda: HaltController(output_root).read() is not None,
                         strategy_health_reader=lambda: "ACTIVE",
-                        terminal_fact_reader=lambda _current: terminal_facts,
+                        starting_risk_reader=ingestor.starting_risk_cash,
                         strategy_matcher=lambda _row: True,
                         mutex=order_mutex,
                     ).build(
                         now=now.to_pydatetime(),
                         contract=contract,
                         candidate_hash=candidate_hash,
+                        deals_start=(now - pd.Timedelta(days=history_days)).to_pydatetime(),
+                        deals_end=now.to_pydatetime(),
                         approval=approval,
                         policy_hash=policy.policy_hash,
                     )

@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import hashlib
+import os
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -912,6 +913,10 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
     record_if_enabled(request, evidence_token)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows AppContainer isolation is unavailable; sandboxed backtest is BLOCKED",
+)
 def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
     monkeypatch,
     tmp_path: Path,
