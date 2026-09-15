@@ -212,6 +212,8 @@ def verify_bundle(row: dict[str, Any], *, bundle_root: Path, legacy_root: Path |
 def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, *, legacy_root: Path | None = None, run_id: str | None = None, audit_nonce: str | None = None, source_commit: str | None = None, source_tree_sha256: str | None = None) -> dict[str, Any]:
     if not run_id or not re.fullmatch(r"[0-9a-f]{64}", str(audit_nonce or "")) or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit or "")) or not re.fullmatch(r"[0-9a-f]{40}", str(source_tree_sha256 or "")):
         raise ValueError("audit requires one run_id, a 64-hex nonce, source commit, and source tree")
+    from scripts.git_provenance import validate_commit_tree
+    validate_commit_tree(ROOT, str(source_commit), str(source_tree_sha256))
     inventory = load_inventory(inventory_path)
     rows = [verify_bundle(item, bundle_root=bundle_root, legacy_root=legacy_root, require_committed=False) for item in sorted(inventory, key=target_key)]
     counts: dict[str, int] = {}
@@ -244,7 +246,7 @@ def audit_inventory(inventory_path: Path, bundle_root: Path, report_root: Path, 
     return result
 
 
-def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str, owner_trust_policy_path: Path, owner_replay_ledger_path: Path, detached_attestation_path: Path | None = None, detached_signature_path: Path | None = None, pinned_public_key_path: Path | None = None, pinned_public_key_sha256: str | None = None, source_head_sha256: str | None = None) -> Path:
+def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, inventory_path: Path, provenance_root: Path, calendar_sha256: str, auditor_sha256: str, node_helper_sha256: str, package_lock_sha256: str, http_event_root_sha256: str, owner_trust_policy_path: Path, owner_replay_ledger_path: Path, trusted_root_public_key_path: Path, trusted_root_public_key_sha256: str, repository_identity: str, branch: str, detached_attestation_path: Path | None = None, detached_signature_path: Path | None = None, pinned_public_key_path: Path | None = None, pinned_public_key_sha256: str | None = None, source_head_sha256: str | None = None) -> Path:
     if not owner_trust_policy_path.is_file() or not owner_replay_ledger_path.is_file():
         raise ValueError("external owner trust policy and replay ledger are required")
     signature_inputs = (detached_attestation_path, detached_signature_path, pinned_public_key_path, pinned_public_key_sha256, source_head_sha256)
@@ -291,18 +293,44 @@ def finalize_manifest(first_report: Path, second_report: Path, output: Path, *, 
     if output.exists() and output.read_text(encoding="utf-8") != encoded:
         raise ValueError("refusing to overwrite a different final reacquisition manifest")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(encoded, encoding="utf-8", newline="\n")
-    validate_final_manifest(
-        output,
-        provenance_root=provenance_root,
-        inventory_path=inventory_path,
-        detached_attestation_path=detached_attestation_path,
-        detached_signature_path=detached_signature_path,
-        pinned_public_key_path=pinned_public_key_path,
-        pinned_public_key_sha256=pinned_public_key_sha256,
-        expected_source_head_sha256=source_head_sha256,
-        require_owner_signature=owner_signed,
-    )
+    staging = output.with_name(f".{output.name}.{os.getpid()}.staging")
+    staging.write_text(encoded, encoding="utf-8", newline="\n")
+    with staging.open("r+b") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        validate_final_manifest(
+            staging,
+            provenance_root=provenance_root,
+            inventory_path=inventory_path,
+            detached_attestation_path=detached_attestation_path,
+            detached_signature_path=detached_signature_path,
+            pinned_public_key_path=pinned_public_key_path,
+            pinned_public_key_sha256=pinned_public_key_sha256,
+            expected_source_head_sha256=source_head_sha256,
+            require_owner_signature=owner_signed,
+            trusted_root_public_key_path=trusted_root_public_key_path,
+            trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+            repository_identity=repository_identity,
+            branch=branch,
+            owner_trust_policy_path=owner_trust_policy_path,
+            owner_replay_ledger_path=owner_replay_ledger_path,
+        )
+    except Exception:
+        staging.unlink(missing_ok=True)
+        raise
+    if output.exists():
+        staging.unlink(missing_ok=True)
+    else:
+        os.replace(staging, output)
+        try:
+            fd = os.open(str(output.parent), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
     return output
 
 
@@ -327,6 +355,10 @@ def main() -> None:
     parser.add_argument("--source-tree-sha256", required=True)
     parser.add_argument("--owner-trust-policy", type=Path)
     parser.add_argument("--owner-replay-ledger", type=Path)
+    parser.add_argument("--trusted-root-public-key", type=Path)
+    parser.add_argument("--trusted-root-public-key-sha256")
+    parser.add_argument("--repository-identity")
+    parser.add_argument("--branch")
     args = parser.parse_args()
     if args.command == "audit":
         result = audit_inventory(args.inventory.resolve(), args.bundle_root.resolve(), args.report_root.resolve(), legacy_root=args.legacy_root.resolve(), run_id=args.run_id, audit_nonce=args.audit_nonce or (uuid4().hex + uuid4().hex), source_commit=args.source_commit, source_tree_sha256=args.source_tree_sha256)
@@ -334,12 +366,12 @@ def main() -> None:
         raise SystemExit(2 if result["residual_count"] else 0)
     if args.second_report_root is None:
         raise SystemExit("finalize requires --second-report-root")
-    if args.owner_trust_policy is None or args.owner_replay_ledger is None:
-        raise SystemExit("finalize requires --owner-trust-policy and --owner-replay-ledger")
+    if args.owner_trust_policy is None or args.owner_replay_ledger is None or args.trusted_root_public_key is None or not args.trusted_root_public_key_sha256 or not args.repository_identity or not args.branch:
+        raise SystemExit("finalize requires closed owner trust inputs and independent branch context")
     calendar_sha = digest(args.calendar.resolve())
     event_path = ROOT / "outputs/reports/.dukascopy_acquisition_v5/http_events.jsonl"
     event_root = digest(event_path) if event_path.is_file() else sha256(b"").hexdigest()
-    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root, owner_trust_policy_path=args.owner_trust_policy.resolve(), owner_replay_ledger_path=args.owner_replay_ledger.resolve(), detached_attestation_path=args.detached_attestation.resolve() if args.detached_attestation else None, detached_signature_path=args.detached_signature.resolve() if args.detached_signature else None, pinned_public_key_path=args.pinned_public_key.resolve() if args.pinned_public_key else None, pinned_public_key_sha256=args.pinned_public_key_sha256, source_head_sha256=args.source_head_sha256)
+    finalize_manifest(args.report_root.resolve(), args.second_report_root.resolve(), args.output.resolve(), inventory_path=args.inventory.resolve(), provenance_root=(ROOT / "data/provenance/dukascopy_v4"), calendar_sha256=calendar_sha, auditor_sha256=digest(Path(__file__)), node_helper_sha256=digest(ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"), package_lock_sha256=digest(ROOT / "tools/dukascopy-downloader/package-lock.json"), http_event_root_sha256=event_root, owner_trust_policy_path=args.owner_trust_policy.resolve(), owner_replay_ledger_path=args.owner_replay_ledger.resolve(), trusted_root_public_key_path=args.trusted_root_public_key.resolve(), trusted_root_public_key_sha256=args.trusted_root_public_key_sha256, repository_identity=args.repository_identity, branch=args.branch, detached_attestation_path=args.detached_attestation.resolve() if args.detached_attestation else None, detached_signature_path=args.detached_signature.resolve() if args.detached_signature else None, pinned_public_key_path=args.pinned_public_key.resolve() if args.pinned_public_key else None, pinned_public_key_sha256=args.pinned_public_key_sha256, source_head_sha256=args.source_head_sha256)
 
 
 if __name__ == "__main__":

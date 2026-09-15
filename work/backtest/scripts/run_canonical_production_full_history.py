@@ -52,6 +52,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reacquired-root", type=Path, default=DEFAULT_REACQUIRED_ROOT)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--reacquisition-manifest", type=Path, default=DEFAULT_REACQUISITION_MANIFEST)
+    parser.add_argument("--owner-trust-policy", type=Path, required=True)
+    parser.add_argument("--owner-replay-ledger", type=Path, required=True)
+    parser.add_argument("--trusted-root-public-key", type=Path, required=True)
+    parser.add_argument("--trusted-root-public-key-sha256", required=True)
+    parser.add_argument("--detached-attestation", type=Path, required=True)
+    parser.add_argument("--detached-signature", type=Path, required=True)
+    parser.add_argument("--pinned-public-key", type=Path, required=True)
+    parser.add_argument("--pinned-public-key-sha256", required=True)
+    parser.add_argument("--source-head-sha256", required=True)
+    parser.add_argument("--repository-identity", required=True)
+    parser.add_argument("--branch", required=True)
     return parser.parse_args()
 
 
@@ -101,8 +112,34 @@ def apply_verified_reacquisitions(
     inventory_path: Path,
     reacquired_root: Path,
     manifest_path: Path = DEFAULT_REACQUISITION_MANIFEST,
+    owner_trust_policy: Path | None = None,
+    owner_replay_ledger: Path | None = None,
+    trusted_root_public_key: Path | None = None,
+    trusted_root_public_key_sha256: str | None = None,
+    detached_attestation: Path | None = None,
+    detached_signature: Path | None = None,
+    pinned_public_key: Path | None = None,
+    pinned_public_key_sha256: str | None = None,
+    source_head_sha256: str | None = None,
+    repository_identity: str | None = None,
+    branch: str | None = None,
 ) -> dict[tuple[str, str], pd.DataFrame]:
-    manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=inventory_path)
+    manifest = validate_final_manifest(
+        manifest_path,
+        provenance_root=ROOT / "data/provenance/dukascopy_v4",
+        inventory_path=inventory_path,
+        detached_attestation_path=detached_attestation,
+        detached_signature_path=detached_signature,
+        pinned_public_key_path=pinned_public_key,
+        pinned_public_key_sha256=pinned_public_key_sha256,
+        expected_source_head_sha256=source_head_sha256,
+        trusted_root_public_key_path=trusted_root_public_key,
+        trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+        repository_identity=repository_identity,
+        branch=branch,
+        owner_trust_policy_path=owner_trust_policy,
+        owner_replay_ledger_path=owner_replay_ledger,
+    )
     return apply_manifest_reacquisitions(loaded, manifest, provenance_root=ROOT / "data/provenance/dukascopy_v4", frame_loader=lambda path: filters.load_ohlcv([path]).frame)
 
 
@@ -342,12 +379,17 @@ def _main_impl() -> None:
     global _ACTIVE_STAGING
     args = parse_args()
     from audit_dukascopy_reacquisition_v5 import audit_inventory
+    preflight_manifest = json.loads(args.reacquisition_manifest.resolve().read_text(encoding="utf-8")) if args.reacquisition_manifest.resolve().is_file() else {}
 
     preflight = audit_inventory(
         args.gap_inventory.resolve(),
         args.reacquired_root.resolve(),
         (ROOT / "outputs/reports/dukascopy_reacquisition_v5").resolve(),
         legacy_root=DEFAULT_LEGACY_REACQUIRED_ROOT,
+        run_id=preflight_manifest.get("run_id"),
+        audit_nonce=preflight_manifest.get("audit_nonce_a"),
+        source_commit=preflight_manifest.get("source_commit"),
+        source_tree_sha256=preflight_manifest.get("source_tree_sha256"),
     )
     if preflight["residual_count"] != 0:
         raise ValueError(f"V5 reacquisition preflight has {preflight['residual_count']} residual targets")
@@ -357,14 +399,34 @@ def _main_impl() -> None:
     manifest_path = args.reacquisition_manifest.resolve()
     if not manifest_path.is_file():
         raise ValueError("exact V5 reacquisition manifest is required")
-    reacquisition_manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=args.gap_inventory.resolve())
+    reacquisition_manifest = validate_final_manifest(
+        manifest_path,
+        provenance_root=ROOT / "data/provenance/dukascopy_v4",
+        inventory_path=args.gap_inventory.resolve(),
+        detached_attestation_path=args.detached_attestation.resolve(),
+        detached_signature_path=args.detached_signature.resolve(),
+        pinned_public_key_path=args.pinned_public_key.resolve(),
+        pinned_public_key_sha256=args.pinned_public_key_sha256,
+        expected_source_head_sha256=args.source_head_sha256,
+        trusted_root_public_key_path=args.trusted_root_public_key.resolve(),
+        trusted_root_public_key_sha256=args.trusted_root_public_key_sha256,
+        repository_identity=args.repository_identity,
+        branch=args.branch,
+        owner_trust_policy_path=args.owner_trust_policy.resolve(),
+        owner_replay_ledger_path=args.owner_replay_ledger.resolve(),
+    )
     report_dir = args.report_dir.resolve()
     report_parent = report_dir.parent
     report_parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{report_dir.name}.", dir=report_parent))
     _ACTIVE_STAGING = staging_dir
     loaded = apply_verified_reacquisitions(
-        filters.load_data(), args.gap_inventory.resolve(), args.reacquired_root.resolve(), manifest_path=manifest_path
+        filters.load_data(), args.gap_inventory.resolve(), args.reacquired_root.resolve(), manifest_path=manifest_path,
+        owner_trust_policy=args.owner_trust_policy.resolve(), owner_replay_ledger=args.owner_replay_ledger.resolve(),
+        trusted_root_public_key=args.trusted_root_public_key.resolve(), trusted_root_public_key_sha256=args.trusted_root_public_key_sha256,
+        detached_attestation=args.detached_attestation.resolve(), detached_signature=args.detached_signature.resolve(),
+        pinned_public_key=args.pinned_public_key.resolve(), pinned_public_key_sha256=args.pinned_public_key_sha256,
+        source_head_sha256=args.source_head_sha256, repository_identity=args.repository_identity, branch=args.branch,
     )
     configs = comparison.build_active_configs(loaded)
     state_config = ManualStateConfig()

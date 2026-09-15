@@ -16,6 +16,7 @@ class CandidateValidationError(ValueError):
 
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+GIT_OID_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 INDEPENDENT_BASE_CODE_HASH = "bb333e7a5790b2b9d18e933707cc8f310d1ba55bff91ff611778c63da2bab42b"
 V4_REQUIRED_BINDING_PATHS = frozenset({
     "config_path", "calendar_path", "data_manifest_path", "signal_contract_path",
@@ -253,6 +254,16 @@ def validate_super1_v5_candidate(
         or manifest.get("engine_source_sha256") != source_code_hash()
     ):
         raise CandidateValidationError("V5 manifest bindings are invalid")
+    source_commit = str(manifest.get("source_commit") or "")
+    source_tree = str(manifest.get("source_tree_sha256") or "")
+    if not GIT_OID_RE.fullmatch(source_commit) or not GIT_OID_RE.fullmatch(source_tree):
+        raise CandidateValidationError("V5 source commit/tree must be Git object IDs")
+    if (root_path / ".git").exists():
+        try:
+            from scripts.git_provenance import validate_commit_tree
+            validate_commit_tree(root_path, source_commit, source_tree)
+        except (OSError, ValueError) as exc:
+            raise CandidateValidationError("V5 source commit/tree is not a real Git binding") from exc
     signal_source = signal.get("signal_source")
     overlay = signal.get("overlay_candidate")
     transport = signal.get("demo_order_transport")
@@ -305,6 +316,13 @@ def validate_super1_v4_candidate(
     path: str | Path,
     root: str | Path,
     require_promotable: bool,
+    *,
+    trusted_root_public_key_path: str | Path | None = None,
+    trusted_root_public_key_sha256: str | None = None,
+    repository_identity: str | None = None,
+    branch: str | None = None,
+    owner_trust_policy_path: str | Path | None = None,
+    owner_replay_ledger_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate the V4-only candidate/manifest/config hash chain.
 
@@ -461,6 +479,12 @@ def validate_super1_v4_candidate(
                 pinned_public_key_path=final_public_key,
                 pinned_public_key_sha256=_require_hash(evidence.get("final_manifest_public_key_sha256"), "V4 final manifest public key SHA-256"),
                 expected_source_head_sha256=_require_hash(evidence.get("final_manifest_source_head_sha256"), "V4 final manifest source head SHA-256"),
+                trusted_root_public_key_path=Path(trusted_root_public_key_path).resolve() if trusted_root_public_key_path is not None else None,
+                trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+                repository_identity=repository_identity,
+                branch=branch,
+                owner_trust_policy_path=Path(owner_trust_policy_path).resolve() if owner_trust_policy_path is not None else None,
+                owner_replay_ledger_path=Path(owner_replay_ledger_path).resolve() if owner_replay_ledger_path is not None else None,
             )
         except Exception as exc:
             raise CandidateValidationError("V4 reacquisition promotion evidence is not a strict verified manifest") from exc

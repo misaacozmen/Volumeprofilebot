@@ -22,11 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backtest.dukascopy_acquisition import (  # noqa: E402
-    AcquisitionDeferred, AtomicJsonStore, DEFAULT_HOST_ALLOWLIST, EVENTS_RELATIVE,
+    AcquisitionDeferred, AcquisitionCoordinator, AcquisitionRunLedger, AtomicJsonStore, DEFAULT_HOST_ALLOWLIST, EVENTS_RELATIVE,
     HttpCas, MIGRATION_COOLDOWN_UTC, ProviderProcessLock, RateLimitController,
     STATE_RELATIVE, RETRYABLE_STATUS, RETRY_DELAYS_SECONDS, iso_utc, parse_utc, retry_delay_for_attempt, sha256_bytes, utc_now, validate_clock,
 )
-from backtest.reacquisition_contract import INVENTORY_SHA256, TARGET_COUNT, load_inventory, target_key  # noqa: E402
+from backtest.reacquisition_contract import INVENTORY_SHA256, TARGET_COUNT, load_inventory, target_key, validate_committed_bundle  # noqa: E402
 
 HOST = next(iter(DEFAULT_HOST_ALLOWLIST))
 NODE_HELPER = ROOT / "tools/dukascopy-downloader/acquire_v5.mjs"
@@ -83,14 +83,30 @@ def _preserved_deadline(value: object | None) -> str:
     return MIGRATION_COOLDOWN_UTC
 
 
-def _run_node(*args: str) -> dict[str, object]:
-    result = subprocess.run(["node", str(NODE_HELPER), *args], cwd=NODE_HELPER.parent, check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "dukascopy node helper failed")
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
+def _run_node(*args: str, timeout_seconds: int = 180) -> dict[str, object]:
+    """Run the locked helper with a total header/body deadline and tree reap."""
+    try:
+        from scripts.process_tree import run_bounded
+    except ModuleNotFoundError:
+        from process_tree import run_bounded
+    try:
+        returncode, stdout, stderr = run_bounded(["node", str(NODE_HELPER), *args], timeout_seconds=timeout_seconds)
+    except subprocess.CalledProcessError as exc:
+        if b"Timed out after" in bytes(exc.output or b""):
+            raise TimeoutError("dukascopy node helper deadline exceeded") from exc
+        raise RuntimeError("dukascopy node helper failed") from exc
+    if returncode != 0:
+        raise RuntimeError(stderr.decode("utf-8", errors="replace").strip() or "dukascopy node helper failed")
+    lines = [line for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
     if not lines:
         raise RuntimeError("dukascopy node helper returned no evidence")
-    return json.loads(lines[-1])
+    try:
+        value = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("dukascopy node helper returned invalid evidence") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("dukascopy node helper evidence is not an object")
+    return value
 
 
 def _canonical_frame(path: Path) -> pd.DataFrame:
@@ -115,6 +131,7 @@ def _build_bundle(target: dict[str, object], plan: dict[str, object], cas_items:
     symbol = "DUKASCOPY_USATECHIDXUSD" if leg == "nq" else "DUKASCOPY_USA500IDXUSD"
     final = BUNDLE_ROOT / f"{date_text}_{leg}"
     if final.is_dir() and (final / "COMMITTED.json").is_file():
+        validate_committed_bundle(final, target=target, repository_root=ROOT)
         return final
     staging_root = BUNDLE_ROOT / ".staging"
     staging_root.mkdir(parents=True, exist_ok=True)
@@ -138,6 +155,7 @@ def _build_bundle(target: dict[str, object], plan: dict[str, object], cas_items:
         attestation_path.write_text(json.dumps(attestation, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         committed = {"schema_version": 1, "manifest_name": manifest_path.name, "minute_name": minute_path.name, "derived_name": derived_path.name, "decoded_name": decoded_path.name, "attestation_name": attestation_path.name, "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(), "minute_sha256": sha256(minute_path.read_bytes()).hexdigest(), "derived_sha256": sha256(derived_path.read_bytes()).hexdigest(), "decoded_sha256": sha256(decoded_path.read_bytes()).hexdigest(), "attestation_sha256": sha256(attestation_path.read_bytes()).hexdigest(), "target": {"date": date_text, "leg": leg, "timeframe": timeframe}}
         (staging / "COMMITTED.json").write_text(json.dumps(committed, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        validate_committed_bundle(staging, target=target, repository_root=ROOT)
         final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():
             raise RuntimeError("committed bundle already exists with different bytes")
@@ -155,9 +173,11 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
     state["target_count"] = TARGET_COUNT
     state["provider_call_count"] = int(state.get("provider_call_count", 0))
     controller._write(state)
-    cas = HttpCas(CAS_ROOT)
-    checkpoint = AtomicJsonStore(RUN_STATE)
-    progress = checkpoint.read()
+    cas = HttpCas(args.cas_root.resolve())
+    ledger = AcquisitionRunLedger(args.ledger_path.resolve())
+    from scripts.git_provenance import current_commit_tree
+    source = current_commit_tree(ROOT)
+    ledger.start_run(run_id, source_commit=source["source_commit"], source_tree_sha256=source["source_tree_sha256"], repository_root=ROOT)
     for target in targets:
         key = "|".join(target_key(target))
         plan_fd, plan_name = tempfile.mkstemp(prefix="dukascopy-plan-", suffix=".json")
@@ -169,19 +189,30 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
             cas_items = []
             for index, url in enumerate(plan["urls"]):
                 url_hash = str(plan["url_sha256"][index])
-                cached = progress.get("artifacts", {}).get(f"{key}|{index}")
-                if isinstance(cached, dict) and cached.get("status") == "VERIFIED_DECODED" and cached.get("url_sha256") == url_hash:
+                artifact_id = f"{key}|{index}"
+                ledger_record = ledger.artifact(run_id, artifact_id)
+                if isinstance(ledger_record, dict) and ledger_record.get("state") == "COMMITTED" and ledger_record.get("request_url") == url and ledger_record.get("request_url_sha256") == url_hash:
                     try:
-                        cas_path = cas.path_for(str(cached["sha256"]))
-                        if cas_path.is_file() and cas_path.stat().st_size == int(cached["byte_count"]):
-                            cas_items.append({"url": url, "url_sha256": url_hash, "sha256": cached["sha256"], "byte_count": cached["byte_count"], "cas_path": str(cas_path)})
+                        cas_path = cas.path_for(str(ledger_record["body_sha256"]))
+                        if cas_path.is_file() and cas_path.stat().st_size == int(ledger_record["body_bytes"]) and sha256_bytes(cas_path.read_bytes()) == str(ledger_record["body_sha256"]):
+                            cas_items.append({"url": url, "url_sha256": url_hash, "sha256": ledger_record["body_sha256"], "byte_count": ledger_record["body_bytes"], "cas_path": str(cas_path)})
                             continue
                     except (KeyError, ValueError, TypeError):
                         pass
                 retry_index = 0
                 while True:
+                    if isinstance(ledger_record, dict) and ledger_record.get("state") == "COMMITTED":
+                        if ledger_record.get("request_url") != url or ledger_record.get("request_url_sha256") != url_hash:
+                            raise RuntimeError("persisted acquisition request binding differs")
+                        committed_sha = str(ledger_record.get("body_sha256") or "")
+                        committed_bytes = int(ledger_record.get("body_bytes", -1))
+                        committed_path = cas.path_for(committed_sha)
+                        if not committed_path.is_file() or committed_path.stat().st_size != committed_bytes or sha256_bytes(committed_path.read_bytes()) != committed_sha:
+                            raise RuntimeError("persisted committed CAS evidence is invalid")
+                        cas_items.append({"url": url, "url_sha256": url_hash, "sha256": committed_sha, "byte_count": committed_bytes, "cas_path": str(committed_path)})
+                        break
                     try:
-                        request = controller.before_request(HOST, run_id=run_id, artifact_id=f"{key}|{index}")
+                        request = controller.before_request(HOST, run_id=run_id, artifact_id=artifact_id)
                     except AcquisitionDeferred as deferred:
                         if deferred.reason != "DEFERRED_PROVIDER_SPACING":
                             raise
@@ -191,6 +222,7 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
                     stage_root = ACQUISITION_ROOT / "staging"
                     body_path: Path | None = None
                     try:
+                        ledger.reserve_artifact(run_id, artifact_id, "provider", request_url=url, request_url_sha256=url_hash)
                         evidence = _run_node("fetch-one", "--plan", str(plan_path), "--index", str(index), "--url-sha256", url_hash, "--stage-root", str(stage_root))
                         status = int(evidence.get("status", 0))
                         body_path = Path(str(evidence["staging_path"]))
@@ -198,6 +230,7 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
                         body_sha, cas_path = cas.put(body)
                         if str(evidence.get("url_sha256")) != url_hash or str(evidence.get("body_sha256")) != body_sha or str(evidence.get("buffer_sha256")) != body_sha:
                             raise RuntimeError("provider body or URL evidence binding mismatch")
+                        ledger.complete_artifact(run_id, artifact_id, body_sha256=body_sha, body_bytes=len(body))
                         body_path.unlink(missing_ok=True)
                         controller.finish_request(request, status=status, body_sha256=body_sha, body_byte_count=len(body), headers=evidence.get("headers") if isinstance(evidence.get("headers"), dict) else {}, endpoint=str(evidence.get("endpoint") or ""), request_url_sha256=url_hash)
                     except (subprocess.TimeoutExpired, TimeoutError) as exc:
@@ -240,12 +273,6 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
                         controller.record_terminal(HOST, "EMPTY_ARTIFACT")
                         raise RuntimeError("provider returned an empty artifact")
                     controller.record_success(HOST)
-                    checkpoint_state = checkpoint.read()
-                    checkpoint_state.setdefault("artifacts", {})[f"{key}|{index}"] = {
-                        "url_sha256": url_hash, "sha256": body_sha, "byte_count": len(body),
-                        "cas_path": str(cas_path), "status": "FETCHED_CAS",
-                    }
-                    checkpoint.write(checkpoint_state)
                     cas_items.append({
                         "url": url, "url_sha256": url_hash, "sha256": body_sha,
                         "byte_count": len(body), "cas_path": str(cas_path),
@@ -256,18 +283,12 @@ def acquire_targets(args: argparse.Namespace, targets: list[dict[str, object]], 
             decoded_path = plan_path.with_suffix(".m1.csv")
             _run_node("decode", "--plan", str(plan_path), "--input", str(input_path), "--output", str(decoded_path))
             _build_bundle(target, plan, cas_items, decoded_path)
-            progress = checkpoint.read()
-            for index in range(len(cas_items)):
-                artifact = progress.setdefault("artifacts", {}).get(f"{key}|{index}")
-                if isinstance(artifact, dict):
-                    artifact["status"] = "VERIFIED_DECODED"
-            progress.setdefault("targets", {})[key] = "VERIFIED_V5_BUNDLE"
-            checkpoint.write(progress)
         finally:
             plan_path.unlink(missing_ok=True)
             plan_path.with_suffix(".decode.json").unlink(missing_ok=True)
             plan_path.with_suffix(".m1.csv").unlink(missing_ok=True)
     state = controller._load(); state["run_status"] = "COMPLETE"; controller._write(state)
+    ledger.close()
     return state
 
 
@@ -276,18 +297,78 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inventory", type=Path, default=ROOT / "data/provenance/dukascopy_v4/frozen_invalid_leg_days_v4.csv")
     parser.add_argument("--now", type=str)
     parser.add_argument("--transport-fixture", action="store_true")
+    parser.add_argument("--mode", choices=("fixture", "provider"), default="provider")
+    parser.add_argument("--fixture-root", type=Path)
+    parser.add_argument("--ledger-path", type=Path, default=ACQUISITION_ROOT / "acquisition.sqlite3")
+    parser.add_argument("--cas-root", type=Path, default=CAS_ROOT)
     parser.add_argument("--run-id", default=None)
     return parser.parse_args()
 
 
+def _fixture_artifacts(fixture_root: Path) -> list[dict[str, object]]:
+    descriptor = fixture_root.resolve() / "artifacts.json"
+    if not descriptor.is_file():
+        raise SystemExit("fixture mode requires an external fixture-root/artifacts.json descriptor")
+    try:
+        payload = json.loads(descriptor.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit("fixture descriptor is unreadable") from exc
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "artifacts"} or payload.get("schema_version") != 1 or not isinstance(payload["artifacts"], list) or not payload["artifacts"]:
+        raise SystemExit("fixture descriptor schema is invalid")
+    artifacts: list[dict[str, object]] = []
+    for item in payload["artifacts"]:
+        if not isinstance(item, dict) or set(item) != {"artifact_id", "fixture_path", "url", "sha256", "bytes"}:
+            raise SystemExit("fixture descriptor artifact schema is invalid")
+        artifacts.append(dict(item))
+    return artifacts
+
+
+def _run_fixture_mode(args: argparse.Namespace, run_id: str) -> dict[str, object]:
+    fixture_root = args.fixture_root.resolve()
+    if not fixture_root.is_dir():
+        raise SystemExit("fixture root is missing")
+    from scripts.git_provenance import current_commit_tree
+    source = current_commit_tree(ROOT)
+    coordinator = AcquisitionCoordinator(
+        fixture_root=fixture_root,
+        cas_root=args.cas_root.resolve(),
+        ledger_path=args.ledger_path.resolve(),
+        mode="fixture",
+    )
+    try:
+        result = coordinator.run(
+            run_id=run_id,
+            source_commit=source["source_commit"],
+            source_tree_sha256=source["source_tree_sha256"],
+            artifacts=_fixture_artifacts(fixture_root),
+            repository_root=ROOT,
+        )
+    finally:
+        coordinator.close()
+    state = {"status": "COMPLETE", "mode": "fixture", "run_id": run_id, "provider_call_count": 0, "artifact_count": len(result)}
+    return state
+
+
 def main() -> None:
     args = parse_args()
+    if args.mode == "fixture" and args.fixture_root is None:
+        raise SystemExit("fixture mode requires --fixture-root")
+    if args.mode == "provider" and args.fixture_root is not None:
+        raise SystemExit("provider mode rejects --fixture-root")
+    if args.transport_fixture and args.mode != "fixture":
+        raise SystemExit("--transport-fixture requires --mode fixture")
     if args.now and not args.transport_fixture:
         raise SystemExit("--now is permitted only with --transport-fixture")
+    run_id = args.run_id or uuid4().hex
+    if not run_id:
+        raise SystemExit("one run_id is required")
+    if args.mode == "fixture":
+        print(json.dumps(_run_fixture_mode(args, run_id), sort_keys=True))
+        return
     targets = load_authoritative_targets(args.inventory.resolve())
     index_superseded_failure_evidence(PROVENANCE)
     controller = RateLimitController(ROOT / STATE_RELATIVE, event_path=ROOT / EVENTS_RELATIVE)
-    controller.start_run(args.run_id or uuid4().hex)
+    controller.start_run(run_id)
     state = controller._load()
     if not state["migration"].get("completed"):
         legacy = ROOT / "outputs/reports/reacquire_invalid_sessions_v4.log"
@@ -314,7 +395,6 @@ def main() -> None:
         print(json.dumps({"status": "DEFERRED_RATE_LIMIT", "provider_call_count": state["provider_call_count"], "next_retry_at_utc": deadline_text}, sort_keys=True)); return
     lock_path = ROOT / "outputs/reports/.dukascopy_acquisition_v5/provider.lock"
     with ProviderProcessLock(lock_path):
-        run_id = args.run_id or uuid4().hex
         try:
             result = acquire_targets(args, targets, controller, run_id)
         except AcquisitionDeferred as exc:

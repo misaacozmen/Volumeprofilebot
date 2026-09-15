@@ -109,11 +109,35 @@ def _working_tree_match_count(repo: Path, deny: list[bytes]) -> int:
     return count
 
 
+def build_sanitized_mirror(source: Path, target: Path, deny: list[bytes]) -> list[dict[str, object]]:
+    """Create a real bare, pushable sanitized mirror without changing source."""
+    target = target.resolve()
+    if target.exists() or target.parent.resolve() == source.resolve():
+        raise ValueError("sanitized mirror target must be a new external path")
+    try:
+        target.relative_to(source.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ValueError("sanitized mirror target must remain outside the source repository")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="super1-history-export-") as temporary:
+        mirror = Path(temporary) / "source.git"
+        subprocess.run(["git", "clone", "--mirror", "--no-local", str(source), str(mirror)], check=True, capture_output=True)
+        exported = subprocess.run(["git", "-C", str(mirror), "fast-export", "--all"], check=True, capture_output=True).stdout
+        for item in deny:
+            exported = exported.replace(item, replacement(item))
+        subprocess.run(["git", "init", "--bare", str(target)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(target), "fast-import", "--quiet"], input=exported, check=True, capture_output=True)
+    return scan(target, deny)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--denylist", type=Path)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--sanitized-mirror", type=Path)
     args = parser.parse_args()
     source = args.source.resolve()
     started = datetime.now(timezone.utc)
@@ -159,12 +183,24 @@ def main() -> None:
             "parent_topology_preserved": [row["parents"] for row in source_shape["commits"]] == [row["parents"] for row in sanitized_shape["commits"]],
             "author_committer_timestamp_preserved": [({"author": row["author"], "committer": row["committer"]}) for row in source_shape["commits"]] == [({"author": row["author"], "committer": row["committer"]}) for row in sanitized_shape["commits"]],
         }
+    sanitized_mirror_path = None
+    sanitized_mirror_matches: list[dict[str, object]] = []
+    if args.sanitized_mirror is not None:
+        mirror_target = args.sanitized_mirror.resolve()
+        try:
+            mirror_target.relative_to(source)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("sanitized mirror must be outside the source repository")
+        sanitized_mirror_matches = build_sanitized_mirror(source, mirror_target, deny)
+        sanitized_mirror_path = str(mirror_target)
     if git(source, "rev-parse", "HEAD").decode().strip() != source_head or git(source, "remote", "get-url", "origin").decode().strip() != source_origin:
         raise RuntimeError("source repository or origin changed during disposable rehearsal")
     finished = datetime.now(timezone.utc)
     payload = {
         "schema_version": 2,
-        "status": "REHEARSAL_PASSED_NOT_REMOTE_REMEDIATED" if not sanitized_matches and all(topology_checks.values()) else "REHEARSAL_FAILED",
+        "status": "SANITIZED_MIRROR_READY" if args.sanitized_mirror is not None and not sanitized_mirror_matches and not sanitized_matches and all(topology_checks.values()) else ("REHEARSAL_PASSED_NOT_REMOTE_REMEDIATED" if not sanitized_matches and all(topology_checks.values()) else "REHEARSAL_FAILED"),
         "source_head": source_head,
         "all_ref_tips": ref_tips,
         **source_metrics,
@@ -178,6 +214,8 @@ def main() -> None:
         "source_matches": source_matches,
         "sanitized_match_count": sum(int(row["match_count"]) for row in sanitized_matches),
         "sanitized_matches": sanitized_matches,
+        "sanitized_mirror_path": sanitized_mirror_path,
+        "sanitized_mirror_match_count": len(sanitized_mirror_matches) if args.sanitized_mirror is not None else sum(int(row["match_count"]) for row in sanitized_matches),
         "topology_checks": topology_checks,
         "source_ref_tip_positions": source_shape["ref_tip_positions"],
         "sanitized_ref_tip_positions": sanitized_shape["ref_tip_positions"],
@@ -185,7 +223,7 @@ def main() -> None:
         "origin_unchanged": True,
         "started_at_utc": started.isoformat().replace("+00:00", "Z"),
         "finished_at_utc": finished.isoformat().replace("+00:00", "Z"),
-        "rehearsal_only": True,
+        "rehearsal_only": args.sanitized_mirror is None,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")

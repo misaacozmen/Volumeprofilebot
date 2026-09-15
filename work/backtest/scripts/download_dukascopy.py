@@ -254,37 +254,11 @@ def run_dukascopy_cli(
 
 def run_provider_process(command: list[str], timeout_seconds: int) -> tuple[int, bytes, bytes]:
     """Run one locked downloader with a hard deadline and complete cleanup."""
-    if int(timeout_seconds) <= 0:
-        raise ValueError("provider process timeout must be positive")
-    creationflags = 0x00000200 if __import__("os").name == "nt" else 0
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=False,
-        creationflags=creationflags,
-    )
     try:
-        stdout, stderr = process.communicate(timeout=int(timeout_seconds))
-    except subprocess.TimeoutExpired as error:
-        terminate_process_tree(process.pid)
-        try:
-            stdout, stderr = process.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
-        raise subprocess.CalledProcessError(
-            returncode=1,
-            cmd=command,
-            output=stdout + b"\nTimed out after " + str(timeout_seconds).encode("ascii") + b" seconds",
-            stderr=stderr,
-        ) from error
-    finally:
-        if process.poll() is None:
-            terminate_process_tree(process.pid)
-            process.wait(timeout=10)
-    return int(process.returncode), stdout, stderr
+        from scripts.process_tree import run_bounded
+    except ModuleNotFoundError:
+        from process_tree import run_bounded
+    return run_bounded(command, timeout_seconds=timeout_seconds)
 
 
 def terminate_process_tree(process_id: int) -> None:

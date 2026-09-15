@@ -169,6 +169,7 @@
         "scripts/audit_dukascopy_reacquisition_v5.py",
         "scripts/build_verified_market_calendar.py",
         "scripts/candidate_artifact.py",
+        "scripts/git_provenance.py",
         "scripts/evaluate_conservative_rolling_candidate_v4.py",
         "scripts/finalize_strategy_improvement_loop_v4.py",
         "scripts/freeze_conservative_rolling_state_v4.py",

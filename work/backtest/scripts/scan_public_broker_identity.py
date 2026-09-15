@@ -109,8 +109,10 @@ def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, objec
         object_id, _, path = row.partition(" ")
         object_paths.setdefault(object_id, path)
     matches: list[dict[str, object]] = []
-    counts = {"commit_count": int(_git(root, "rev-list", "--all", "--count").decode().strip() or 0), "blob_count": 0, "object_count": 0, "scanned_bytes": 0, "denylist_occurrence_count": 0, "denylist_unique_object_count": 0}
-    object_ids = list(object_paths)
+    counts = {"commit_count": int(_git(root, "rev-list", "--all", "--count").decode().strip() or 0), "blob_count": 0, "object_count": 0, "scanned_bytes": 0, "denylist_occurrence_count": 0, "denylist_unique_object_count": 0, "commit_message_match_count": 0, "tag_note_match_count": 0}
+    commit_ids = _git(root, "rev-list", "--all").decode("ascii", "replace").split()
+    ref_ids = _git(root, "for-each-ref", "--format=%(objectname)").decode("ascii", "replace").split()
+    object_ids = list(dict.fromkeys([*object_paths, *commit_ids, *ref_ids]))
     batch = subprocess.run(
         ["git", "-C", str(root), "cat-file", "--batch"],
         input=("\n".join(object_ids) + "\n").encode("ascii"),
@@ -133,18 +135,21 @@ def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, objec
         if offset < len(batch) and batch[offset:offset + 1] == b"\n":
             offset += 1
         counts["object_count"] += 1
-        if kind != b"blob":
-            continue
-        counts["blob_count"] += 1
+        if kind == b"blob":
+            counts["blob_count"] += 1
         counts["scanned_bytes"] += len(blob)
-        path = object_paths[object_id]
+        path = object_paths.get(object_id, "")
         denied_count = sum(blob.count(item) for item in denied)
         fields: list[str] = []
-        if path.endswith(".json"):
+        if kind == b"blob" and path.endswith(".json"):
             try:
                 fields = concrete_paths(json.loads(blob.decode("utf-8")))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 pass
+        if kind == b"commit" and denied_count:
+            counts["commit_message_match_count"] += denied_count
+        if kind == b"tag" and denied_count:
+            counts["tag_note_match_count"] += denied_count
         if fields or denied_count:
             matches.append({"object": object_id, "path": path or "<unmapped>", "field_paths": fields, "denylist_match_count": denied_count, "blob_sha256": sha256(blob).hexdigest()})
         counts["denylist_occurrence_count"] += denied_count
@@ -153,6 +158,53 @@ def _history_scan(root: Path, denied: list[bytes]) -> tuple[list[dict[str, objec
     counts["denylist_unique_file_count"] = len({row.get("path") for row in matches if int(row.get("denylist_match_count", 0))})
     counts["denylist_match_count"] = sum(int(row.get("denylist_match_count", 0)) for row in matches)
     return matches, counts
+
+
+def _ref_name_matches(root: Path, denied: list[bytes]) -> list[dict[str, object]]:
+    rows = _git(root, "for-each-ref", "--format=%(refname) %(objectname)").decode("utf-8", "replace").splitlines()
+    matches: list[dict[str, object]] = []
+    for row in rows:
+        ref, _, object_id = row.partition(" ")
+        count = sum(ref.encode("utf-8").count(value) for value in denied)
+        if count:
+            matches.append({"scope": "ref-name", "ref": ref, "object": object_id, "denylist_match_count": count})
+    return matches
+
+
+def _quarantine_scan(quarantine_root: Path | None, denied: list[bytes], *, repository_root: Path | None = None) -> int:
+    if quarantine_root is None:
+        return 0
+    root = quarantine_root.resolve()
+    if not root.is_dir():
+        raise ValueError("quarantine object directory is missing")
+    if repository_root is not None:
+        git_dir = (repository_root.resolve() / ".git").resolve()
+        objects = git_dir / "objects"
+        environment = {**__import__("os").environ, "GIT_OBJECT_DIRECTORY": str(root), "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)}
+        result = subprocess.run(["git", "-C", str(repository_root.resolve()), "cat-file", "--batch-all-objects", "--batch"], input=b"", capture_output=True, check=False, env=environment)
+        if result.returncode == 0:
+            data = result.stdout
+            offset = 0
+            total = 0
+            while offset < len(data):
+                newline = data.find(b"\n", offset)
+                if newline < 0:
+                    break
+                header = data[offset:newline].split()
+                offset = newline + 1
+                if len(header) != 3:
+                    break
+                try:
+                    size = int(header[2])
+                except ValueError:
+                    break
+                body = data[offset:offset + size]
+                offset += size
+                if offset < len(data) and data[offset:offset + 1] == b"\n":
+                    offset += 1
+                total += sum(body.count(value) for value in denied)
+            return total
+    return sum(sum(path.read_bytes().count(value) for value in denied) for path in root.rglob("*") if path.is_file())
 
 
 def _ref_tips(root: Path) -> list[dict[str, str]]:
@@ -165,6 +217,7 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--denylist", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--quarantine-object-dir", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
     git_prefix = _git(root, "rev-parse", "--show-prefix").decode("utf-8", "replace").strip().replace("\\", "/")
@@ -180,6 +233,8 @@ def main() -> None:
     matches = scan(root, denylist) if denylist is not None else []
     denied, denylist_sha256 = _deny_values(denylist)
     history_matches, counts = _history_scan(root, denied)
+    ref_matches = _ref_name_matches(root, denied)
+    quarantine_match_count = _quarantine_scan(args.quarantine_object_dir, denied, repository_root=root)
     before_head = _git(root, "rev-parse", "HEAD").decode().strip()
     before_origin = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True, check=False).stdout.strip()
     after_head = _git(root, "rev-parse", "HEAD").decode().strip()
@@ -208,9 +263,13 @@ def main() -> None:
         "origin_unchanged": before_origin == after_origin,
         "started_at_utc": started.isoformat().replace("+00:00", "Z"),
         "finished_at_utc": ended.isoformat().replace("+00:00", "Z"),
-        "match_count": len(matches),
+        "match_count": len(matches) + len(ref_matches) + int(quarantine_match_count),
         "matches": matches,
         "reachable_history_matches": history_matches,
+        "ref_name_match_count": sum(int(row["denylist_match_count"]) for row in ref_matches),
+        "ref_name_matches": ref_matches,
+        "quarantine_object_match_count": quarantine_match_count,
+        "quarantine_object_dir_provided": args.quarantine_object_dir is not None,
     }
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.report:
@@ -219,7 +278,7 @@ def main() -> None:
     print(encoded, end="")
     if denylist is None:
         raise SystemExit(2)
-    raise SystemExit(1 if matches or history_matches else 0)
+    raise SystemExit(1 if matches or history_matches or ref_matches or quarantine_match_count else 0)
 
 
 if __name__ == "__main__":

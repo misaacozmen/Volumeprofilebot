@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_id", "issuer", "purpose", "repository_identity", "branch", "inventory_sha256", "allowed_source_commit", "allowed_source_tree_oid", "leaf_public_key_sha256", "valid_from_utc", "valid_until_utc", "revocation_state", "nonce", "signature_algorithm", "root_public_key_sha256", "signature_b64"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "policy_id": {"type": "string", "minLength": 1},
+    "issuer": {"type": "string", "minLength": 1},
+    "purpose": {"type": "string", "minLength": 1},
+    "repository_identity": {"type": "string", "minLength": 1},
+    "branch": {"type": "string", "minLength": 1},
+    "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "allowed_source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "allowed_source_tree_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "leaf_public_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "valid_from_utc": {"type": "string", "minLength": 1},
+    "valid_until_utc": {"type": "string", "minLength": 1},
+    "revocation_state": {"const": "ACTIVE"},
+    "nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signature_algorithm": {"const": "RSA-PSS-SHA256"},
+    "root_public_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signature_b64": {"type": "string", "minLength": 1}
+  }
+}

@@ -572,6 +572,10 @@ class AcquisitionRunLedger:
                 body_sha256 TEXT,
                 body_bytes INTEGER,
                 fixture_path TEXT NOT NULL,
+                request_url TEXT,
+                request_url_sha256 TEXT,
+                expected_body_sha256 TEXT,
+                expected_body_bytes INTEGER,
                 lease_pid INTEGER,
                 lease_process_start_token TEXT,
                 lease_expires_at_utc TEXT,
@@ -583,6 +587,10 @@ class AcquisitionRunLedger:
         )
         columns = {str(row[1]) for row in self.connection.execute("PRAGMA table_info(acquisition_artifacts)")}
         for name, definition in (
+            ("request_url", "TEXT"),
+            ("request_url_sha256", "TEXT"),
+            ("expected_body_sha256", "TEXT"),
+            ("expected_body_bytes", "INTEGER"),
             ("lease_pid", "INTEGER"),
             ("lease_process_start_token", "TEXT"),
             ("lease_expires_at_utc", "TEXT"),
@@ -608,10 +616,13 @@ class AcquisitionRunLedger:
 
         return Transaction(self)
 
-    def start_run(self, run_id: str, *, source_commit: str, source_tree_sha256: str) -> dict[str, Any]:
+    def start_run(self, run_id: str, *, source_commit: str, source_tree_sha256: str, repository_root: str | Path | None = None) -> dict[str, Any]:
         run_id = str(run_id).strip()
-        if not run_id or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit)) or not SHA256_RE.fullmatch(str(source_tree_sha256)):
+        if not run_id or not re.fullmatch(r"[0-9a-f]{40}", str(source_commit)) or not re.fullmatch(r"[0-9a-f]{40}", str(source_tree_sha256)):
             raise ValueError("acquisition run identity is incomplete")
+        if repository_root is not None:
+            from scripts.git_provenance import validate_commit_tree
+            validate_commit_tree(Path(repository_root).resolve(), str(source_commit), str(source_tree_sha256))
         identity = _canonical({"pid": os.getpid(), "process_start_token": process_start_token(), "host": platform.node()}).decode("utf-8")
         with self._transaction() as connection:
             existing = connection.execute("SELECT source_commit, source_tree_sha256 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -625,10 +636,34 @@ class AcquisitionRunLedger:
         assert row is not None
         return {"run_id": row[0], "started_at_utc": row[1], "source_commit": row[2], "source_tree_sha256": row[3], "process_identity": json.loads(row[4])}
 
-    def reserve_artifact(self, run_id: str, artifact_id: str, fixture_path: str) -> str:
+    def reserve_artifact(
+        self,
+        run_id: str,
+        artifact_id: str,
+        fixture_path: str,
+        *,
+        request_url: str | None = None,
+        request_url_sha256: str | None = None,
+        expected_body_sha256: str | None = None,
+        expected_body_bytes: int | None = None,
+    ) -> str:
         run_id, artifact_id, fixture_path = str(run_id).strip(), str(artifact_id).strip(), str(fixture_path).strip()
         if not run_id or not artifact_id or not fixture_path:
             raise ValueError("acquisition artifact identity is incomplete")
+        if request_url is not None:
+            request_url = str(request_url).strip()
+            if request_url.startswith("https://"):
+                request_url = validate_provider_url(request_url)
+            elif not request_url.startswith("fixture://"):
+                raise ValueError("acquisition request URL is outside the explicit mode contract")
+        if request_url_sha256 is not None:
+            request_url_sha256 = require_sha256(request_url_sha256, "request URL SHA-256")
+        if request_url is not None and request_url_sha256 is None:
+            request_url_sha256 = sha256_bytes(request_url.encode("utf-8"))
+        if expected_body_sha256 is not None:
+            expected_body_sha256 = require_sha256(expected_body_sha256, "expected body SHA-256")
+        if expected_body_bytes is not None and (isinstance(expected_body_bytes, bool) or int(expected_body_bytes) < 0):
+            raise ValueError("expected body byte count is invalid")
         pid = os.getpid()
         process_token = process_start_token(pid)
         now = utc_now()
@@ -637,18 +672,22 @@ class AcquisitionRunLedger:
             if connection.execute("SELECT 1 FROM acquisition_runs WHERE run_id=?", (run_id,)).fetchone() is None:
                 raise ValueError("acquisition artifact references an unknown run")
             existing = connection.execute(
-                "SELECT state,lease_pid,lease_process_start_token,lease_expires_at_utc FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
+                "SELECT state,request_url,request_url_sha256,expected_body_sha256,expected_body_bytes,lease_pid,lease_process_start_token,lease_expires_at_utc FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
                 (run_id, artifact_id),
             ).fetchone()
             if existing is not None:
                 state = str(existing[0])
                 if state == "COMMITTED":
+                    persisted = tuple(existing[1:5])
+                    requested = (request_url, request_url_sha256, expected_body_sha256, expected_body_bytes)
+                    if any(value is not None for value in persisted) and persisted != requested:
+                        raise ValueError("acquisition artifact identity differs from the persisted request")
                     return state
                 if state != "IN_PROGRESS":
                     raise ValueError("acquisition artifact has an invalid persisted state")
-                lease_pid = existing[1]
-                lease_token = str(existing[2] or "")
-                lease_expires = existing[3]
+                lease_pid = existing[5]
+                lease_token = str(existing[6] or "")
+                lease_expires = existing[7]
                 lease_active = False
                 if lease_pid is not None and lease_token and lease_expires:
                     try:
@@ -658,13 +697,13 @@ class AcquisitionRunLedger:
                 if lease_active and (int(lease_pid) != pid or lease_token != process_token):
                     raise ValueError("acquisition artifact lease is held by another live process")
                 connection.execute(
-                    "UPDATE acquisition_artifacts SET fixture_path=?,lease_pid=?,lease_process_start_token=?,lease_expires_at_utc=?,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
-                    (fixture_path, pid, process_token, expires, iso_utc(now), run_id, artifact_id),
+                    "UPDATE acquisition_artifacts SET fixture_path=?,request_url=?,request_url_sha256=?,expected_body_sha256=?,expected_body_bytes=?,lease_pid=?,lease_process_start_token=?,lease_expires_at_utc=?,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
+                    (fixture_path, request_url, request_url_sha256, expected_body_sha256, expected_body_bytes, pid, process_token, expires, iso_utc(now), run_id, artifact_id),
                 )
                 return state
             connection.execute(
-                "INSERT INTO acquisition_artifacts(run_id,artifact_id,state,fixture_path,lease_pid,lease_process_start_token,lease_expires_at_utc,updated_at_utc) VALUES(?,?,?,?,?,?,?,?)",
-                (run_id, artifact_id, "IN_PROGRESS", fixture_path, pid, process_token, expires, iso_utc(now)),
+                "INSERT INTO acquisition_artifacts(run_id,artifact_id,state,fixture_path,request_url,request_url_sha256,expected_body_sha256,expected_body_bytes,lease_pid,lease_process_start_token,lease_expires_at_utc,updated_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, artifact_id, "IN_PROGRESS", fixture_path, request_url, request_url_sha256, expected_body_sha256, expected_body_bytes, pid, process_token, expires, iso_utc(now)),
             )
         return "IN_PROGRESS"
 
@@ -674,8 +713,8 @@ class AcquisitionRunLedger:
             raise ValueError("acquisition body byte count is invalid")
         with self._transaction() as connection:
             updated = connection.execute(
-                "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=?,lease_pid=NULL,lease_process_start_token=NULL,lease_expires_at_utc=NULL,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
-                (body_sha256, int(body_bytes), iso_utc(utc_now()), str(run_id), str(artifact_id)),
+                "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=?,expected_body_sha256=COALESCE(expected_body_sha256,?),expected_body_bytes=COALESCE(expected_body_bytes,?),lease_pid=NULL,lease_process_start_token=NULL,lease_expires_at_utc=NULL,updated_at_utc=? WHERE run_id=? AND artifact_id=? AND state='IN_PROGRESS'",
+                (body_sha256, int(body_bytes), body_sha256, int(body_bytes), iso_utc(utc_now()), str(run_id), str(artifact_id)),
             ).rowcount
             if updated == 0:
                 existing = connection.execute("SELECT state,body_sha256,body_bytes FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?", (str(run_id), str(artifact_id))).fetchone()
@@ -685,7 +724,7 @@ class AcquisitionRunLedger:
 
     def artifact(self, run_id: str, artifact_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(
-            "SELECT run_id,artifact_id,state,body_sha256,body_bytes,fixture_path FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
+            "SELECT run_id,artifact_id,state,body_sha256,body_bytes,fixture_path,request_url,request_url_sha256,expected_body_sha256,expected_body_bytes FROM acquisition_artifacts WHERE run_id=? AND artifact_id=?",
             (str(run_id), str(artifact_id)),
         ).fetchone()
         if row is None:
@@ -693,6 +732,8 @@ class AcquisitionRunLedger:
         return {
             "run_id": str(row[0]), "artifact_id": str(row[1]), "state": str(row[2]),
             "body_sha256": row[3], "body_bytes": row[4], "fixture_path": str(row[5]),
+            "request_url": row[6], "request_url_sha256": row[7],
+            "expected_body_sha256": row[8], "expected_body_bytes": row[9],
         }
 
     def close(self) -> None:
@@ -700,16 +741,31 @@ class AcquisitionRunLedger:
 
 
 class AcquisitionCoordinator:
-    """Offline fixture coordinator; it never owns or invokes a provider client."""
+    """Single SQLite-WAL coordinator with explicit fixture/provider modes."""
 
-    def __init__(self, *, fixture_root: str | Path | None, cas_root: str | Path, ledger_path: str | Path, provider: Callable[..., Any] | None = None) -> None:
-        if provider is not None:
-            raise ValueError("provider calls are forbidden; acquisition requires a fixture root")
-        if fixture_root is None:
-            raise ValueError("fixture root is required")
-        self.fixture_root = Path(fixture_root).resolve()
-        if not self.fixture_root.is_dir():
-            raise ValueError("fixture root is missing")
+    def __init__(self, *, fixture_root: str | Path | None, cas_root: str | Path, ledger_path: str | Path, provider: Callable[..., Any] | None = None, mode: str = "fixture", rate_controller: RateLimitController | None = None, host: str = "datafeed.dukascopy.com") -> None:
+        self.mode = str(mode).strip().lower()
+        if self.mode not in {"fixture", "provider"}:
+            raise ValueError("acquisition mode must be fixture or provider")
+        if self.mode == "fixture":
+            if provider is not None:
+                raise ValueError("provider calls are forbidden in fixture mode")
+            if fixture_root is None:
+                raise ValueError("fixture root is required in fixture mode")
+            self.fixture_root = Path(fixture_root).resolve()
+            if not self.fixture_root.is_dir():
+                raise ValueError("fixture root is missing")
+        else:
+            if fixture_root is not None:
+                raise ValueError("fixture root is forbidden in provider mode")
+            if provider is None:
+                raise ValueError("provider callback is required in provider mode")
+            if rate_controller is None:
+                raise ValueError("provider mode requires the persisted rate controller")
+            self.fixture_root = None
+        self.provider = provider
+        self.rate_controller = rate_controller
+        self.host = str(host)
         self.cas = HttpCas(cas_root)
         self.ledger = AcquisitionRunLedger(ledger_path)
 
@@ -717,6 +773,7 @@ class AcquisitionCoordinator:
         relative = Path(str(fixture_path))
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("fixture path escapes fixture root")
+        assert self.fixture_root is not None
         path = (self.fixture_root / relative).resolve()
         try:
             path.relative_to(self.fixture_root)
@@ -740,19 +797,50 @@ class AcquisitionCoordinator:
         cas_path = self.cas.path_for(body_sha256)
         if not cas_path.is_file() or cas_path.stat().st_size != body_bytes or sha256_bytes(cas_path.read_bytes()) != body_sha256:
             raise ValueError("committed artifact CAS evidence is invalid")
-        return {"run_id": run_id, "artifact_id": artifact_id, "state": "COMMITTED", "body_sha256": body_sha256, "body_bytes": body_bytes, "cas_path": str(cas_path)}
+        if not record.get("request_url") or record.get("request_url_sha256") != sha256_bytes(str(record["request_url"]).encode("utf-8")):
+            raise ValueError("committed artifact URL binding is invalid")
+        if record.get("expected_body_sha256") not in {None, body_sha256} or record.get("expected_body_bytes") not in {None, body_bytes}:
+            raise ValueError("committed artifact does not match the persisted expected body identity")
+        request_url = record.get("request_url")
+        request_url_sha256 = record.get("request_url_sha256")
+        if request_url is not None and request_url_sha256 != sha256_bytes(str(request_url).encode("utf-8")):
+            raise ValueError("committed artifact URL binding is invalid")
+        return {"run_id": run_id, "artifact_id": artifact_id, "state": "COMMITTED", "body_sha256": body_sha256, "body_bytes": body_bytes, "cas_path": str(cas_path), "request_url": request_url, "request_url_sha256": request_url_sha256}
 
-    def run(self, *, run_id: str, source_commit: str, source_tree_sha256: str, artifacts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        self.ledger.start_run(run_id, source_commit=source_commit, source_tree_sha256=source_tree_sha256)
+    def run(self, *, run_id: str, source_commit: str, source_tree_sha256: str, artifacts: list[Mapping[str, Any]], repository_root: str | Path | None = None) -> list[dict[str, Any]]:
+        self.ledger.start_run(run_id, source_commit=source_commit, source_tree_sha256=source_tree_sha256, repository_root=repository_root)
         output: list[dict[str, Any]] = []
         for item in artifacts:
             artifact_id = str(item.get("artifact_id") or "").strip()
             fixture_path = str(item.get("fixture_path") or "").strip()
-            state = self.ledger.reserve_artifact(run_id, artifact_id, fixture_path)
+            request_url = str(item.get("url") or f"fixture://{fixture_path}")
+            if self.mode == "provider" and not item.get("url"):
+                raise ValueError("provider artifact URL is required")
+            expected_sha256 = str(item.get("sha256") or "")
+            expected_bytes = int(item.get("bytes", -1))
+            state = self.ledger.reserve_artifact(run_id, artifact_id, fixture_path or "provider", request_url=request_url, expected_body_sha256=expected_sha256, expected_body_bytes=expected_bytes)
             if state == "COMMITTED":
                 output.append(self._verify_committed(run_id, artifact_id))
                 continue
-            body = self._fixture_bytes(fixture_path, expected_sha256=str(item.get("sha256") or ""), expected_bytes=int(item.get("bytes", -1)))
+            if self.mode == "fixture":
+                body = self._fixture_bytes(fixture_path, expected_sha256=expected_sha256, expected_bytes=expected_bytes)
+            else:
+                assert self.provider is not None
+                assert self.rate_controller is not None
+                request = self.rate_controller.before_request(self.host, run_id=run_id, artifact_id=artifact_id)
+                try:
+                    body = self.provider(item)
+                except Exception:
+                    self.rate_controller.finish_request(request, error_code="PROVIDER_ERROR", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
+                    raise
+                if not isinstance(body, bytes):
+                    self.rate_controller.finish_request(request, error_code="PROVIDER_INVALID_BYTES", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
+                    raise ValueError("provider callback must return bytes")
+                if len(body) != expected_bytes or sha256_bytes(body) != require_sha256(expected_sha256, "provider body hash"):
+                    self.rate_controller.finish_request(request, error_code="PROVIDER_BODY_BINDING_MISMATCH", endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
+                    raise ValueError("provider bytes do not match the declared CAS identity")
+                self.rate_controller.finish_request(request, status=200, body_sha256=sha256_bytes(body), body_byte_count=len(body), endpoint=request_url, request_url_sha256=sha256_bytes(request_url.encode("utf-8")))
+                self.rate_controller.record_success(self.host)
             body_sha256, cas_path = self.cas.put(body)
             if not cas_path.is_file() or sha256_bytes(cas_path.read_bytes()) != body_sha256:
                 raise ValueError("CAS readback verification failed")

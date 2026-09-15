@@ -14,6 +14,7 @@ import pandas as pd
 INVENTORY_SHA256 = "a63406f235ded8d3daa123c0311adb678e53db3d996141b194493309f2cce075"
 TARGET_COUNT = 113
 TARGET_KEYS = frozenset({"date", "leg", "timeframe"})
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MANIFEST_KEYS = frozenset({
     "schema_version", "inventory_sha256", "target_count", "residual_count", "targets",
     "semantic_root_sha256", "ordered_target_merkle_root_sha256", "calendar_sha256",
@@ -73,9 +74,20 @@ def _validate_owner_trust(
     *,
     repository_root: Path,
     require_signature: bool,
+    trusted_root_public_key_path: Path | None,
+    trusted_root_public_key_sha256: str | None,
+    repository_identity: str | None,
+    branch: str | None,
+    leaf_public_key_sha256: str | None,
+    owner_trust_policy_path: Path | None,
+    owner_replay_ledger_path: Path | None,
 ) -> None:
+    if owner_trust_policy_path is not None and Path(str(payload.get("owner_trust_policy_path") or "")).resolve() != owner_trust_policy_path.resolve():
+        raise ValueError("owner trust policy path differs from the canonical manifest binding")
+    if owner_replay_ledger_path is not None and Path(str(payload.get("owner_replay_ledger_path") or "")).resolve() != owner_replay_ledger_path.resolve():
+        raise ValueError("owner replay ledger path differs from the canonical manifest binding")
     policy_path = _external_file(
-        payload.get("owner_trust_policy_path"),
+        owner_trust_policy_path or payload.get("owner_trust_policy_path"),
         repository_root=repository_root,
         expected_sha256=payload.get("owner_trust_policy_sha256"),
         label="owner trust policy",
@@ -86,22 +98,35 @@ def _validate_owner_trust(
         expected_sha256=payload.get("owner_replay_ledger_sha256"),
         label="owner replay ledger",
     )
+    if trusted_root_public_key_path is None or trusted_root_public_key_sha256 is None or not repository_identity or not branch:
+        raise ValueError("independent owner trust root, repository identity, and branch are required")
+    trusted_root_public_key_path = _external_file(
+        trusted_root_public_key_path,
+        repository_root=repository_root,
+        expected_sha256=trusted_root_public_key_sha256,
+        label="trusted owner root public key",
+    )
     try:
-        policy = json.loads(policy_path.read_text(encoding="utf-8"))
-        replay = json.loads(replay_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("owner trust inputs are unreadable") from exc
-    if not isinstance(policy, dict) or policy.get("schema_version") != 1 or policy.get("status") != "ACTIVE":
-        raise ValueError("owner trust policy is invalid")
-    if not isinstance(replay, dict) or replay.get("schema_version") != 1 or not isinstance(replay.get("entries"), list):
-        raise ValueError("owner replay ledger is invalid")
-    replayed = replay["entries"]
-    if any(not isinstance(item, dict) for item in replayed):
-        raise ValueError("owner replay ledger entries are invalid")
-    run_id = str(payload.get("run_id") or "")
-    nonces = {str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")}
-    if any(str(item.get("run_id") or "") == run_id or str(item.get("nonce") or "") in nonces for item in replayed):
-        raise ValueError("owner replay ledger already contains this audit identity")
+        from scripts.owner_replay_ledger import validate as validate_replay_ledger
+        from scripts.owner_trust import validate_policy
+        validate_policy(
+            policy_path,
+            trusted_root_public_key_path=trusted_root_public_key_path,
+            trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+            repository_identity=repository_identity,
+            branch=branch,
+            inventory_sha256=str(payload.get("inventory_sha256") or ""),
+            source_commit=str(payload.get("source_commit") or ""),
+            source_tree_oid=str(payload.get("source_tree_sha256") or ""),
+            leaf_public_key_sha256=str(leaf_public_key_sha256 or ""),
+        )
+        validate_replay_ledger(
+            replay_path,
+            run_id=str(payload.get("run_id") or ""),
+            nonces=(str(payload.get("audit_nonce_a") or ""), str(payload.get("audit_nonce_b") or "")),
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError("owner trust inputs are invalid") from exc
     if require_signature and payload.get("owner_signature_status") != "SIGNED":
         raise ValueError("owner signature is not complete")
 
@@ -163,6 +188,72 @@ def _manifest_artifact_path(root: Path, value: object, label: str) -> Path:
     if relative.startswith(prefix):
         relative = relative[len(prefix):]
     return safe_provenance_path(root, relative, label)
+
+
+def validate_committed_bundle(bundle_dir: Path, *, target: Mapping[str, Any], repository_root: Path) -> dict[str, Any]:
+    """Validate one V5 bundle before it can be resumed or published."""
+    bundle = bundle_dir.resolve()
+    if not bundle.is_dir():
+        raise ValueError("V5 bundle directory is missing")
+    files = {item.name for item in bundle.iterdir()}
+    if len(files) != 6 or "COMMITTED.json" not in files or "ATTESTATION.json" not in files:
+        raise ValueError("V5 bundle file set is not closed")
+    committed_path = bundle / "COMMITTED.json"
+    attestation_path = bundle / "ATTESTATION.json"
+    try:
+        committed = json.loads(committed_path.read_text(encoding="utf-8"))
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("V5 bundle control evidence is unreadable") from exc
+    expected_target = {"date": str(target.get("date")), "leg": str(target.get("leg")), "timeframe": str(target.get("timeframe"))}
+    names = {str(committed.get(key) or "") for key in ("manifest_name", "minute_name", "derived_name", "decoded_name", "attestation_name")}
+    if committed.get("schema_version") != 1 or committed.get("target") != expected_target or committed.get("attestation_name") != "ATTESTATION.json" or names != files - {"COMMITTED.json"}:
+        raise ValueError("V5 COMMITTED evidence does not bind the closed target file set")
+    for key, name_key in (("manifest_sha256", "manifest_name"), ("minute_sha256", "minute_name"), ("derived_sha256", "derived_name"), ("decoded_sha256", "decoded_name"), ("attestation_sha256", "attestation_name")):
+        file_path = bundle / str(committed[name_key])
+        if _require_digest(committed.get(key), f"V5 committed {key}") != digest(file_path):
+            raise ValueError(f"V5 committed {key} does not match bytes")
+    expected_attestation = {
+        "schema_version": 1,
+        "attestation_type": "V5_BUNDLE_BYTES",
+        "target": expected_target,
+        "manifest_sha256": committed["manifest_sha256"],
+        "minute_sha256": committed["minute_sha256"],
+        "derived_sha256": committed["derived_sha256"],
+        "decoded_sha256": committed["decoded_sha256"],
+    }
+    if attestation != expected_attestation:
+        raise ValueError("V5 byte attestation does not bind exact bundle bytes")
+    manifest_path = bundle / str(committed["manifest_name"])
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("V5 bundle manifest is unreadable") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 5:
+        raise ValueError("V5 bundle manifest schema is invalid")
+    ordered_urls = manifest.get("ordered_urls")
+    plan_hashes = manifest.get("plan_url_sha256")
+    raw_chunks = manifest.get("raw_chunks")
+    if not isinstance(ordered_urls, list) or not isinstance(plan_hashes, list) or plan_hashes != [sha256(str(url).encode()).hexdigest() for url in ordered_urls] or not isinstance(raw_chunks, list) or len(raw_chunks) != len(ordered_urls):
+        raise ValueError("V5 bundle URL plan is invalid")
+    repo = repository_root.resolve()
+    cas_root = (repo / "data/provenance/dukascopy_v4/acquisition_v5/http_cas").resolve()
+    for index, chunk in enumerate(raw_chunks):
+        if not isinstance(chunk, dict) or chunk.get("url") != ordered_urls[index] or chunk.get("url_sha256") != plan_hashes[index]:
+            raise ValueError("V5 raw chunk URL binding is invalid")
+        raw_path_text = str(chunk.get("raw_path") or "")
+        prefix = "data/provenance/dukascopy_v4/"
+        if raw_path_text.startswith(prefix):
+            raw_path_text = raw_path_text[len(prefix):]
+        raw_path = (repo / "data/provenance/dukascopy_v4" / raw_path_text).resolve() if not Path(raw_path_text).is_absolute() else Path(raw_path_text).resolve()
+        try:
+            raw_path.relative_to(cas_root)
+        except ValueError as exc:
+            raise ValueError("V5 raw evidence is outside the HTTP CAS") from exc
+        raw_hash = _require_digest(chunk.get("raw_sha256"), "V5 raw_sha256")
+        if not raw_path.is_file() or digest(raw_path) != raw_hash or raw_path.stat().st_size != int(chunk.get("raw_byte_count", -1)):
+            raise ValueError("V5 raw CAS bytes do not match evidence")
+    return {"bundle_path": str(bundle), "target": expected_target, "manifest_sha256": committed["manifest_sha256"], "attestation_sha256": committed["attestation_sha256"]}
 
 
 def _validate_detached_attestation(
@@ -230,6 +321,12 @@ def validate_final_manifest(
     pinned_public_key_sha256: str | None = None,
     expected_source_head_sha256: str | None = None,
     require_owner_signature: bool = True,
+    trusted_root_public_key_path: Path | None = None,
+    trusted_root_public_key_sha256: str | None = None,
+    repository_identity: str | None = None,
+    branch: str | None = None,
+    owner_trust_policy_path: Path | None = None,
+    owner_replay_ledger_path: Path | None = None,
 ) -> ValidatedFinalManifest:
     resolved = path.resolve()
     root = provenance_root.resolve()
@@ -264,6 +361,10 @@ def validate_final_manifest(
     for field in ("semantic_root_sha256", "ordered_target_merkle_root_sha256", "calendar_sha256", "auditor_sha256", "node_helper_sha256", "package_lock_sha256", "http_event_root_sha256"):
         _require_digest(payload.get(field), f"final manifest {field}")
     repository_root = root.parents[2]
+    from scripts.git_provenance import current_branch, validate_commit_tree
+    validate_commit_tree(repository_root, str(payload.get("source_commit")), str(payload.get("source_tree_sha256")))
+    if branch is not None and current_branch(repository_root) != branch:
+        raise ValueError("owner branch context differs from the checked-out Git branch")
     audit_a_path = Path(str(payload.get("audit_identity_a_path") or ""))
     audit_b_path = Path(str(payload.get("audit_identity_b_path") or ""))
     if audit_a_path.is_absolute() or audit_b_path.is_absolute():
@@ -416,7 +517,18 @@ def validate_final_manifest(
     if semantic_root(target_rows) != payload["semantic_root_sha256"] or ordered_merkle(target_rows) != payload["ordered_target_merkle_root_sha256"]:
         raise ValueError("final manifest semantic root is invalid")
     signature_required = require_owner_signature or payload.get("owner_signature_status") == "SIGNED"
-    _validate_owner_trust(payload, repository_root=repository_root, require_signature=signature_required)
+    _validate_owner_trust(
+        payload,
+        repository_root=repository_root,
+        require_signature=signature_required,
+        trusted_root_public_key_path=trusted_root_public_key_path,
+        trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+        repository_identity=repository_identity,
+        branch=branch,
+        leaf_public_key_sha256=pinned_public_key_sha256,
+        owner_trust_policy_path=owner_trust_policy_path,
+        owner_replay_ledger_path=owner_replay_ledger_path,
+    )
     if signature_required:
         _validate_detached_attestation(
             resolved,

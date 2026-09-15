@@ -10,10 +10,10 @@
   "candidate_file_sha256": "1794ec151dfeced2cc3532647c8b25c6e8ac1ff8b6479646d0d38784d196a8a4",
   "candidate_artifact_sha256": "3c78f33c338e825fc36e693bc18f4ed680ea9dd0d2751e2ff2437ea792e8e440",
   "signal_contract_path": "research_candidates/super1/super1_signal_contract_v5.json",
-  "signal_contract_sha256": "f8680a772498e65b47b84796ceeff56272902924637cbf5d02063921bca8e78f",
+  "signal_contract_sha256": "fc0b184ee9ca44b3e9bec917564f74e9108d2e943eb93e6be91860e0525b9618",
   "config_path": "live_forward/super1_xm_mt5_demo_config_v5.json",
-  "config_sha256": "f838e3a7db28e832b3247425ee0c8b93d7fc20a14e11f31d2b44c550a30ca90b",
-  "engine_source_sha256": "7e653988972692356d8967090fac0539ccec09324f2dcf267fd16e0ccad1359a",
+  "config_sha256": "e3e16b48ec0a9166dd7a4ad6c2c85f632f59bd8ec3c634696bd06130b01d2d70",
+  "engine_source_sha256": "f10fa543d1d168e8740e5381c2269dc458817fbe4c062cd4c6b3ed0737dcd714",
   "source_commit": "8d1ae6e0631e20d567c40cb7788e75ab5c006d93",
   "source_tree_sha256": "fb3067044e199a9324a6397f08e347272e4ff3ae",
   "rth_session_calendar": {

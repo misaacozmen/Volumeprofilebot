@@ -40,20 +40,52 @@ def main(
     report_dir: Path | None = None,
     inventory_path: Path | None = None,
     reacquisition_manifest: Path | None = None,
+    *,
+    owner_trust_policy: Path | None = None,
+    owner_replay_ledger: Path | None = None,
+    trusted_root_public_key: Path | None = None,
+    trusted_root_public_key_sha256: str | None = None,
+    detached_attestation: Path | None = None,
+    detached_signature: Path | None = None,
+    pinned_public_key: Path | None = None,
+    pinned_public_key_sha256: str | None = None,
+    source_head_sha256: str | None = None,
+    repository_identity: str | None = None,
+    branch: str | None = None,
 ) -> bool:
     started = time.perf_counter()
     from audit_dukascopy_reacquisition_v5 import audit_inventory
     inventory = (inventory_path or FROZEN_INVENTORY).resolve()
     manifest_path = (reacquisition_manifest or REACQUISITION_MANIFEST).resolve()
+    preflight_manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
     preflight = audit_inventory(
         inventory,
         REACQUISITION_ROOT,
         ROOT / "outputs/reports/dukascopy_reacquisition_v5",
         legacy_root=ROOT / "data/provenance/dukascopy_v4/reacquired_session",
+        run_id=preflight_manifest.get("run_id"),
+        audit_nonce=preflight_manifest.get("audit_nonce_a"),
+        source_commit=preflight_manifest.get("source_commit"),
+        source_tree_sha256=preflight_manifest.get("source_tree_sha256"),
     )
     if preflight["residual_count"] != 0:
         raise RuntimeError(f"reacquisition residual is {preflight['residual_count']}; reliability audit is blocked")
-    manifest = validate_final_manifest(manifest_path, provenance_root=ROOT / "data/provenance/dukascopy_v4", inventory_path=inventory)
+    manifest = validate_final_manifest(
+        manifest_path,
+        provenance_root=ROOT / "data/provenance/dukascopy_v4",
+        inventory_path=inventory,
+        detached_attestation_path=detached_attestation,
+        detached_signature_path=detached_signature,
+        pinned_public_key_path=pinned_public_key,
+        pinned_public_key_sha256=pinned_public_key_sha256,
+        expected_source_head_sha256=source_head_sha256,
+        trusted_root_public_key_path=trusted_root_public_key,
+        trusted_root_public_key_sha256=trusted_root_public_key_sha256,
+        repository_identity=repository_identity,
+        branch=branch,
+        owner_trust_policy_path=owner_trust_policy,
+        owner_replay_ledger_path=owner_replay_ledger,
+    )
     target_report_dir = (report_dir or REPORT_DIR).resolve()
     target_report_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{target_report_dir.name}.", dir=target_report_dir.parent))
@@ -345,6 +377,32 @@ if __name__ == "__main__":
     )
     parser.add_argument("--frozen-inventory", type=Path, default=FROZEN_INVENTORY)
     parser.add_argument("--reacquisition-manifest", type=Path, default=REACQUISITION_MANIFEST)
+    parser.add_argument("--owner-trust-policy", type=Path, required=True)
+    parser.add_argument("--owner-replay-ledger", type=Path, required=True)
+    parser.add_argument("--trusted-root-public-key", type=Path, required=True)
+    parser.add_argument("--trusted-root-public-key-sha256", required=True)
+    parser.add_argument("--detached-attestation", type=Path, required=True)
+    parser.add_argument("--detached-signature", type=Path, required=True)
+    parser.add_argument("--pinned-public-key", type=Path, required=True)
+    parser.add_argument("--pinned-public-key-sha256", required=True)
+    parser.add_argument("--source-head-sha256", required=True)
+    parser.add_argument("--repository-identity", required=True)
+    parser.add_argument("--branch", required=True)
     arguments = parser.parse_args()
-    if not main(arguments.report_dir, arguments.frozen_inventory, arguments.reacquisition_manifest):
+    if not main(
+        arguments.report_dir,
+        arguments.frozen_inventory,
+        arguments.reacquisition_manifest,
+        owner_trust_policy=arguments.owner_trust_policy,
+        owner_replay_ledger=arguments.owner_replay_ledger,
+        trusted_root_public_key=arguments.trusted_root_public_key,
+        trusted_root_public_key_sha256=arguments.trusted_root_public_key_sha256,
+        detached_attestation=arguments.detached_attestation,
+        detached_signature=arguments.detached_signature,
+        pinned_public_key=arguments.pinned_public_key,
+        pinned_public_key_sha256=arguments.pinned_public_key_sha256,
+        source_head_sha256=arguments.source_head_sha256,
+        repository_identity=arguments.repository_identity,
+        branch=arguments.branch,
+    ):
         raise SystemExit("engine reliability audit is not ready for release")

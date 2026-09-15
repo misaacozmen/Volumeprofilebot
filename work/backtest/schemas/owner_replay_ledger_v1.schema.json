@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tables", "state_machine"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tables": {"const": ["ledger_meta", "owner_replay"]},
+    "state_machine": {"const": ["RESERVED", "CONSUMED"]}
+  }
+}

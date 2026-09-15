@@ -86,7 +86,7 @@ def _coordinator_process_worker(fixture_root: str, cas_root: str, ledger_path: s
         result = coordinator.run(
             run_id="a" * 40,
             source_commit="b" * 40,
-            source_tree_sha256="c" * 64,
+            source_tree_sha256="c" * 40,
             artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 12}],
         )
     except Exception as exc:
@@ -111,11 +111,11 @@ def test_fixture_coordinator_rejects_provider_and_verifies_cas_on_resume(tmp_pat
         )
     coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=tmp_path / "cas", ledger_path=tmp_path / "ledger.sqlite3")
     spec = {"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(body), "bytes": len(body)}
-    first = coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[spec])
+    first = coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[spec])
     assert first[0]["state"] == "COMMITTED"
     Path(first[0]["cas_path"]).write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="CAS evidence"):
-        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[spec])
+        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[spec])
     coordinator.close()
 
 
@@ -125,9 +125,9 @@ def test_fixture_coordinator_rejects_declared_hash_and_byte_count_mismatch(tmp_p
     (fixture_root / "one.bin").write_bytes(b"fixture-body")
     coordinator = AcquisitionCoordinator(fixture_root=fixture_root, cas_root=tmp_path / "cas", ledger_path=tmp_path / "ledger.sqlite3")
     with pytest.raises(ValueError, match="declared CAS identity"):
-        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": "d" * 64, "bytes": 12}])
+        coordinator.run(run_id="a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": "d" * 64, "bytes": 12}])
     with pytest.raises(ValueError, match="declared CAS identity"):
-        coordinator.run(run_id="b" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 11}])
+        coordinator.run(run_id="b" * 40, source_commit="b" * 40, source_tree_sha256="c" * 40, artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 11}])
     coordinator.close()
 
 
@@ -137,7 +137,7 @@ def test_forged_committed_row_never_resumes_as_verified(tmp_path: Path) -> None:
     (fixture_root / "one.bin").write_bytes(b"fixture-body")
     db_path = tmp_path / "ledger.sqlite3"
     ledger = AcquisitionRunLedger(db_path)
-    ledger.start_run("a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 64)
+    ledger.start_run("a" * 40, source_commit="b" * 40, source_tree_sha256="c" * 40)
     assert ledger.reserve_artifact("a" * 40, "one", "one.bin") == "IN_PROGRESS"
     ledger.connection.execute(
         "UPDATE acquisition_artifacts SET state='COMMITTED',body_sha256=?,body_bytes=? WHERE run_id=? AND artifact_id=?",
@@ -150,7 +150,7 @@ def test_forged_committed_row_never_resumes_as_verified(tmp_path: Path) -> None:
         coordinator.run(
             run_id="a" * 40,
             source_commit="b" * 40,
-            source_tree_sha256="c" * 64,
+            source_tree_sha256="c" * 40,
             artifacts=[{"artifact_id": "one", "fixture_path": "one.bin", "sha256": sha256_bytes(b"fixture-body"), "bytes": 12}],
         )
     coordinator.close()
