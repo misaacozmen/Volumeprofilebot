@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import threading
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from backtest.evaluation_window import EvaluationWindow, EvaluationWindowError, 
 from backtest.live.approval import ApprovalError, ApprovalStore
 from backtest.live.broker_facts import BrokerFactsBuilder, BrokerFactsError
 from backtest.live.contracts import BrokerSnapshot, InstrumentContract, LiveRiskPolicy
+from backtest.live.deal_ingestion import TerminalFactSnapshot
 from backtest.live.instruments import InstrumentContractError, InstrumentRegistry, validate_current_tick, validate_economic_semantics
 from backtest.live.retry import AllowedTransportError, NonRetryableReadError, RetryPolicy, write_once
 from backtest.live.risk_guard import RiskGuard
@@ -69,20 +71,22 @@ def test_account_daily_counts_include_foreign_campaign_and_unknown_facts_fail_cl
         order_calc_profit=lambda *_args: -1.0,
         order_calc_margin=lambda *_args: 1.0,
         halt_reader=lambda: False, strategy_health_reader=lambda: "ACTIVE",
-        starting_risk_reader=lambda _position_id: None,
+        terminal_fact_reader=lambda _now: TerminalFactSnapshot(
+            NOW, "d" * 64, NOW, 1, 1, Decimal(0), 1, {"spx": 1},
+            ("foreign-entry",), (rows["history_deals_get"][0],),
+        ),
         strategy_matcher=lambda row: row.get("magic") == 7,
         contract_resolver=lambda symbol: {"US500Cash": spx}[symbol],
     )
     snapshot = builder.build(
         now=NOW, contract=contract(), candidate_hash="c" * 64,
-        deals_start=NOW, deals_end=NOW,
     )
     assert snapshot.total_entry_count == 1
     assert snapshot.entry_counts_by_instrument == {"spx": 1}
 
     rows["orders_get"] = ({"symbol": "UNKNOWN.SUFFIX", "type": 2, "volume": 1.0, "price_open": 100.0, "sl": 99.0},)
     with pytest.raises(BrokerFactsError, match="no signed contract"):
-        builder.build(now=NOW, contract=contract(), candidate_hash="c" * 64, deals_start=NOW, deals_end=NOW)
+        builder.build(now=NOW, contract=contract(), candidate_hash="c" * 64)
 
 
 def test_risk_guard_rejects_account_cap_and_outside_whitelist() -> None:
