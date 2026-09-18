@@ -1,0 +1,13 @@
+{
+  "existing_source_sha256": "e0fbaecf29dfc9208cfdd830c36d4264972a3ecc8bce78eb0f4ddafe6c2be130",
+  "output_sha256": "c04e990059cf55a649f8a855e959d46aaecbd531ba3dff9bcbcc4cb09ba70ff6",
+  "provider": "DUKASCOPY_BID",
+  "reacquired_source_sha256": "d6785a2b6a80ad5d5de45ea6c33a9d38d343443fe0c4aa14667c5be3ef081d9d",
+  "replaced_local_dates": [
+    "2025-03-07",
+    "2025-03-27"
+  ],
+  "row_count": 28303,
+  "schema_version": 1,
+  "synthetic_bars": false
+}

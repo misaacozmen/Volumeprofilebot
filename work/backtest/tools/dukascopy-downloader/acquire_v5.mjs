@@ -106,7 +106,10 @@ async function fetchWithLimits(url, stageRoot, meta, timeoutMs = 30_000) {
     const allowedHeaders = {};
     for (const name of ["retry-after", "date", "content-type", "content-length", "etag"]) if (response.headers.has(name)) allowedHeaders[name] = response.headers.get(name);
     const declared = Number(allowedHeaders["content-length"] || 0);
-    if (!Number.isFinite(declared) || declared < 0 || declared > MAX_BODY_BYTES) throw new Error("provider body exceeds 16 MiB");
+    if (!Number.isFinite(declared) || declared < 0 || declared > MAX_BODY_BYTES) {
+      if (response.body) await response.body.cancel().catch(() => {});
+      throw new Error("provider body exceeds 16 MiB");
+    }
     const chunks = [];
     let size = 0;
     if (!response.body) throw new Error("provider response has no body");

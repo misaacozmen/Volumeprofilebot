@@ -314,6 +314,9 @@ def main() -> None:
     history_matches, counts = _history_scan(root, denied)
     ref_matches = _ref_name_matches(root, denied)
     quarantine_match_count = _quarantine_scan(args.quarantine_object_dir, denied, repository_root=root)
+    working_tree_denylist_match_count = sum(int(row.get("denylist_match_count", 0)) for row in matches)
+    reachable_history_denylist_match_count = int(counts.get("denylist_match_count", 0))
+    ref_denylist_match_count = sum(int(row.get("denylist_match_count", 0)) for row in ref_matches)
     before_head = _git(root, "rev-parse", "HEAD").decode().strip()
     before_origin = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True, check=False).stdout.strip()
     after_head = _git(root, "rev-parse", "HEAD").decode().strip()
@@ -336,7 +339,9 @@ def main() -> None:
         "reachable_history_unique_file_count": counts.get("denylist_unique_file_count") if denylist is not None else None,
         "reachable_history_occurrence_count": counts.get("denylist_occurrence_count") if denylist is not None else None,
         "working_tree_match_count": len(matches) if denylist is not None else None,
+        "working_tree_denylist_match_count": working_tree_denylist_match_count if denylist is not None else None,
         "reachable_history_match_count": len(history_matches) if denylist is not None else None,
+        "reachable_history_denylist_match_count": reachable_history_denylist_match_count if denylist is not None else None,
         "sanitized_mirror_match_count": None,
         "source_unchanged": before_head == after_head,
         "origin_unchanged": before_origin == after_origin,
@@ -345,7 +350,8 @@ def main() -> None:
         "match_count": len(matches) + len(ref_matches) + int(quarantine_match_count),
         "matches": matches,
         "reachable_history_matches": history_matches,
-        "ref_name_match_count": sum(int(row["denylist_match_count"]) for row in ref_matches),
+        "ref_name_match_count": len(ref_matches),
+        "ref_name_denylist_match_count": ref_denylist_match_count,
         "ref_name_matches": ref_matches,
         "quarantine_object_match_count": quarantine_match_count,
         "quarantine_object_dir_provided": args.quarantine_object_dir is not None,
@@ -357,7 +363,7 @@ def main() -> None:
     print(encoded, end="")
     if denylist is None:
         raise SystemExit(2)
-    raise SystemExit(1 if matches or history_matches or ref_matches or quarantine_match_count else 0)
+    raise SystemExit(1 if working_tree_denylist_match_count or reachable_history_denylist_match_count or ref_denylist_match_count or quarantine_match_count else 0)
 
 
 if __name__ == "__main__":

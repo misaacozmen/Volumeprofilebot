@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "demo-repository-acceptance-v1",
+  "title": "Demo repository acceptance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "acceptance_type",
+    "status",
+    "repository_identity",
+    "branch",
+    "source_commit",
+    "source_tree_oid",
+    "working_tree_inventory_sha256",
+    "owner_declaration_sha256",
+    "history_scan_sha256",
+    "sensitive_scan_sha256",
+    "push_approval_sha256",
+    "legacy_signed_acceptance_used",
+    "live_risk_controls_unchanged",
+    "manifest_integrity_controls_unchanged"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "acceptance_type": {"const": "DEMO_REPOSITORY_PUBLICATION_V1"},
+    "status": {"enum": ["DEMO_REPOSITORY_READY", "BLOCKED_EXTERNAL_ACCEPTANCE"]},
+    "repository_identity": {"type": "string", "minLength": 1},
+    "branch": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_tree_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "working_tree_inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "owner_declaration_sha256": {"type": "string", "anyOf": [{"pattern": "^[0-9a-f]{64}$"}, {"const": ""}]},
+    "history_scan_sha256": {"type": "string", "anyOf": [{"pattern": "^[0-9a-f]{64}$"}, {"const": ""}]},
+    "sensitive_scan_sha256": {"type": "string", "anyOf": [{"pattern": "^[0-9a-f]{64}$"}, {"const": ""}]},
+    "push_approval_sha256": {"type": "string", "anyOf": [{"pattern": "^[0-9a-f]{64}$"}, {"const": ""}]},
+    "legacy_signed_acceptance_used": {"const": false},
+    "live_risk_controls_unchanged": {"const": true},
+    "manifest_integrity_controls_unchanged": {"const": true},
+    "checks": {"type": "object"},
+    "missing_or_invalid_inputs": {"type": "array", "items": {"type": "string"}}
+  }
+}
