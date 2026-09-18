@@ -18,6 +18,8 @@ VALIDATOR_PATH = BACKTEST_ROOT / "scripts" / "validate_item22_read_only_acceptan
 PROMOTION_MANIFEST_SHA256 = "135545dbc8749cff942c627e38e518bda33ad496f35bac9981d2c30f40231476"
 COMMIT = "a" * 40
 TREE = "b" * 40
+VALIDATOR_COMMIT = "e" * 40
+VALIDATOR_TREE = "f" * 40
 RUN_ID = "c" * 64
 NONCE = "d" * 64
 
@@ -244,6 +246,8 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
         "nonce": NONCE,
         "source_commit": COMMIT,
         "source_tree_oid": TREE,
+        "validator_commit": VALIDATOR_COMMIT,
+        "validator_tree_oid": VALIDATOR_TREE,
     })
     probe_path = evidence / "mt5-read-only-observed.json"
     _write_json(probe_path, probe)
@@ -264,6 +268,9 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
         "source_tree_oid": TREE,
         "observer_commit": COMMIT,
         "observer_tree_oid": TREE,
+        "validator_commit": VALIDATOR_COMMIT,
+        "validator_tree_oid": VALIDATOR_TREE,
+        "promotion_manifest_path": str(validator.TRUSTED_PROMOTION_MANIFEST_PATH),
         "promotion_manifest_sha256": PROMOTION_MANIFEST_SHA256,
         "promotion_manifest_expected_sha256": PROMOTION_MANIFEST_SHA256,
         "promotion_manifest_sha256_matches": True,
@@ -277,9 +284,9 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
 def _stub_git(monkeypatch):
     def fake_git(_repo, *args):
         if args == ("rev-parse", "HEAD"):
-            return COMMIT
+            return VALIDATOR_COMMIT
         if args == ("rev-parse", "HEAD^{tree}"):
-            return TREE
+            return VALIDATOR_TREE
         if args == ("status", "--porcelain"):
             return ""
         raise AssertionError(args)
@@ -294,6 +301,48 @@ def test_validator_valid_fixture_produces_closed(monkeypatch, tmp_path):
     assert result["item22_scoped_status"] == "CLOSED"
     assert result["status"] == "PASS_ACCEPTANCE"
     assert result["exit_code"] == 0
+
+
+def test_validator_rejects_missing_promotion_manifest(monkeypatch, tmp_path):
+    _stub_git(monkeypatch)
+    evidence, _probe, _record = _make_valid_evidence(monkeypatch, tmp_path)
+    monkeypatch.setattr(validator, "TRUSTED_PROMOTION_MANIFEST_PATH", tmp_path / "missing-manifest.json")
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["PROMOTION_MANIFEST_MISSING"]
+
+
+def test_validator_rejects_modified_promotion_manifest(monkeypatch, tmp_path):
+    _stub_git(monkeypatch)
+    evidence, _probe, _record = _make_valid_evidence(monkeypatch, tmp_path)
+    modified = tmp_path / "modified-manifest.json"
+    manifest = json.loads(validator.TRUSTED_PROMOTION_MANIFEST_PATH.read_text(encoding="utf-8"))
+    manifest["source_tree_oid"] = "f" * 40
+    _write_json(modified, manifest)
+    monkeypatch.setattr(validator, "TRUSTED_PROMOTION_MANIFEST_PATH", modified)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["PROMOTION_MANIFEST_HASH_MISMATCH"]
+
+
+def test_validator_rejects_contradictory_manifest_file_hash(monkeypatch, tmp_path):
+    _stub_git(monkeypatch)
+    evidence, _probe, record = _make_valid_evidence(monkeypatch, tmp_path)
+    record["files"][0]["manifest_sha256"] = "0" * 64
+    _write_json(evidence / "source-artifact-verification.json", record)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["MANIFEST_FILE_RECORD_HASH_CONFLICT"]
+
+
+def test_validator_rejects_changed_promotion_source_file_entry(monkeypatch, tmp_path):
+    _stub_git(monkeypatch)
+    evidence, _probe, record = _make_valid_evidence(monkeypatch, tmp_path)
+    record["files"][0]["actual_sha256"] = "0" * 64
+    _write_json(evidence / "source-artifact-verification.json", record)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["SOURCE_FILE_HASH_CHANGED"]
 
 
 def test_validator_wrong_commit_or_tree_binding_is_rejected(monkeypatch, tmp_path):

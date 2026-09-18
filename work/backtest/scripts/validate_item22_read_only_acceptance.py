@@ -13,6 +13,12 @@ from typing import Any
 
 
 SCOPE = "ITEM22_DEMO_READ_ONLY_OWNER_DECLARATION_V1"
+TRUSTED_PROMOTION_MANIFEST_PATH = Path(
+    r"C:\Users\ISAAC\secure-owner-evidence\item20-21-promotion-full-source-20260918-v1-manifest.json"
+)
+TRUSTED_PROMOTION_MANIFEST_SHA256 = "135545dbc8749cff942c627e38e518bda33ad496f35bac9981d2c30f40231476"
+TRUSTED_PROMOTION_COMMIT = "51b1a952ff0d473bce966b90b734ea0fa910ecd5"
+TRUSTED_PROMOTION_TREE = "47d698ccb9b5c73f342c978926529ee68d685da0"
 EXPECTED_OPERATIONS = [
     "initialize",
     "account_info",
@@ -36,6 +42,7 @@ WRITE_OPERATIONS = {
 }
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+HEX64_ANY_CASE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
 class ValidationError(RuntimeError):
@@ -77,6 +84,12 @@ def _hex(value: Any, length: int, code: str) -> str:
     return value
 
 
+def _hex_any_case(value: Any, code: str) -> str:
+    _require(isinstance(value, str), code)
+    _require(HEX64_ANY_CASE.fullmatch(value) is not None, code)
+    return value.lower()
+
+
 def _utc_time(value: Any, code: str) -> datetime:
     _require(isinstance(value, str), code)
     try:
@@ -105,15 +118,40 @@ def _validate_source_record(
     repo: Path,
     source_commit: str,
     source_tree_oid: str,
+    validator_commit: str,
+    validator_tree_oid: str,
     probe_path: Path,
 ) -> list[dict[str, Any]]:
+    manifest_path = TRUSTED_PROMOTION_MANIFEST_PATH
+    _require(manifest_path.is_file(), "PROMOTION_MANIFEST_MISSING")
+    manifest_hash = _hash(manifest_path)
+    _require(manifest_hash == TRUSTED_PROMOTION_MANIFEST_SHA256, "PROMOTION_MANIFEST_HASH_MISMATCH")
+    manifest = _json(manifest_path, "PROMOTION_MANIFEST")
+    _require(record.get("promotion_manifest_path") == str(manifest_path), "PROMOTION_MANIFEST_PATH_UNTRUSTED")
+    _require(record.get("promotion_manifest_sha256") == manifest_hash, "PROMOTION_MANIFEST_RECORD_HASH_MISMATCH")
+    _require(record.get("promotion_manifest_sha256_matches") is True, "PROMOTION_MANIFEST_NOT_VERIFIED")
+    _require(manifest.get("schema_version") == 1, "PROMOTION_MANIFEST_SCHEMA_INVALID")
+    _require(manifest.get("package_type") == "FULL_SOURCE_DELIVERY", "PROMOTION_MANIFEST_TYPE_INVALID")
+    _require(manifest.get("source_commit") == TRUSTED_PROMOTION_COMMIT, "PROMOTION_MANIFEST_COMMIT_INVALID")
+    _require(manifest.get("source_tree_oid") == TRUSTED_PROMOTION_TREE, "PROMOTION_MANIFEST_TREE_INVALID")
+    comparison = manifest.get("source_commit_comparison")
+    _require(isinstance(comparison, dict) and comparison.get("status") == "PASS", "PROMOTION_MANIFEST_SOURCE_COMPARISON_INVALID")
+    manifest_files = manifest.get("files")
+    _require(isinstance(manifest_files, list) and manifest_files, "PROMOTION_MANIFEST_FILES_MISSING")
+    manifest_by_path: dict[str, str] = {}
+    for manifest_entry in manifest_files:
+        _require(isinstance(manifest_entry, dict), "PROMOTION_MANIFEST_FILE_ENTRY_INVALID")
+        manifest_file_path = manifest_entry.get("path")
+        _require(isinstance(manifest_file_path, str) and manifest_file_path, "PROMOTION_MANIFEST_FILE_PATH_INVALID")
+        _require(manifest_file_path not in manifest_by_path, "PROMOTION_MANIFEST_DUPLICATE_PATH")
+        manifest_by_path[manifest_file_path] = _hex_any_case(manifest_entry.get("sha256"), "PROMOTION_MANIFEST_FILE_HASH_INVALID")
     _require(record.get("source_commit") == source_commit, "SOURCE_RECORD_COMMIT_MISMATCH")
     _require(record.get("source_tree_oid") == source_tree_oid, "SOURCE_RECORD_TREE_MISMATCH")
     _require(record.get("observer_commit") == source_commit, "OBSERVER_COMMIT_MISMATCH")
     _require(record.get("observer_tree_oid") == source_tree_oid, "OBSERVER_TREE_MISMATCH")
-    _require(record.get("promotion_manifest_sha256_matches") is True, "PROMOTION_MANIFEST_NOT_VERIFIED")
-    _hex(record.get("promotion_manifest_sha256"), 64, "PROMOTION_MANIFEST_HASH_INVALID")
-    _hex(record.get("promotion_manifest_expected_sha256"), 64, "PROMOTION_MANIFEST_EXPECTED_HASH_INVALID")
+    _require(record.get("validator_commit") == validator_commit, "VALIDATOR_COMMIT_MISMATCH")
+    _require(record.get("validator_tree_oid") == validator_tree_oid, "VALIDATOR_TREE_MISMATCH")
+    _require(record.get("promotion_manifest_expected_sha256") == TRUSTED_PROMOTION_MANIFEST_SHA256, "PROMOTION_MANIFEST_EXPECTED_HASH_UNTRUSTED")
 
     files = record.get("files")
     _require(isinstance(files, list) and files, "SOURCE_FILE_RECORD_MISSING")
@@ -139,7 +177,9 @@ def _validate_source_record(
             _require(isinstance(manifest_path, str) and manifest_path, "MANIFEST_FILE_PATH_INVALID")
             _require(manifest_path not in manifest_paths, "DUPLICATE_MANIFEST_FILE_PATH")
             manifest_paths.add(manifest_path)
-            expected = _hex(entry.get("manifest_sha256"), 64, "MANIFEST_FILE_HASH_INVALID")
+            _require(manifest_path in manifest_by_path, "MANIFEST_FILE_NOT_IN_PROMOTION_MANIFEST")
+            expected = manifest_by_path[manifest_path]
+            _require(_hex(entry.get("manifest_sha256"), 64, "MANIFEST_FILE_HASH_INVALID") == expected, "MANIFEST_FILE_RECORD_HASH_CONFLICT")
             _require(actual == expected and entry.get("matches") is True, "MANIFEST_FILE_HASH_MISMATCH")
         checks.append({"name": f"source:{path_value}", "passed": True})
 
@@ -248,8 +288,10 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
         nonce = _hex(context.get("nonce"), 64, "NONCE_INVALID")
         source_commit = _hex(context.get("source_commit"), 40, "SOURCE_COMMIT_INVALID")
         source_tree_oid = _hex(context.get("source_tree_oid"), 40, "SOURCE_TREE_INVALID")
-        _require(_git(repo, "rev-parse", "HEAD") == source_commit, "GIT_COMMIT_MISMATCH")
-        _require(_git(repo, "rev-parse", "HEAD^{tree}") == source_tree_oid, "GIT_TREE_MISMATCH")
+        validator_commit = _hex(context.get("validator_commit"), 40, "VALIDATOR_COMMIT_INVALID")
+        validator_tree_oid = _hex(context.get("validator_tree_oid"), 40, "VALIDATOR_TREE_INVALID")
+        _require(_git(repo, "rev-parse", "HEAD") == validator_commit, "GIT_COMMIT_MISMATCH")
+        _require(_git(repo, "rev-parse", "HEAD^{tree}") == validator_tree_oid, "GIT_TREE_MISMATCH")
         _require(_git(repo, "status", "--porcelain") == "", "OBSERVER_WORKTREE_DIRTY")
         checks.append({"name": "run_context_and_git_binding", "passed": True})
 
@@ -261,6 +303,8 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
                 repo=repo,
                 source_commit=source_commit,
                 source_tree_oid=source_tree_oid,
+                validator_commit=validator_commit,
+                validator_tree_oid=validator_tree_oid,
                 probe_path=repo / "work/backtest/scripts/item22_read_only_observer.py",
             )
         )
@@ -283,6 +327,8 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
             "checks": checks,
             "source_commit": source_commit,
             "source_tree_oid": source_tree_oid,
+            "validator_commit": validator_commit,
+            "validator_tree_oid": validator_tree_oid,
             "run_id": run_id,
             "nonce": nonce,
             "broker_credential_revocation": "NOT_INDEPENDENTLY_VERIFIED",
