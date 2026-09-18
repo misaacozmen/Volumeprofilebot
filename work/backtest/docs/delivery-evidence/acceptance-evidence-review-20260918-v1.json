@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "review_date": "2026-09-18",
+  "delivery_line": "promotion",
+  "branch": "codex/acceptance-evidence-promotion-20260918-v1",
+  "verified_base": {
+    "source_branch": "codex/super1-promotion-blockers-v4",
+    "commit": "197c9381261c978cf24fed97471ad7129f677ccc",
+    "tree": "9e9ec31c48f6aa73a3d498a3cd31de040478c603"
+  },
+  "main_workspace_separation": {
+    "path": "C:\\Users\\ISAAC\\Documents\\otobacktestprojesi",
+    "head": "1e911d96caa0c73e3cf477981ee699c13e719f47",
+    "note": "Main workspace is dirty and is not either verified delivery base; its changes were preserved."
+  },
+  "item_status": [
+    {"item": 12, "code_evidence": "Local coordinator/dedup and error-path tests", "external_scope": "Real provider acquisition and dedup", "source_binding": "Fixture/local history only", "missing_input": "Provider run artifact, source/manifest binding, provider run ID", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 13, "code_evidence": "Local request ledger and spacing tests", "external_scope": "Real provider request start times and rate-limit evidence", "source_binding": "No external provider binding", "missing_input": "Provider timestamps, rate-limit response/acceptance record", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 14, "code_evidence": "Local TLS/socket and Node fetch real-stream tests", "external_scope": "Real provider acceptance", "source_binding": "Local server only", "missing_input": "Provider-side acceptance and owner evidence", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 15, "code_evidence": "113-target fixture bridge and residual-zero code test", "external_scope": "Real target manifest and verified apply result", "source_binding": "Fixture only", "missing_input": "Real target manifest and applied-output evidence", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 16, "code_evidence": "Local attestation/rotation schema and tamper tests", "external_scope": "Real manifest/attestation contract", "source_binding": "No owner-signed external source/tree/run binding", "missing_input": "Owner declaration, manifest, attestation and source/tree/run binding", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 17, "code_evidence": "V4 evidence fixture/schema tests", "external_scope": "Real V4 evidence and content/source/manifest links", "source_binding": "Synthetic fixture is excluded", "missing_input": "Real V4 evidence artifact and links", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 18, "code_evidence": "Local provider fixture and account-snapshot tests", "external_scope": "Provider acquisition and DEMO account snapshot separately", "source_binding": "Fixture/local account simulation only", "missing_input": "Separate provider artifact and DEMO account snapshot", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 19, "code_evidence": "113/113 fixture bridge", "external_scope": "113/113 real provider targets, residual 0, valid COMMITTED V5 manifest", "source_binding": "Fixture only", "missing_input": "Real provider target inventory, residual report and committed V5 manifest", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"},
+    {"item": 20, "code_evidence": "Local scanner/test evidence", "external_scope": "Corrected actual-origin scope", "source_binding": "Correction and origin scan artifacts", "missing_input": "None for the recorded scope; non-advertised server objects remain out of scope", "code_status": "PASS_CODE", "external_status": "PASS_ACCEPTANCE", "closure": "CLOSED"},
+    {"item": 21, "code_evidence": "Repository acceptance contract", "external_scope": "Exact acceptance record; publication gate separate", "source_binding": "Correction report and owner declaration scope", "missing_input": "Push permission remains not granted; no push was requested or performed", "code_status": "PASS_CODE", "external_status": "PASS_ACCEPTANCE", "closure": "CLOSED"},
+    {"item": 22, "code_evidence": "Contract and fixture tests only; broker was not run", "external_scope": "Real DEMO/read-only broker acceptance", "source_binding": "No valid external run binding", "missing_input": "Real artifact, producer/source hash, commit/tree, run ID, nonce, opaque account binding, DEMO proof, operation/shutdown log, order_send/write/forbidden-call results and delivery linkage", "code_status": "PASS_CODE", "external_status": "BLOCKED_EXTERNAL_ACCEPTANCE", "closure": "OPEN"}
+  ],
+  "item20_21_correction": {
+    "correction_report": {"path": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-remote-scope-correction-20260918-v1.json", "sha256": "ECC4A671079A5D84A13445687C2B3FDB9B0A1F5F6DDDD4E99F398F6A145C4430"},
+    "origin_scan": {"path": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-origin-scan-20260918-v1.json", "sha256": "286D3F551AB313CDA76042663234DBB0AA86399C065CE6FD9F9075F710AC81A9", "raw_status": "ASSESSED", "acceptance_status": "PASS_ACCEPTANCE"},
+    "origin_scope": {"refs": 1, "objects": 834, "blobs": 679, "denylist_matches": 0, "scope_note": "Advertised/fetched actual-origin scope only; not a guarantee about inaccessible or unadvertised server objects."},
+    "historical_local_mixed_scope": {"source_report": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-remote-scan-20260918-v1.json", "sha256": "D7F574268E9454737F327DD31582501D8DAEC87E21A3610DE6AF67ECDAA81939", "blob_matches": 33, "occurrences": 85, "use": "Historical local mixed ref/mirror finding only"},
+    "item20": "CLOSED",
+    "item21": "CLOSED",
+    "owner_password_rotation": "ACCEPTED; password rotation scope only",
+    "push_authorization": "NOT_GRANTED",
+    "production_readiness": "NOT_INFERRED"
+  },
+  "item22_evidence_inventory": {
+    "valid_real_external_artifact_found": false,
+    "contracts": [
+      {"path": "work/backtest/scripts/mt5_read_only_acceptance.py", "sha256": "B9A4767EEFA6914F1361CC9C9EF4A421AD5DA3CAD40C47458433B982E1B0CC8E", "classification": "contract source; not run output"},
+      {"path": "work/backtest/scripts/mt5_read_only_probe.py", "sha256": "3C97B264A537A0EFCD323F6889D7355CE54C07570BF9E783DA922CE936AE717D", "classification": "contract source; not run output"},
+      {"path": "work/backtest/scripts/run_super1_owner_acceptance.py", "sha256": "C3EB32DF283E5D50340FB8F12EA220B9C74A75928EBDFAB05054C75F9821F4C9", "classification": "acceptance runner source; not run output"}
+    ],
+    "candidates": [
+      {"path": "work/backtest/tests/test_super1_final_remediation_cli.py", "sha256": "EF01D63FB80610C2574C3F00DA08E74F76B9D7BC39B76391FD7E1536DD8115FB", "classification": "fixture/test source; excluded from external acceptance", "producer_script": "same test source; no external producer", "producer_script_sha256": "EF01D63FB80610C2574C3F00DA08E74F76B9D7BC39B76391FD7E1536DD8115FB", "source_commit": "197c9381261c978cf24fed97471ad7129f677ccc", "source_tree": "9e9ec31c48f6aa73a3d498a3cd31de040478c603", "run_id": null, "nonce": null, "opaque_account_binding": null, "demo_verification": "not applicable; fixture", "operations": null, "shutdown": null, "order_send": null, "write_operations": null, "forbidden_calls": null, "delivery_link": "invalid as external evidence"},
+      {"path": "work/backtest/tests/test_xm_mt5_forward.py", "sha256": "C59CCC95E9DB500D7873CBC30E6B3BEB59CE000D5D1CE2C5BE68CF9F81CCF142", "classification": "fixture/test source; excluded from external acceptance", "producer_script": "same test source; no external producer", "producer_script_sha256": "C59CCC95E9DB500D7873CBC30E6B3BEB59CE000D5D1CE2C5BE68CF9F81CCF142", "source_commit": "197c9381261c978cf24fed97471ad7129f677ccc", "source_tree": "9e9ec31c48f6aa73a3d498a3cd31de040478c603", "run_id": null, "nonce": null, "opaque_account_binding": null, "demo_verification": "not applicable; fixture", "operations": null, "shutdown": null, "order_send": null, "write_operations": null, "forbidden_calls": null, "delivery_link": "invalid as external evidence"},
+      {"path": "work/backtest/live_forward/super1_xm_mt5_demo_config_v4.json", "sha256": "637D7340C0EB3782953A42DB62C8ADF652E1C5858EC3BCBE63B048DD73473606", "classification": "configuration example; no run artifact", "producer_script": null, "producer_script_sha256": null, "source_commit": "197c9381261c978cf24fed97471ad7129f677ccc", "source_tree": "9e9ec31c48f6aa73a3d498a3cd31de040478c603", "run_id": null, "nonce": null, "opaque_account_binding": null, "demo_verification": "not demonstrated", "operations": null, "shutdown": null, "order_send": null, "write_operations": null, "forbidden_calls": null, "delivery_link": "invalid as external evidence"}
+    ],
+    "missing_real_artifact_fields": ["run ID", "nonce", "opaque account binding", "DEMO account proof", "allowed operation sequence", "shutdown result", "order_send=0", "write=0", "forbidden-call result", "owner binding/manifest", "delivery linkage"],
+    "prohibited_actions_not_performed": ["MT5 initialize/login", "probe execution", "order", "account change", "credential operation"]
+  },
+  "separate_open_bug": {"path": "work/backtest/scripts/run_super1_owner_acceptance.py", "line": 162, "field": "remote_post_push_status", "problem": "Derived from local sanitized mirror; not actual-origin or post-push evidence", "code_changed_in_this_task": false},
+  "production_ready": false,
+  "push_performed": false,
+  "remote_ref_changes_performed": false,
+  "staging_policy": "Only this report and this shareable evidence summary are in scope; source code is not modified."
+}
