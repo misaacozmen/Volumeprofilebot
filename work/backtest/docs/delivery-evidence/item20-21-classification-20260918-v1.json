@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "report_type": "DEMO_ITEM_20_21_MATCH_CLASSIFICATION_V1",
+  "denylist_values_recorded": false,
+  "source_scanner_report": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-public-identity-scan-20260918-v2.json",
+  "working_tree_record_count": 8,
+  "reachable_history_record_count": 39,
+  "classification": [
+    {
+      "class": "REAL_BROKER_IDENTITY_REFERENCE",
+      "reason": "Live-forward demo configuration records contain account_login/expected_company/expected_server identity fields with denylist hits.",
+      "record_count": 12,
+      "denylist_occurrence_sum": 12,
+      "paths": [
+        "work/backtest/live_forward/super1_xm_mt5_demo_config.json",
+        "work/backtest/live_forward/super1_xm_mt5_demo_config_v2.json",
+        "work/backtest/live_forward/super1_xm_mt5_demo_config_v3.json",
+        "work/backtest/live_forward/super1_xm_mt5_demo_config_v4.json"
+      ]
+    },
+    {
+      "class": "TEST_SOURCE_IDENTITY_REFERENCE",
+      "reason": "Test source/history snapshots contain denylist hits and are not false positives merely because they are test code.",
+      "record_count": 19,
+      "denylist_occurrence_sum": 71,
+      "paths": [
+        "work/backtest/tests/test_production_order_flow.py",
+        "work/backtest/tests/test_super1_continuation.py",
+        "work/backtest/tests/test_super1_risk_e2e.py",
+        "work/backtest/tests/test_super1_smoke_e2e.py",
+        "work/backtest/tests/test_super1_xm_forward.py"
+      ]
+    },
+    {
+      "class": "OPERATIONAL_SCRIPT_IDENTITY_REFERENCE",
+      "reason": "Deployment/discovery scripts contain denylist hits and require history remediation.",
+      "record_count": 3,
+      "denylist_occurrence_sum": 3,
+      "paths": [
+        "work/backtest/deploy/recover_super1_isolated_user.ps1",
+        "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+        "work/backtest/scripts/discover_super1_xm_account.py"
+      ]
+    },
+    {
+      "class": "DERIVED_ARTIFACT_IDENTITY_SPILL",
+      "reason": "Reports and bytecode caches contain copied identity material; they are derived artifacts, not false positives.",
+      "record_count": 7,
+      "denylist_occurrence_sum": 11,
+      "paths": [
+        "work/backtest/outputs/reports/full_pytest_20260908.xml",
+        "work/backtest/outputs/reports/full_pytest_pre_fix.xml",
+        "work/backtest/tests/__pycache__/test_production_order_flow.cpython-311-pytest-9.1.1.pyc",
+        "work/backtest/tests/__pycache__/test_super1_continuation.cpython-311-pytest-8.4.1.pyc",
+        "work/backtest/tests/__pycache__/test_super1_continuation.cpython-311-pytest-9.1.1.pyc",
+        "work/backtest/tests/__pycache__/test_super1_risk_e2e.cpython-314-pytest-9.1.1.pyc",
+        "work/backtest/tests/__pycache__/test_super1_risk_e2e.cpython-314.pyc"
+      ]
+    },
+    {
+      "class": "IDENTITY_FIELD_NO_DENYLIST_HIT",
+      "reason": "Identity-shaped JSON fields were reported by the structural scanner but had zero denylist hits; these are the only false-positive/no-hit records.",
+      "record_count": 6,
+      "denylist_occurrence_sum": 0,
+      "paths": [
+        "work/backtest/live_forward/instrument_registry_v2.json",
+        "work/backtest/live_forward/instrument_registry_v3.json",
+        "work/backtest/live_forward/xm_mt5_config.example.json",
+        "work/backtest/tests/fixtures/super1_smoke_instrument_registry.json"
+      ]
+    }
+  ],
+  "item20": "BLOCKED_EXTERNAL_ACCEPTANCE / OPEN",
+  "item21": "BLOCKED_EXTERNAL_ACCEPTANCE / OPEN"
+}

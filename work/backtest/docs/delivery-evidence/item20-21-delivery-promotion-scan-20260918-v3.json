@@ -1,0 +1,114 @@
+{
+  "all_ref_tips": [
+    {
+      "ref": "refs/heads/codex/super1-promotion-blockers-v4",
+      "sha": "67abaa69b33f6bbedaf05f85c98b68d971bff26e"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/super1-promotion-blockers-v4",
+      "sha": "36c9913e5e15a471d022cd2796896e7096913e01"
+    }
+  ],
+  "blob_count": 1552,
+  "commit_count": 78,
+  "commit_message_match_count": 0,
+  "denylist_match_count": 0,
+  "denylist_occurrence_count": 0,
+  "denylist_unique_file_count": 0,
+  "denylist_unique_object_count": 0,
+  "finished_at_utc": "2026-09-18T10:53:52.502618Z",
+  "git_prefix": "",
+  "match_count": 0,
+  "matches": [],
+  "object_count": 2348,
+  "origin_unchanged": true,
+  "private_denylist_sha256": "c248b16e21cc57910d0c47d49271156d421858617ee8316722ae2e24ef9716a5",
+  "quarantine_object_dir_provided": false,
+  "quarantine_object_match_count": 0,
+  "reachable_history_denylist_match_count": 0,
+  "reachable_history_match_count": 6,
+  "reachable_history_matches": [
+    {
+      "blob_sha256": "dc9d3959bb103351af3762289a4f6c6efd8cd66d54736ae1172715eb7b83aa78",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.instruments[0].expected_server",
+        "$.instruments[0].expected_company"
+      ],
+      "object": "9135111eecaf7b26964fe396187c38e7cb12ca92",
+      "path": "work/backtest/tests/fixtures/super1_smoke_instrument_registry.json"
+    },
+    {
+      "blob_sha256": "c8b36af83698de381233705983ab0b6807065c6faf6bfe38b1c9cc56a218262d",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.instruments[0].expected_server",
+        "$.instruments[1].expected_server"
+      ],
+      "object": "2a2976a304cc620300a660ef9351558c4eb81185",
+      "path": "work/backtest/live_forward/instrument_registry_v2.json"
+    },
+    {
+      "blob_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.instruments[0].expected_server",
+        "$.instruments[0].expected_company",
+        "$.instruments[1].expected_server",
+        "$.instruments[1].expected_company"
+      ],
+      "object": "e179903eb73317e30a48bbd212d1af9eec2a26a2",
+      "path": "work/backtest/live_forward/instrument_registry_v3.json"
+    },
+    {
+      "blob_sha256": "81bc27dfda7f86aacbbd529824d1dd638a7c8ebd446c11818fa8f13eda118158",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.account_login",
+        "$.expected_company",
+        "$.expected_server"
+      ],
+      "object": "181ddb47e6d1238783c18446d273600df77ce12f",
+      "path": "work/backtest/live_forward/xm_mt5_config.example.json"
+    },
+    {
+      "blob_sha256": "4676c3b1d61e72731d697e6a45463bb12f2a194a1d9bb4e52a8d0f987a4fe853",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.instruments[0].expected_server",
+        "$.instruments[0].expected_company"
+      ],
+      "object": "5d096b0c3bcbbb0862f7f6883c73a2b517d23d40",
+      "path": "work/backtest/tests/fixtures/super1_smoke_instrument_registry.json"
+    },
+    {
+      "blob_sha256": "5c4a6e7734a9f983e0720e2167f22b0adf054679ce3a45e6a2fefbac371dba69",
+      "denylist_match_count": 0,
+      "field_paths": [
+        "$.instruments[0].expected_server"
+      ],
+      "object": "6ba35d2f07e277ab64deffc8c0f78b9f3e0ff9cf",
+      "path": "work/backtest/tests/fixtures/super1_smoke_instrument_registry.json"
+    }
+  ],
+  "reachable_history_occurrence_count": 0,
+  "reachable_history_unique_file_count": 0,
+  "reachable_history_unique_object_count": 0,
+  "ref_name_denylist_match_count": 0,
+  "ref_name_match_count": 0,
+  "ref_name_matches": [],
+  "sanitized_mirror_match_count": null,
+  "scanned_bytes": 156268970,
+  "scanner_source_sha256": "948cf9b56ae204e1c9cabeb3f5d639d4eac1eb45b5b2bac7357a15bb8c186149",
+  "schema_version": 2,
+  "source_head": "67abaa69b33f6bbedaf05f85c98b68d971bff26e",
+  "source_unchanged": true,
+  "started_at_utc": "2026-09-18T10:53:50.337236Z",
+  "status": "ASSESSED",
+  "tag_note_match_count": 0,
+  "working_tree_denylist_match_count": 0,
+  "working_tree_match_count": 0,
+  "working_tree_occurrence_count": 0,
+  "working_tree_unique_file_count": 0,
+  "working_tree_unique_object_count": 0
+}

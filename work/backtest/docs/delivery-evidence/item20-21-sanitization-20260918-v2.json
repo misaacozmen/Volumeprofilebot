@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "report_type": "DEMO_ITEM_20_21_SANITIZATION_V2",
+  "status": "PRE_PUSH_CLEAN_BUT_QUARANTINE_UNCONFIGURED",
+  "classification": "BLOCKED_EXTERNAL_ACCEPTANCE / OPEN",
+  "denylist_path": "C:\\Users\\ISAAC\\secure-owner-evidence\\private-denylist.json",
+  "denylist_sha256": "C248B16E21CC57910D0C47D49271156D421858617EE8316722AE2E24EF9716A5",
+  "denylist_values_recorded": false,
+  "source_scan": {
+    "path": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-public-identity-scan-20260918-v2.json",
+    "working_tree_record_count": 8,
+    "working_tree_denylist_occurrence_sum": 12,
+    "reachable_history_record_count": 39,
+    "reachable_history_records_with_denylist_hit": 33,
+    "reachable_history_denylist_occurrence_sum": 85,
+    "ref_name_denylist_occurrence_sum": 0
+  },
+  "remote_scope": {
+    "source_mirror": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-remote-mirror-20260918-v1.git",
+    "scan_source": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-scan-source-20260918-v1",
+    "remote_scan_report": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-remote-scan-20260918-v1.json",
+    "remote_scan_report_sha256": "D7F574268E9454737F327DD31582501D8DAEC87E21A3610DE6AF67ECDAA81939",
+    "remote_ref_count": 1,
+    "remote_object_missing_after_fetch": 0,
+    "remote_history_records_with_denylist_hit": 33,
+    "remote_ref_denylist_occurrence_sum": 0
+  },
+  "source_inventory": {
+    "ref_count": 15,
+    "reachable_object_count": 2491,
+    "ref_inventory_sha256": "BE31E6837CA498F43FAABEF22F31DB0619048A3245E97268FF19C1F963D644B1",
+    "object_inventory_sha256": "3A4FF02D54B2A142E76B8DD8C40A929D19961E621ACFD304E0572E7E64AD8D0C"
+  },
+  "sanitized_mirror": {
+    "path": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-sanitized-mirror-20260918-v6.git",
+    "ref_count": 15,
+    "reachable_object_count": 2491,
+    "reachable_blob_count": 1609,
+    "denylist_occurrence_count": 0,
+    "ref_name_denylist_occurrence_count": 0,
+    "unreadable_object_count": 0,
+    "unreadable_ref_count": 0,
+    "fsck_exit_code": 0,
+    "ref_inventory_sha256": "1CAEBEDE96E877F796D5F86F0162EDC280AA9BD1475C7372B60F75C0AA2CD37F",
+    "object_inventory_sha256": "06631B5B3EC29196D99B6C797B0E13555CA218647FD632C98E1645A0326569B0",
+    "sanitized_worktree": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-sanitized-worktree-20260918-v1",
+    "sanitized_worktree_scan_report": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-sanitized-worktree-scan-20260918-v2.json",
+    "sanitized_worktree_scan_report_sha256": "A4BDA3B0C55F97DB0CFB014F5C0E60C486F38AD9BBC773DEDD843B1268484930",
+    "sanitized_worktree_scanner_exit_code": 0,
+    "sanitized_worktree_denylist_occurrence_count": 0,
+    "sanitized_worktree_history_denylist_occurrence_count": 0,
+    "sanitized_worktree_ref_denylist_occurrence_count": 0,
+    "quarantine_scope": "NOT_CONFIGURED",
+    "quarantine_match_count": 0
+  },
+  "classification_report": "C:\\Users\\ISAAC\\secure-owner-evidence\\item20-21-classification-20260918-v1.json",
+  "classification_report_sha256": "198EE85C64D9A0107C1597BE2F0B61B730D8CAA746A69AA2B8ED482C3116DEB8",
+  "item20": "BLOCKED_EXTERNAL_ACCEPTANCE / OPEN",
+  "item21": "BLOCKED_EXTERNAL_ACCEPTANCE / OPEN",
+  "zip_created": false,
+  "commit_created": false,
+  "push_performed": false
+}

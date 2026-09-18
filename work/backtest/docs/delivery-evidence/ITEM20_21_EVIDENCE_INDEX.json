@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_branch": "codex/super1-promotion-blockers-v4",
+  "source_identity_manifest": "DEMO_PACKAGE_MANIFEST.json",
+  "denylist_path_reference": "C:\\Users\\ISAAC\\secure-owner-evidence\\private-denylist.json",
+  "denylist_sha256": "C248B16E21CC57910D0C47D49271156D421858617EE8316722AE2E24EF9716A5",
+  "local_sanitized_history": {
+    "ref_count": 15,
+    "denylist_match_count": 0,
+    "unreadable_object_or_ref_count": 0,
+    "fsck_exit_code": 0
+  },
+  "included_evidence": [
+    "docs/delivery-evidence/item20-21-sanitization-20260918-v2.json",
+    "docs/delivery-evidence/item20-21-preflight-20260918-v3.json",
+    "docs/delivery-evidence/item20-21-classification-20260918-v1.json",
+    "docs/delivery-evidence/item20-21-delivery-promotion-scan-20260918-v3.json"
+  ],
+  "current_remote_history": "OPEN; not represented as clean acceptance",
+  "production_ready": false,
+  "denylist_values_in_package": false
+}
