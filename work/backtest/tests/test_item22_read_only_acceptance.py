@@ -274,6 +274,16 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
         "promotion_manifest_sha256": PROMOTION_MANIFEST_SHA256,
         "promotion_manifest_expected_sha256": PROMOTION_MANIFEST_SHA256,
         "promotion_manifest_sha256_matches": True,
+        "validator_files": [
+            {
+                "path": "work/backtest/scripts/validate_item22_read_only_acceptance.py",
+                "sha256": hashlib.sha256((REPO_ROOT / "work/backtest/scripts/validate_item22_read_only_acceptance.py").read_bytes()).hexdigest(),
+            },
+            {
+                "path": "work/backtest/tests/test_item22_read_only_acceptance.py",
+                "sha256": hashlib.sha256((REPO_ROOT / "work/backtest/tests/test_item22_read_only_acceptance.py").read_bytes()).hexdigest(),
+            },
+        ],
         "files": files,
         "observed_acceptance_artifact_sha256": hashlib.sha256(probe_path.read_bytes()).hexdigest(),
     }

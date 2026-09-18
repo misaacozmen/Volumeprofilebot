@@ -151,6 +151,24 @@ def _validate_source_record(
     _require(record.get("observer_tree_oid") == source_tree_oid, "OBSERVER_TREE_MISMATCH")
     _require(record.get("validator_commit") == validator_commit, "VALIDATOR_COMMIT_MISMATCH")
     _require(record.get("validator_tree_oid") == validator_tree_oid, "VALIDATOR_TREE_MISMATCH")
+    validator_files = record.get("validator_files")
+    _require(isinstance(validator_files, list) and validator_files, "VALIDATOR_FILE_RECORD_MISSING")
+    expected_validator_paths = {
+        "work/backtest/scripts/validate_item22_read_only_acceptance.py",
+        "work/backtest/tests/test_item22_read_only_acceptance.py",
+    }
+    recorded_validator_paths: set[str] = set()
+    for validator_file in validator_files:
+        _require(isinstance(validator_file, dict), "VALIDATOR_FILE_RECORD_INVALID")
+        validator_path = validator_file.get("path")
+        _require(validator_path in expected_validator_paths, "VALIDATOR_FILE_PATH_INVALID")
+        _require(validator_path not in recorded_validator_paths, "DUPLICATE_VALIDATOR_FILE_PATH")
+        recorded_validator_paths.add(validator_path)
+        actual_validator_path = (repo / validator_path).resolve()
+        _require(actual_validator_path.is_file(), "VALIDATOR_FILE_MISSING")
+        expected_hash = _hex(validator_file.get("sha256"), 64, "VALIDATOR_FILE_HASH_INVALID")
+        _require(_hash(actual_validator_path) == expected_hash, "VALIDATOR_FILE_HASH_MISMATCH")
+    _require(recorded_validator_paths == expected_validator_paths, "REQUIRED_VALIDATOR_FILE_HASH_MISSING")
     _require(record.get("promotion_manifest_expected_sha256") == TRUSTED_PROMOTION_MANIFEST_SHA256, "PROMOTION_MANIFEST_EXPECTED_HASH_UNTRUSTED")
 
     files = record.get("files")
