@@ -36,6 +36,22 @@ değildir ve uncommitted delta içerdiği için bu belge onu `MERGED_MAIN` veya
 - Sonraki işlem: 1–11 maddelerini current main’e taşımadan, her birini aynı
   ref üzerinde yeniden çalıştırmak ve sonuçları ayrı kaydetmek.
 
+Madde bazlı eksik durum tablosu:
+
+| Madde | Kod ref’i | Mevcut kanıt | Main entegrasyonu | Dış kabul | Sonraki işlem |
+|---:|---|---|---|---|---|
+| 1 | `backtest/live/risk_guard.py`, `production_flow.py`, `execution.py`, `scripts/run_xm_mt5_forward.py` | Risk worktree’sindeki stale/non-finite/partial-close/daily-loss ve SQLite serialization testleri: `PASS_CODE` | `UNVERIFIED` — current main’e taşınmadı | `UNVERIFIED` — broker/owner kabulü yok | Current main’de aynı fixture ve lifecycle testlerini yeniden çalıştır |
+| 2 | `backtest/live/retry.py` | Retry/backoff/terminal failure testleri: `PASS_CODE` | `UNVERIFIED` | `NOT_APPLICABLE` — yerel transport sözleşmesi; dış provider kabulü değil | Current main’de retry negatiflerini doğrula |
+| 3 | Instrument registry/metadata doğrulama kodu | Exact-case symbol ve semantic/economic probe fail-closed testleri: `PASS_CODE` | `UNVERIFIED` | `BLOCKED_EXTERNAL_INPUT` — XM snapshot/provider girdisi yok | Main’e bağlanmış metadata ve provider snapshot kanıtını üret |
+| 4 | `evaluation_window`, CLI ve walk-forward akışı | Evaluation boundary/walk-forward testleri: `PASS_CODE` | `UNVERIFIED` | `NOT_APPLICABLE` — deterministik yerel kabul | Current main’de boundary regresyonunu çalıştır |
+| 5 | Approval/production-flow ve read-only MT5 acceptance kodu | Approval, fake-MT5 ve no-send testleri: `PASS_CODE` | `UNVERIFIED` | `BLOCKED_EXTERNAL_INPUT` — broker/owner kabulü yok | Credentialsiz owner-signed read-only kanıtı al |
+| 6 | CLI/walk-forward optimization akışı | Optimization contract testleri: `PASS_CODE` | `UNVERIFIED` | `NOT_APPLICABLE` — araştırma/yerel deterministik kapı | Main’de aynı optimization fixture’ını doğrula |
+| 7 | `risk_xray` ve CLI | Risk-Xray pozitif/negatif testleri: `PASS_CODE` | `UNVERIFIED` | `NOT_APPLICABLE` — yerel deterministik rapor | Main’de kod ref’i ve çıktıyı bağla |
+| 8 | `strategy_health`, `scripts/run_xm_mt5_forward.py` | Health/drift/no-send testleri: `PASS_CODE` | `UNVERIFIED` | `BLOCKED_EXTERNAL_INPUT` — owner/broker gözlemi yok | Main’de health çıktısını ve dış gözlemi ayrı doğrula |
+| 9 | `schemas/super1_environment_v1.schema.json`, environment/identity scanner’ları | Schema allowlist ve scanner testleri: `PASS_CODE`; release denylist bu maddeden ayrıdır | `UNVERIFIED` | `NOT_APPLICABLE` — yerel schema/scanner kapısı | Current main’de schema ve workflow ref’lerini yeniden çalıştır |
+| 10 | Numeric contracts ve risk guard | Financial numeric/rounding/finite-value testleri: `PASS_CODE` | `UNVERIFIED` | `NOT_APPLICABLE` — yerel deterministik kapı | Main’de aynı numeric fixture’larını doğrula |
+| 11 | `scripts/windows_appcontainer_launcher.py`, `backtest/sandbox.py` | Risk worktree full JUnit: 739 passed; item-11 symlink JUnit: 1 passed; OS kanıtı risk ref’ine ait | `UNVERIFIED` — risk worktree `4810a732...` / tree `9fc0259b...`, main’e entegre değil | `UNVERIFIED` — platform/owner bağlamı current main için yok | Current main’de AppContainer/ACL/process lifecycle ve owner fixture’ını yeniden çalıştır |
+
 ## Dukascopy/promotion 12–19
 
 Genel durum `ACTIVE_PREPARATION`. Yerel implementation/test kanıtı promotion
@@ -87,6 +103,13 @@ Teşhis: [RELEASE_INTEGRITY_DIAGNOSIS.md](RELEASE_INTEGRITY_DIAGNOSIS.md).
 Kaynağı kanıtlanmamış hash için düzeltme yapılmayacak; release artifact kaynağı
 bulunana kadar `DEPLOYMENT_READY` ilan edilmeyecek.
 
+`DEPLOY-001` etkisi: hash mismatch normal akışta app/venv mutasyonu başlamadan
+önce oluşur; fakat upgrader catch’i failure’ı aldıktan sonra koşulsuz
+`Stop-Super1RuntimeForRollback` çağırır. Bu çağrı görev durdurmayı ve gerekirse
+Python/terminal/runner süreçleri için `Stop-Process` denemesini içerebilir.
+Gerçek sistemde durdurmanın gerçekleştiği iddia edilmez; etki yalnız hata
+yönetiminin deneme yoludur ve ayrı iş akışı değildir.
+
 ## Kapanış ve raporlama kuralları
 
 - `PASS_CODE`: yalnız yerel kod/test kapısı.
@@ -98,4 +121,4 @@ Bu statüler birbirinin yerine kullanılmaz. Eski teslim raporları yeniden
 yazılmamış; tarihsel kayıt olarak bağlanmıştır. Her yeni teslim bu üç satırlık
 tabloyu koruyacak ve yalnız değişen durumları/yeni kanıtları açıklayacaktır.
 
-Son doğrulama zamanı: `2026-09-19T18:04:38Z`.
+Son doğrulama zamanı: `2026-09-19T18:55:48Z`.
