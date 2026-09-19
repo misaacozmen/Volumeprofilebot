@@ -2,11 +2,15 @@
   "all_ref_tips": [
     {
       "ref": "refs/heads/codex/main-broker-identity-forward-fix",
-      "sha": "023e39b288863ac93df9e7cfa1b7f218029f6458"
+      "sha": "bc9b041494b617f28aeb45738e2182c494c00cf8"
     },
     {
       "ref": "refs/remotes/origin/HEAD",
       "sha": "023e39b288863ac93df9e7cfa1b7f218029f6458"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/main-broker-identity-forward-fix",
+      "sha": "84e62e586eb8514a042a4df2198a414599195404"
     },
     {
       "ref": "refs/remotes/origin/codex/super1-clean-review-20260919",
@@ -21,18 +25,24 @@
   "blob_count": 1570,
   "blob_denylist_occurrence_count": 118,
   "blob_denylist_unique_object_count": 13,
+  "candidate_commit_sha": "bc9b041494b617f28aeb45738e2182c494c00cf8",
+  "candidate_ref": "HEAD",
+  "candidate_tree_denylist_match_count": 0,
+  "candidate_tree_match_count": 0,
+  "candidate_tree_matches": [],
+  "candidate_tree_oid": "00e94edaa1fc679a5f8093b45763b4f830b8fede",
+  "candidate_tree_structural_violation_count": 0,
   "commit_count": 85,
   "commit_message_match_count": 0,
   "denylist_match_count": 118,
   "denylist_occurrence_count": 118,
   "denylist_unique_file_count": 4,
   "denylist_unique_object_count": 13,
-  "finished_at_utc": "2026-09-19T14:52:36.384356Z",
+  "finished_at_utc": "2026-09-19T16:07:01.019441Z",
   "history_complete": true,
   "history_scope": [
     "refs/remotes/origin/codex/super1-clean-review-20260919"
   ],
-  "matches": [],
   "missing_baseline_findings": [
     {
       "match_count": 1,
@@ -173,11 +183,13 @@
           "rule_id": "denylist-5c5e3c057c364750"
         }
       ],
-      "field_paths": [],
+      "field_paths": [
+        "$.powershell_account_comparison"
+      ],
       "object": "e97681f9fb80678a0cd84ed94b414faa8ff47013",
       "object_type": "blob",
       "path": "work/backtest/deploy/rollover_forward_shadow_campaign_windows.ps1",
-      "structural_violation": false
+      "structural_violation": true
     },
     {
       "blob_sha256": "81bc27dfda7f86aacbbd529824d1dd638a7c8ebd446c11818fa8f13eda118158",
@@ -347,16 +359,16 @@
     }
   ],
   "ref_name_match_count": 0,
+  "repo_tree_scans": [],
+  "repo_tree_violation": false,
+  "scan_scope": "candidate_acceptance",
   "scanned_bytes": 156544749,
-  "scanner_source_sha256": "7fda43ad942a76120f807033f3fdbb00a0713b77276a1751c385fb15bc084ad3",
-  "schema_version": 3,
-  "source_head": "023e39b288863ac93df9e7cfa1b7f218029f6458",
+  "scanner_source_sha256": "e799b5ddbab27c70ad9f501acf918cbf9fec27a3d17982780182d6eae0093a2d",
+  "schema_version": 4,
+  "source_head": "bc9b041494b617f28aeb45738e2182c494c00cf8",
   "source_unchanged": true,
-  "started_at_utc": "2026-09-19T14:52:17.227612Z",
+  "started_at_utc": "2026-09-19T16:06:43.693743Z",
   "status": "PASS",
   "tag_note_match_count": 0,
-  "tree_path_match_count": 0,
-  "working_tree_denylist_match_count": 0,
-  "working_tree_match_count": 0,
-  "working_tree_structural_violation_count": 0
+  "tree_path_match_count": 0
 }

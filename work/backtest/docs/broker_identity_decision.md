@@ -28,3 +28,7 @@ values: the repository has no `BROKER_IDENTITY_DENYLIST_JSON` secret and no
 configured environment. Therefore the protected full scan remains
 `BLOCKED_MISSING_DENYLIST`; merge and post-merge audit closure are intentionally
 not claimed.
+
+Authoritative final-SHA reports are emitted outside the repository at
+`C:\Users\ISAAC\Documents\broker-identity-evidence-20260919-final` and are
+uploaded by CI as artifacts.
