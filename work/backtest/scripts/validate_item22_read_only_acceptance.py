@@ -43,6 +43,7 @@ WRITE_OPERATIONS = {
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 HEX64_ANY_CASE = re.compile(r"[0-9a-fA-F]{64}\Z")
+OBSERVER_GIT_PATH = "work/backtest/scripts/item22_read_only_observer.py"
 
 
 class ValidationError(RuntimeError):
@@ -111,6 +112,40 @@ def _git(repo: Path, *args: str) -> str:
         raise ValidationError("GIT_LOOKUP_FAILED") from exc
 
 
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args],
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValidationError("GIT_BLOB_READ_FAILED") from exc
+
+
+def _producer_commit_tree(repo: Path, source_commit: str) -> str:
+    try:
+        _git(repo, "cat-file", "-e", f"{source_commit}^{{commit}}")
+    except ValidationError as exc:
+        raise ValidationError("PRODUCER_COMMIT_MISSING") from exc
+    try:
+        return _git(repo, "rev-parse", f"{source_commit}^{{tree}}")
+    except ValidationError as exc:
+        raise ValidationError("PRODUCER_TREE_LOOKUP_FAILED") from exc
+
+
+def _producer_observer_blob_sha256(repo: Path, source_commit: str) -> str:
+    try:
+        _git(repo, "cat-file", "-e", f"{source_commit}:{OBSERVER_GIT_PATH}")
+        blob_oid = _git(repo, "rev-parse", f"{source_commit}:{OBSERVER_GIT_PATH}")
+    except ValidationError as exc:
+        raise ValidationError("PRODUCER_OBSERVER_BLOB_MISSING") from exc
+    try:
+        blob = _git_bytes(repo, "cat-file", "blob", blob_oid)
+    except ValidationError as exc:
+        raise ValidationError("PRODUCER_OBSERVER_BLOB_READ_FAILED") from exc
+    return hashlib.sha256(blob).hexdigest()
+
+
 def _validate_source_record(
     *,
     evidence: Path,
@@ -120,6 +155,8 @@ def _validate_source_record(
     source_tree_oid: str,
     validator_commit: str,
     validator_tree_oid: str,
+    producer_observer_blob_sha256: str,
+    observer_source_sha256: str,
     probe_path: Path,
 ) -> list[dict[str, Any]]:
     manifest_path = TRUSTED_PROMOTION_MANIFEST_PATH
@@ -151,6 +188,16 @@ def _validate_source_record(
     _require(record.get("observer_tree_oid") == source_tree_oid, "OBSERVER_TREE_MISMATCH")
     _require(record.get("validator_commit") == validator_commit, "VALIDATOR_COMMIT_MISMATCH")
     _require(record.get("validator_tree_oid") == validator_tree_oid, "VALIDATOR_TREE_MISMATCH")
+    _require(
+        _hex(record.get("producer_observer_blob_sha256"), 64, "PRODUCER_OBSERVER_BLOB_HASH_INVALID")
+        == producer_observer_blob_sha256,
+        "PRODUCER_OBSERVER_BLOB_HASH_RECORD_MISMATCH",
+    )
+    _require(
+        _hex(record.get("observer_source_sha256"), 64, "OBSERVER_SOURCE_HASH_INVALID")
+        == observer_source_sha256,
+        "OBSERVER_SOURCE_HASH_RECORD_MISMATCH",
+    )
     validator_files = record.get("validator_files")
     _require(isinstance(validator_files, list) and validator_files, "VALIDATOR_FILE_RECORD_MISSING")
     expected_validator_paths = {
@@ -212,6 +259,8 @@ def _validate_source_record(
     observer_path = (repo / "work/backtest/scripts/item22_read_only_observer.py").resolve()
     recorded_observer = Path(str(observer_entries[0]["source_path"])).resolve()
     _require(recorded_observer == observer_path, "OBSERVER_SOURCE_PATH_MISMATCH")
+    _require(observer_entries[0].get("actual_sha256") == producer_observer_blob_sha256, "PRODUCER_OBSERVER_BLOB_HASH_MISMATCH")
+    _require(observer_entries[0].get("actual_sha256") == observer_source_sha256, "OBSERVER_SOURCE_HASH_MISMATCH")
     _require(probe_path.is_file(), "PROBE_ARTIFACT_MISSING")
     return checks
 
@@ -308,10 +357,17 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
         source_tree_oid = _hex(context.get("source_tree_oid"), 40, "SOURCE_TREE_INVALID")
         validator_commit = _hex(context.get("validator_commit"), 40, "VALIDATOR_COMMIT_INVALID")
         validator_tree_oid = _hex(context.get("validator_tree_oid"), 40, "VALIDATOR_TREE_INVALID")
+        observer_source_sha256 = _hex(context.get("observer_source_sha256"), 64, "OBSERVER_SOURCE_HASH_INVALID")
         _require(_git(repo, "rev-parse", "HEAD") == validator_commit, "GIT_COMMIT_MISMATCH")
         _require(_git(repo, "rev-parse", "HEAD^{tree}") == validator_tree_oid, "GIT_TREE_MISMATCH")
         _require(_git(repo, "status", "--porcelain") == "", "OBSERVER_WORKTREE_DIRTY")
+        producer_tree_oid = _producer_commit_tree(repo, source_commit)
+        _require(producer_tree_oid == source_tree_oid, "PRODUCER_TREE_MISMATCH")
+        producer_observer_blob_sha256 = _producer_observer_blob_sha256(repo, source_commit)
+        _require(observer_source_sha256 == producer_observer_blob_sha256, "OBSERVER_SOURCE_HASH_MISMATCH")
         checks.append({"name": "run_context_and_git_binding", "passed": True})
+        checks.append({"name": "producer_commit_and_tree_binding", "passed": True})
+        checks.append({"name": "producer_observer_blob_binding", "passed": True})
 
         probe_path = evidence_dir / "mt5-read-only-observed.json"
         checks.extend(
@@ -323,6 +379,8 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
                 source_tree_oid=source_tree_oid,
                 validator_commit=validator_commit,
                 validator_tree_oid=validator_tree_oid,
+                producer_observer_blob_sha256=producer_observer_blob_sha256,
+                observer_source_sha256=observer_source_sha256,
                 probe_path=repo / "work/backtest/scripts/item22_read_only_observer.py",
             )
         )
@@ -345,6 +403,8 @@ def validate_evidence(*, evidence_dir: Path, repo: Path) -> dict[str, Any]:
             "checks": checks,
             "source_commit": source_commit,
             "source_tree_oid": source_tree_oid,
+            "producer_observer_blob_sha256": producer_observer_blob_sha256,
+            "observer_source_sha256": observer_source_sha256,
             "validator_commit": validator_commit,
             "validator_tree_oid": validator_tree_oid,
             "run_id": run_id,

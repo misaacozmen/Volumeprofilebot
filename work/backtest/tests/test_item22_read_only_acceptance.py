@@ -22,6 +22,7 @@ VALIDATOR_COMMIT = "e" * 40
 VALIDATOR_TREE = "f" * 40
 RUN_ID = "c" * 64
 NONCE = "d" * 64
+OBSERVER_SHA256 = hashlib.sha256(OBSERVER_PATH.read_bytes()).hexdigest()
 
 
 def _load(name: str, path: Path):
@@ -248,6 +249,7 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
         "source_tree_oid": TREE,
         "validator_commit": VALIDATOR_COMMIT,
         "validator_tree_oid": VALIDATOR_TREE,
+        "observer_source_sha256": OBSERVER_SHA256,
     })
     probe_path = evidence / "mt5-read-only-observed.json"
     _write_json(probe_path, probe)
@@ -261,7 +263,7 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
     for manifest_path, source_path in installed.items():
         digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         files.append({"source_path": str(source_path), "manifest_path": manifest_path, "exists": True, "actual_sha256": digest, "manifest_sha256": digest, "matches": True})
-    observer_digest = hashlib.sha256(OBSERVER_PATH.read_bytes()).hexdigest()
+    observer_digest = OBSERVER_SHA256
     files.append({"source_path": str(OBSERVER_PATH), "manifest_path": None, "exists": True, "actual_sha256": observer_digest, "manifest_sha256": None, "matches": None, "comparison": "SEPARATE_OBSERVER_COMMIT_BOUND_SOURCE"})
     source_record = {
         "source_commit": COMMIT,
@@ -270,6 +272,8 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
         "observer_tree_oid": TREE,
         "validator_commit": VALIDATOR_COMMIT,
         "validator_tree_oid": VALIDATOR_TREE,
+        "producer_observer_blob_sha256": OBSERVER_SHA256,
+        "observer_source_sha256": OBSERVER_SHA256,
         "promotion_manifest_path": str(validator.TRUSTED_PROMOTION_MANIFEST_PATH),
         "promotion_manifest_sha256": PROMOTION_MANIFEST_SHA256,
         "promotion_manifest_expected_sha256": PROMOTION_MANIFEST_SHA256,
@@ -291,7 +295,7 @@ def _make_valid_evidence(monkeypatch, tmp_path: Path) -> tuple[Path, dict, dict]
     return evidence, probe, source_record
 
 
-def _stub_git(monkeypatch):
+def _stub_git(monkeypatch, *, producer_exists=True, producer_tree=TREE):
     def fake_git(_repo, *args):
         if args == ("rev-parse", "HEAD"):
             return VALIDATOR_COMMIT
@@ -299,9 +303,20 @@ def _stub_git(monkeypatch):
             return VALIDATOR_TREE
         if args == ("status", "--porcelain"):
             return ""
+        if args == ("cat-file", "-e", f"{COMMIT}^{{commit}}"):
+            if not producer_exists:
+                raise validator.ValidationError("GIT_LOOKUP_FAILED")
+            return ""
+        if args == ("rev-parse", f"{COMMIT}^{{tree}}"):
+            return producer_tree
+        if args == ("cat-file", "-e", f"{COMMIT}:{validator.OBSERVER_GIT_PATH}"):
+            return ""
+        if args == ("rev-parse", f"{COMMIT}:{validator.OBSERVER_GIT_PATH}"):
+            return "blob-oid"
         raise AssertionError(args)
 
     monkeypatch.setattr(validator, "_git", fake_git)
+    monkeypatch.setattr(validator, "_git_bytes", lambda _repo, *args: OBSERVER_PATH.read_bytes())
 
 
 def test_validator_valid_fixture_produces_closed(monkeypatch, tmp_path):
@@ -365,6 +380,31 @@ def test_validator_wrong_commit_or_tree_binding_is_rejected(monkeypatch, tmp_pat
     result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
     assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
     assert result["item22_scoped_status"] == "OPEN"
+
+
+def test_validator_rejects_nonexistent_producer_commit(monkeypatch, tmp_path):
+    _stub_git(monkeypatch, producer_exists=False)
+    evidence, _probe, _record = _make_valid_evidence(monkeypatch, tmp_path)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["PRODUCER_COMMIT_MISSING"]
+
+
+def test_validator_rejects_wrong_producer_tree(monkeypatch, tmp_path):
+    _stub_git(monkeypatch, producer_tree="c" * 40)
+    evidence, _probe, _record = _make_valid_evidence(monkeypatch, tmp_path)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["PRODUCER_TREE_MISMATCH"]
+
+
+def test_validator_rejects_different_observer_blob_in_valid_producer_commit(monkeypatch, tmp_path):
+    _stub_git(monkeypatch)
+    monkeypatch.setattr(validator, "_git_bytes", lambda _repo, *args: b"different observer content")
+    evidence, _probe, _record = _make_valid_evidence(monkeypatch, tmp_path)
+    result = validator.validate_evidence(evidence_dir=evidence, repo=REPO_ROOT)
+    assert result["status"] == "BLOCKED_EXTERNAL_ACCEPTANCE"
+    assert result["errors"] == ["OBSERVER_SOURCE_HASH_MISMATCH"]
 
 
 def test_validator_changed_observer_or_probe_artifact_is_rejected(monkeypatch, tmp_path):
