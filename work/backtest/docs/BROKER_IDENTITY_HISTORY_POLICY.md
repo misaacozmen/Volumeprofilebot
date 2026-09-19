@@ -25,6 +25,8 @@ Merge sonrası `main`:
 
 - commit: `e205e66a57ec5c54585c40d9e5ec36d179f4f7cf`
 - tree: `452d347c513ca98dfeffa32b316b13b7659e765e`
+- Git doğrulaması: `git rev-parse e205e66...^{tree}` →
+  `452d347c513ca98dfeffa32b316b13b7659e765e`.
 - güncel aday tree denylist eşleşmesi: `0`
 - güncel yapısal ihlal: `0`
 - repository-audit repo-tree ihlali: `False`
@@ -68,4 +70,4 @@ current-tree sonucunu tarihsel koruma kararıyla karıştırmaz.
 current-tree scan kanıtını kaydeder; history rewrite veya dış kabul tamamlandı
 iddiası taşımaz.
 
-Son doğrulama zamanı: `2026-09-19T19:05:59Z`.
+Son doğrulama zamanı: `2026-09-19T19:58:24Z`.

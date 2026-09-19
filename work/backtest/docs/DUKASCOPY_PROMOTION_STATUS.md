@@ -9,8 +9,9 @@ bağlantısı, imza üretimi ve gerçek MT5 çalıştırılmamıştır.
 
 ## Kaynak ayrımı
 
-Güncel `origin/main` commit’i `e205e66...` içinde promotion worktree’sindeki
-12–19 implementation dosyaları bulunmuyor. Yerel kod/test kanıtı aşağıdaki
+Güncel `origin/main` commit/tree çifti Git üzerinden `e205e66...` /
+`452d347c513ca98dfeffa32b316b13b7659e765e` olarak doğrulandı; promotion
+worktree’sindeki 12–19 implementation dosyaları bu tree’de bulunmuyor. Yerel kod/test kanıtı aşağıdaki
 ayrı ve kirli promotion worktree’sine aittir; yeni dokümantasyon branch’ine
 taşınmamıştır:
 
@@ -18,6 +19,10 @@ taşınmamıştır:
 - committed HEAD: `1e911d96caa0c73e3cf477981ee699c13e719f47`
 - committed tree: `c80784d2fe38d1d0c18824300fdc7ceb9db19824`
 - çalışma ağacı: commit edilmemiş delta ve untracked protected girdiler içeriyor.
+- `scripts/demo_repository_acceptance.py` bu committed tree’nin parçası
+  değildir; promotion çalışma ağacındaki untracked dosyanın SHA-256’sı
+  `3A15CAE935D499DBF11EE51EF2A4381C718E205916AA5CFAB1377BF314E47C73`.
+  Bu uygulama `main` politikası gibi sunulmaz.
 
 Uncommitted delta SHA’ları:
 
@@ -76,16 +81,27 @@ kod/sözleşme/belgeye dayandığını gösterir:
 | Yazılı rate-limit koşulu, observation window, spacing ve terminal ledger (13) | `backtest/dukascopy_acquisition.py` ledger/lease akışı, `tools/dukascopy-downloader/acquire_v5.mjs` `fetchWithLimits`, provider-coordinator testleri; `SUPER1_FINAL_DELIVERY_20260916.md` madde 13 | Rate-limit belgesi provider sahibinden gelmelidir; yerel 429/5xx kontrollü sunucu negatif kanıtıdır, gerçek provider’da 429/5xx oluşturma kabul şartı değildir. `UNVERIFIED`. |
 | Stream/body limit, cancel/deadline ve no-CAS/no-COMMITTED negatifleri (14) | `acquire_v5.mjs` `fetchWithLimits`, local TLS/socket mock-server testi ve `SUPER1_FINAL_DELIVERY_20260916.md` madde 14 | Kontrollü yerel sunucu `PASS_CODE`; gerçek provider normal erişim kanıtı ve owner/provider kabulü ayrı girdidir. `BLOCKED_EXTERNAL_INPUT`. |
 | 113 hedef, residual-zero ve canonical `COMMITTED` V5 manifest (15, 19) | `backtest/reacquisition_contract.py` `validate_final_manifest`/`apply_verified_reacquisitions`, `scripts/audit_dukascopy_reacquisition_v5.py`, instruction 12–18 testleri | Fixture apply yerel kod kanıtıdır; signed promotion için frozen inventory + gerçek provider çıktısı + owner manifest gerekir. `BLOCKED_EXTERNAL_INPUT`. |
-| Owner key, detached RSA-PSS attestation, source/tree/run nonce bağları (16) | `reacquisition_contract.py`, `scripts/owner_trust.py`, `scripts/owner_replay_ledger.py`, `demo_repository_acceptance.py` ve instruction 12–18/final-remediation testleri | Demo repository acceptance ile signed promotion acceptance ayrıdır: demo yolu kontrollü/test anahtarıyla yerel kabul; promotion yolu owner key ve imzalı final manifest ister. `BLOCKED_EXTERNAL_INPUT`. |
+| Owner key, detached RSA-PSS attestation, source/tree/run nonce bağları (16) | Signed promotion için `reacquisition_contract.py`, `scripts/owner_trust.py`, `scripts/owner_replay_ledger.py` ve instruction 12–18/final-remediation testleri; demo yayını için untracked `scripts/demo_repository_acceptance.py` (SHA yukarıda) | Fixture testi kabul değildir. Demo publication acceptance owner declaration, history scan, sensitive scan ve push approval girdilerini doğrular ve legacy signed alanları reddeder; RSA/replay/lease artifact’i istemez. Signed promotion kendi owner key/imzalı manifest sözleşmesini ister. `BLOCKED_EXTERNAL_INPUT`. |
 | Evidence root, path/content SHA ve identity/history bağları (17) | `backtest/candidate_validation.py`, identity scanner’ları, `SUPER1_FINAL_DELIVERY_20260916.md` madde 17 | Repo dışı owner evidence root’un source/ref/tree’ye immutable bağlanması gerekir; sentetik fixture bunu karşılamaz. `BLOCKED_EXTERNAL_INPUT`. |
 | DEMO/account-switch/read-only gözlemi (18) | `scripts/run_xm_mt5_forward.py` coordinator/snapshot kodu ve forward account-switch testleri; demo kabul politikası | Demo kabulü broker yazmadan read-only gözlem ister; signed promotion kabulü ayrıca owner/provider manifesti ister. İki yolun şartları birbirine taşınmaz. `BLOCKED_EXTERNAL_INPUT`. |
 
-Demo/repository acceptance, kontrollü fixture ve test anahtarıyla kod yolunun
-kabulüdür; signed promotion acceptance ise owner-imzalı manifest, key
-attestation, source/tree/event-root ve provider/owner dış kanıtlarını ister.
-Gerçek provider’da 429/5xx üretilmesi hiçbir zorunlu kabul şartı değildir;
-negatif hata enjeksiyonu yalnız yerel kontrollü sunucuda yapılır. Gerçek
-provider kanıtı, izin verilen normal erişim gözlemi olarak ayrıca bağlanır.
+Üç kavram birbirine karıştırılmaz:
+
+- **Fixture testi:** sentetik fixture ve yerel test anahtarıyla yalnız kod
+  davranışını gösterir; publication veya promotion kabulü değildir.
+- **Demo repository publication acceptance:** promotion worktree’sindeki
+  untracked `scripts/demo_repository_acceptance.py` gerçek owner declaration,
+  history scan, sensitive scan ve push approval girdilerini doğrular; RSA,
+  replay ve lease artifact’leri olmadan çalışır, legacy imzalı kabul alanlarını
+  reddeder. Bu kaynak `codex/super1-promotion-blockers-v4` / `1e911d96...` /
+  `c80784d...` bağlamındadır; `main`’de uygulanmış politika değildir.
+- **Signed promotion acceptance:** ayrı promotion sözleşmesinin owner key,
+  detached attestation, signed manifest, source/tree/event-root ve provider/
+  owner kanıtlarını ister.
+
+Gerçek provider’da 429/5xx üretilmesi zorunlu değildir; negatif hata
+enjeksiyonu yalnız yerel kontrollü sunucuda yapılır. Gerçek provider kanıtı,
+izin verilen normal erişim gözlemi olarak ayrıca bağlanır.
 
 ## Madde bazlı plan
 
@@ -118,4 +134,4 @@ olarak sunulmamıştır.
 | Dukascopy/promotion 12–19 | `ACTIVE_PREPARATION` | Proje mühendisi | Proje mimarı; dış girdilerde proje sahibi |
 | Broker-identity güvenliği | `CLOSED_WITH_RETAINED_HISTORY` | Proje mühendisi; sürekli tarama CI | Proje mimarı |
 
-Son doğrulama zamanı: `2026-09-19T19:05:59Z`.
+Son doğrulama zamanı: `2026-09-19T19:58:24Z`.

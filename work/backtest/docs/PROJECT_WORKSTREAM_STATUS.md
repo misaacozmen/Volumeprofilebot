@@ -9,6 +9,12 @@ Kaynak worktree: `codex/workstream-status-release-audit`.
 - Üretim kodu, release hash’i, test beklentisi, denylist, tarihsel baseline ve
   GitHub secret değiştirilmemiştir.
 
+Git doğrulaması (`git rev-parse <commit>^{tree}`): current main
+`e205e66...` → `452d347c513ca98dfeffa32b316b13b7659e765e`; önceki başlangıç
+`023e39b...` → `72fca2ff95fbf0ad07ad536bab14abd690ae577d`; promotion
+`1e911d96...` → `c80784d2fe38d1d0c18824300fdc7ceb9db19824`; risk
+`4810a732...` → `9fc0259b66c51f617229de765c8df34d6e5c3c3d`.
+
 ## Üç iş akışının tek güncel tablosu
 
 | İş akışı | Genel durum | Uygulama sorumlusu | Karar sahibi |
@@ -121,4 +127,4 @@ Bu statüler birbirinin yerine kullanılmaz. Eski teslim raporları yeniden
 yazılmamış; tarihsel kayıt olarak bağlanmıştır. Her yeni teslim bu üç satırlık
 tabloyu koruyacak ve yalnız değişen durumları/yeni kanıtları açıklayacaktır.
 
-Son doğrulama zamanı: `2026-09-19T19:05:59Z`.
+Son doğrulama zamanı: `2026-09-19T19:58:24Z`.

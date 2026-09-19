@@ -13,7 +13,7 @@ deployment ve gerçek MT5 çalıştırması değiştirilmemiştir.
   `452d347c513ca98dfeffa32b316b13b7659e765e`.
 - Karşılaştırma başlangıcı: önceki başlangıç commit’i
   `023e39b288863ac93df9e7cfa1b7f218029f6458`, tree
-  `452d347c513ca98dfeffa32b316b13b7659e765e`.
+  `72fca2ff95fbf0ad07ad536bab14abd690ae577d`.
 - `5ae500047b2067103539b0c72ad8f8f58024cbf2` ile
   `e205e66a57ec5c54585c40d9e5ec36d179f4f7cf` aynı tree’yi gösterir; bu
   yalnız merge içeriğinin değişmediğini gösterir, identity PR’ından önceki
@@ -26,6 +26,10 @@ deployment ve gerçek MT5 çalıştırması değiştirilmemiştir.
   `bfa1fa7ddcc54bb172e1c33e399ba7d259d36b8baa69e66de41237879db0722c`.
 - Kullanıcı tarafından verilen aynı sürüm LF ölçümü: `bfa1fa7...`.
 - Kullanıcı tarafından verilen önceki Windows checkout ölçümü: `011008a0...`.
+
+Commit/tree çiftleri `git rev-parse <commit>^{tree}` ile yeniden ölçüldü:
+`023e39b...` → `72fca2ff95fbf0ad07ad536bab14abd690ae577d`; `e205e66...` →
+`452d347c513ca98dfeffa32b316b13b7659e765e`.
 
 Son iki helper ölçümü de `4051f4...` pinine eşleşmediği için CRLF/LF farkı tek
 başına kök neden değildir.
@@ -69,7 +73,7 @@ Main ancestry’sinde helper ve pin birlikte ilerlerken ilk ayrışma aşağıda
 | `eebb1ae3a0963aaad9848b32fbf67946f031b46e` | 2026-08-27, v14 contract | `43a05fb9...` | `43a05fb9...` | `800ab9e5...` |
 | `6e64ee1a660985c0771cf736b1c5512a6f85f801` | 2026-08-28, v15 audit contract | `caf6b244...` | `caf6b244...` | `d944842d...` |
 | `96decc74b6dcbb28bfb8b86bb838db254dcb69cd` | 2026-08-30, V16 probe-control ACL | `d9f1aac0...` | `91da97be...` | `d9f1aac0...` |
-| `023e39b288863ac93df9e7cfa1b7f218029f6458` | 2026-09-03, local order/release gates; current main ancestor | `4051f4e6...` | `bfa1fa7d...` | `011008a0...` |
+| `023e39b288863ac93df9e7cfa1b7f218029f6458` | 2026-09-03, local order/release gates; previous start | `4051f4e6...` | `bfa1fa7d...` | `011008a0...` |
 | `e205e66a57ec5c54585c40d9e5ec36d179f4f7cf` | 2026-09-19 merge | `4051f4e6...` | `bfa1fa7d...` | `011008a0...` |
 
 `60c5e4ef2698d3e5c7eafbd079b18f0e79a89a29` aynı 2026-09-03 değişikliğinin
@@ -147,7 +151,7 @@ içermesiydi; gerçek sonuç aynı mismatch ve exit code `1` oldu.
 
 | Sürüm | Commit / tree | Gerçek helper hash | Embedded pin | Sonuç |
 |---|---|---|---|---|
-| Önceki başlangıç | `023e39b...` / `452d347...` | `011008a0...` | `4051f4e6...` | 1 failed, exit `1` |
+| Önceki başlangıç | `023e39b...` / `72fca2ff...` | `011008a0...` | `4051f4e6...` | 1 failed, exit `1` |
 | Güncel main | `e205e66...` / `452d347...` | `011008a0...` | `4051f4e6...` | 1 failed, exit `1` |
 
 Ham kanıtlar repo dışındadır; denylist veya secret içermemektedir:
@@ -156,18 +160,24 @@ Ham kanıtlar repo dışındadır; denylist veya secret içermemektedir:
 - `...\baseline-023e39b.pytest.txt` — node `work/backtest/tests/test_deployment_security.py::test_super1_upgrade_pins_and_read_locks_the_release_trust_helper`, 1.355 byte, SHA-256 `BF8238FE2A71F32ED0DBB6D44D71832D4C3FF71F3CBDFD6F495DB129B1599A9B`.
 - `...\main-e205e66.pytest.txt` — aynı node, 1.355 byte, SHA-256 `6769D5971D3C5503103219C4E6394A4B741F15402FD9B54F13612E5FD6001C6C`.
 - Her iki ham çıktı aynı beklenen/gerçek ayrımını içerir: beklenen pinli sabit yok, gerçek byte hash `011008a0...`; gerçek sonuç `1 failed`, exit `1`.
-- `...\candidate-selection-mock-v2.txt` — exit `0`, 1.068 byte, SHA-256 `2345B3BF4DE72E3418799DEAA674C88848A63A478559F67434ED534BC74362AE`.
-- `C:\Users\ISAAC\Documents\release-integrity-evidence-20260919\candidate-selection-mock.ps1` — düzeltilmiş harness, SHA-256 `DD4B230F916F38951978B6B0C4A6F6C736240FF41D2476B8B65F124D38D75610`.
+- `...\candidate-selection-mock-v3.txt` — exit `0`, 1.141 byte, SHA-256 `640AAA4DCBB8CF0E3793984DCC943514136129E0063F2B75A314DBC2E77A3F78`.
+- `C:\Users\ISAAC\Documents\release-integrity-evidence-20260919\candidate-selection-mock.ps1` — AST tabanlı harness, SHA-256 `7838B43F980BF1BCBA50CA9312662F00F55B66E98A414F5EC9221185C0B4C74D`.
 
 Mock kontrolünde `$PSScriptRoot` adayı seçildi, ilk aday mismatch olduğunda
-fallback yapılmadı, ilk aday yokken `$App\deploy` adayı seçildi. Ayrıca gerçek
-upgrader catch marker’ı (`failure` yakalama sonrası
-`Stop-Super1RuntimeForRollback`) kaynakta doğrulandı; graceful ve forced stop
-çağrı sıraları tamamen mock’landı ve görev/süreç/dosya işlemleri gerçeklenmedi.
-`unexpected pass` yalnız beklenen hash-mismatch hatasıyla PASS sayılır; farklı
-hata veya hatasız dönüş nonzero olur. Bu harness seçim mantığı ile catch
-sözleşmesini doğrular; tam upgrader çalıştırmasının kanıtı değildir. Gerçek
-upgrader, scheduled task ve MT5 kullanılmadı.
+fallback yapılmadı, ilk aday yokken `$App\deploy` adayı seçildi. Catch ve
+`Stop-Super1RuntimeForRollback` gövdeleri sabitlenmiş `e205e66...` / tree
+`452d347...` kaynak dosyasının AST’sinden çıkarılıp çalıştırıldı; gerçek gövdeler
+`Stop-Super1Tasks`, graceful timeout, Python/terminal/runner süreç döngüsü ve
+final wait çağrılarını üretti. Görev, süreç, dosya ve bekleme dış işlemleri
+mock’landı; çağrı sırası çıktı olarak kaydedildi.
+
+Geçici kaynak kopyasında catch içindeki stop çağrısı kaldırıldığında aynı
+contract assertion başarısız oldu: `TEST_FAILURE_OBSERVED=True` ve üretim
+kaynağı değişmedi. `unexpected pass` yalnız beklenen hash-mismatch hatasıyla
+PASS sayılır; farklı hata veya hatasız dönüş nonzero olur. Bu kontrol gerçek
+catch/stop gövdelerinin mock dış işlemlerle yürütülmesidir; tam upgrader
+çalıştırmasının kanıtı değildir. Gerçek upgrader, scheduled task ve MT5
+kullanılmadı.
 
 ## Tek düzeltme önerisi — henüz uygulanmayacak
 
@@ -197,4 +207,4 @@ hash’i körlemesine pine yazılmamıştır.
 | Dukascopy/promotion 12–19 | `ACTIVE_PREPARATION` | Proje mühendisi | Proje mimarı; dış girdilerde proje sahibi |
 | Broker-identity güvenliği | `CLOSED_WITH_RETAINED_HISTORY` | Proje mühendisi; sürekli tarama CI | Proje mimarı |
 
-Son doğrulama zamanı: `2026-09-19T19:05:59Z`.
+Son doğrulama zamanı: `2026-09-19T19:58:24Z`.
