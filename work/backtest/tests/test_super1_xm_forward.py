@@ -20,16 +20,66 @@ from super1_continuation import (
     validate_fixture_snapshot,
     validate_transition_record,
 )
+from validate_super1_rth_calendar import EXTRACTION_PATHS
 SPEC = importlib.util.spec_from_file_location(
     "run_super1_xm_mt5_forward", ROOT / "scripts" / "run_super1_xm_mt5_forward.py"
 )
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-MODULE.RUNTIME_CONFIG = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
-MODULE.SUPER1_MANIFEST = ROOT / "tests" / "fixtures" / "super1_manifest.json"
-MODULE.core.RUNTIME_CONFIG = MODULE.RUNTIME_CONFIG
-MODULE.xm.RUNTIME_CONFIG = MODULE.RUNTIME_CONFIG
+FIXTURE_RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
+FIXTURE_MANIFEST = ROOT / "tests" / "fixtures" / "super1_manifest.json"
+
+
+@pytest.fixture(autouse=True)
+def configure_super1_runtime(monkeypatch, synthetic_calendar):
+    runtime = json.loads(FIXTURE_RUNTIME.read_text(encoding="utf-8"))
+    runtime["rth_session_calendar"]["sha256"] = MODULE.core.file_hash(synthetic_calendar.calendar)
+    runtime_path = synthetic_calendar.calendar.parent / "super1_runtime.json"
+    runtime_path.write_text(json.dumps(runtime) + "\n", encoding="utf-8")
+    manifest = json.loads(FIXTURE_MANIFEST.read_text(encoding="utf-8"))
+    manifest["config_sha256"] = MODULE.core.file_hash(runtime_path)
+    manifest_path = synthetic_calendar.calendar.parent / "super1_manifest.json"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    original_read_json = MODULE.core.read_json
+    contract_path = (ROOT / runtime["signal_contract_path"]).resolve()
+
+    def synthetic_read_json(path):
+        payload = original_read_json(path)
+        if Path(path).resolve() == contract_path:
+            payload = dict(payload)
+            payload["rth_session_calendar"] = dict(runtime["rth_session_calendar"])
+        return payload
+
+    monkeypatch.setattr(MODULE.core, "read_json", synthetic_read_json)
+    original_safe_repo_file = MODULE._safe_repo_file
+
+    def synthetic_safe_repo_file(relative, label):
+        if relative == "live_forward/calendars/us_equity_rth_2026.json":
+            return synthetic_calendar.calendar
+        for source_id, extraction_relative in EXTRACTION_PATHS.items():
+            if relative == extraction_relative:
+                return synthetic_calendar.extractions[source_id]
+        return original_safe_repo_file(relative, label)
+
+    monkeypatch.setattr(MODULE, "_safe_repo_file", synthetic_safe_repo_file)
+    for owner, name, value in (
+        (MODULE, "RUNTIME_CONFIG", runtime_path),
+        (MODULE, "SUPER1_MANIFEST", manifest_path),
+        (MODULE.xm, "RUNTIME_CONFIG", runtime_path),
+        (MODULE.core, "RUNTIME_CONFIG", runtime_path),
+        (MODULE.core, "SCRIPT_PATH", MODULE.core.SCRIPT_PATH),
+        (MODULE.core, "HARNESS_PATHS", MODULE.core.HARNESS_PATHS),
+        (MODULE.core, "REQUIRED_ENV", MODULE.core.REQUIRED_ENV),
+        (MODULE.core, "CapitalDemoClient", MODULE.core.CapitalDemoClient),
+    ):
+        monkeypatch.setattr(owner, name, value)
+    monkeypatch.setattr(
+        MODULE.core.manual_state_module,
+        "assess_manual_state_day",
+        MODULE.core.manual_state_module.assess_manual_state_day,
+    )
+    MODULE.configure_core()
 
 
 def record(level: str, price: float, touches: int | None = None) -> dict:
@@ -439,15 +489,6 @@ def test_super1_contract_rejects_changed_forward_shadow_adapter(monkeypatch) -> 
 
 
 def test_configure_core_locks_forward_shadow_adapter(monkeypatch) -> None:
-    for owner, name in (
-        (MODULE.xm, "RUNTIME_CONFIG"),
-        (MODULE.core, "RUNTIME_CONFIG"),
-        (MODULE.core, "SCRIPT_PATH"),
-        (MODULE.core, "HARNESS_PATHS"),
-        (MODULE.core, "REQUIRED_ENV"),
-        (MODULE.core, "CapitalDemoClient"),
-    ):
-        monkeypatch.setattr(owner, name, getattr(owner, name))
     monkeypatch.setattr(MODULE.core, "install_xm_scheduled_gap_integrity", lambda: None)
 
     MODULE.configure_core()
@@ -1320,7 +1361,7 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
         assert client.mt5.sent == 1
         assert len(client.mt5.pending) == 1
         pending = client.mt5.pending[0]
-        assert pending.comment.startswith("SUPER1:")
+        assert pending.comment.startswith(f"{config['order_comment_prefix']}:")
         assert client._intent_state(tmp_path, candidate["order_id"])["status"] == "SUBMITTED"
         assert any(
             item.get("event") == "SUBMITTED" and item.get("order_id") == candidate["order_id"]

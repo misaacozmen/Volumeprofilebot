@@ -23,8 +23,26 @@ SPEC = importlib.util.spec_from_file_location("run_xm_mt5_forward", ROOT / "scri
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-MODULE.RUNTIME_CONFIG = ROOT / "tests" / "fixtures" / "xm_mt5_demo_config.json"
-MODULE.configure_core()
+FIXTURE_RUNTIME = ROOT / "tests" / "fixtures" / "xm_mt5_demo_config.json"
+
+
+@pytest.fixture(autouse=True)
+def configure_xm_runtime(monkeypatch):
+    for owner, name, value in (
+        (MODULE, "RUNTIME_CONFIG", FIXTURE_RUNTIME),
+        (MODULE.core, "RUNTIME_CONFIG", FIXTURE_RUNTIME),
+        (MODULE.core, "SCRIPT_PATH", MODULE.core.SCRIPT_PATH),
+        (MODULE.core, "HARNESS_PATHS", MODULE.core.HARNESS_PATHS),
+        (MODULE.core, "REQUIRED_ENV", MODULE.core.REQUIRED_ENV),
+        (MODULE.core, "CapitalDemoClient", MODULE.core.CapitalDemoClient),
+    ):
+        monkeypatch.setattr(owner, name, value)
+    monkeypatch.setattr(
+        MODULE.core.manual_state_module,
+        "assess_manual_state_day",
+        MODULE.core.manual_state_module.assess_manual_state_day,
+    )
+    MODULE.configure_core()
 
 
 def test_configure_core_locks_forward_shadow_adapter() -> None:

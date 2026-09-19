@@ -25,9 +25,16 @@ remain visible there and must not block candidate acceptance.
 
 On 2026-09-19, repository Actions metadata was checked without reading secret
 values: the repository has no `BROKER_IDENTITY_DENYLIST_JSON` secret and no
-configured environment. Therefore the protected full scan remains
-`BLOCKED_MISSING_DENYLIST`; merge and post-merge audit closure are intentionally
-not claimed.
+configured environment. The local GitHub session was not authenticated and the
+`gh` CLI is unavailable, so owner secret configuration could not be performed.
+The protected full scan remains
+`BLOCKED_OWNER_SECRET_CONFIGURATION`; merge and post-merge audit closure are
+intentionally not claimed.
+
+The acceptance audit records the current `origin/main` tree separately: it has
+43 denylist matches and 10 structural violations. Those findings remain visible
+in repository audit output. `origin/HEAD` is the symbolic alias for that same
+main commit and is excluded from independent ref-tip counting.
 
 Authoritative final-SHA reports are emitted outside the repository at
 `C:\Users\ISAAC\Documents\broker-identity-evidence-20260919-final` and are

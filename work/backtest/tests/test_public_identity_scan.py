@@ -150,6 +150,7 @@ def test_candidate_acceptance_ignores_dirty_main_but_repo_audit_finds_remote_tre
     side_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     _git(repo, "update-ref", "refs/remotes/origin/main", main_sha)
     _git(repo, "update-ref", "refs/remotes/origin/side", side_sha)
+    _git(repo, "update-ref", "refs/remotes/origin/HEAD", main_sha)
     _git(
         repo,
         "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
@@ -191,7 +192,11 @@ def test_candidate_acceptance_ignores_dirty_main_but_repo_audit_finds_remote_tre
         text=True,
     )
     assert audit.returncode == 1, audit.stdout
-    assert '"repo_tree_violation": true' in audit.stdout
+    audit_report = json.loads(audit.stdout)
+    assert audit_report["repo_tree_violation"] is True
+    assert "refs/remotes/origin/HEAD" not in {
+        row["ref"] for row in audit_report["repo_tree_scans"]
+    }
 
 
 def test_new_history_finding_is_outside_fixed_baseline(tmp_path: Path) -> None:

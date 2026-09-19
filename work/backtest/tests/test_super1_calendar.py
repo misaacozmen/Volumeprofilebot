@@ -4,7 +4,6 @@ import copy
 import json
 from pathlib import Path
 import sys
-import tempfile
 
 import pytest
 
@@ -24,53 +23,23 @@ from validate_super1_rth_calendar import (
 
 
 _ORIGINAL_CALENDAR = ROOT / "live_forward/calendars/us_equity_rth_2026.json"
-_SYNTHETIC_ROOT = Path(tempfile.mkdtemp(prefix="super1-calendar-fixture-"))
-_SYNTHETIC_CALENDAR = _SYNTHETIC_ROOT / "us_equity_rth_2026.json"
-_SYNTHETIC_EXTRACTIONS: dict[str, Path] = {}
-_calendar_payload = json.loads(_ORIGINAL_CALENDAR.read_text(encoding="utf-8"))
-for _source in _calendar_payload["source_records"]:
-    _raw_path = ROOT / _source["provenance_path"]
-    _source["sha256"] = super1.core.file_hash(_raw_path)
-    _source["bytes"] = _raw_path.stat().st_size
-_SYNTHETIC_CALENDAR.write_text(json.dumps(_calendar_payload, indent=2) + "\n", encoding="utf-8")
-for _source_id, _relative in EXTRACTION_PATHS.items():
-    _extraction = json.loads((ROOT / _relative).read_text(encoding="utf-8"))
-    _source = next(item for item in _calendar_payload["source_records"] if item["id"] == _source_id)
-    _extraction["raw_source_sha256"] = _source["sha256"]
-    _target = _SYNTHETIC_ROOT / Path(_relative).name
-    _target.write_text(json.dumps(_extraction, indent=2) + "\n", encoding="utf-8")
-    _SYNTHETIC_EXTRACTIONS[_source_id] = _target
-
-_original_safe_repo_file = super1._safe_repo_file
 
 
-def _synthetic_safe_repo_file(relative, label):
-    if relative == "live_forward/calendars/us_equity_rth_2026.json":
-        return _SYNTHETIC_CALENDAR
-    for source_id, extraction_relative in EXTRACTION_PATHS.items():
-        if relative == extraction_relative:
-            return _SYNTHETIC_EXTRACTIONS[source_id]
-    return _original_safe_repo_file(relative, label)
-
-
-super1._safe_repo_file = _synthetic_safe_repo_file
-
-
-def _load_runtime() -> dict:
+def _load_runtime(synthetic) -> dict:
     runtime = json.loads(FIXTURE_RUNTIME.read_text(encoding="utf-8"))
-    runtime["rth_session_calendar"]["sha256"] = super1.core.file_hash(_SYNTHETIC_CALENDAR)
+    runtime["rth_session_calendar"]["sha256"] = super1.core.file_hash(synthetic.calendar)
     return runtime
 
 
-def _load_pair() -> tuple[dict, dict, dict]:
-    runtime = _load_runtime()
+def _load_pair(synthetic) -> tuple[dict, dict, dict]:
+    runtime = _load_runtime(synthetic)
     loaded = super1.load_verified_rth_calendar(runtime)
     source_by_id = {item["id"]: item for item in loaded["source_records"]}
     extracted = {}
     for source_id, relative in EXTRACTION_PATHS.items():
         source = source_by_id[source_id]
         extracted[source_id] = load_extraction_record(
-            _SYNTHETIC_EXTRACTIONS[source_id],
+            synthetic.extractions[source_id],
             expected_source_id=source_id,
             expected_url=EXPECTED_SOURCE_URLS[source_id],
             raw_source_path=ROOT / source["provenance_path"],
@@ -79,9 +48,9 @@ def _load_pair() -> tuple[dict, dict, dict]:
     return extracted["NASDAQ_TRADING_CALENDAR_2026"], extracted["NYSE_TRADING_CALENDAR_2026"], loaded["sessions"]
 
 
-def test_independent_calendar_extractions_match_each_other_and_runtime(request) -> None:
+def test_independent_calendar_extractions_match_each_other_and_runtime(synthetic_calendar, request) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    nasdaq, nyse, sessions = _load_pair()
+    nasdaq, nyse, sessions = _load_pair(synthetic_calendar)
     comparison = compare_extraction_records(nasdaq, nyse, sessions)
     assert comparison["source_records_agree"] is True
     assert comparison["nasdaq_matches_runtime"] is True
@@ -89,17 +58,17 @@ def test_independent_calendar_extractions_match_each_other_and_runtime(request) 
     record_if_enabled(request, evidence_token)
 
 
-def test_runtime_calendar_tamper_is_blocked_before_super1_feature_use() -> None:
-    runtime = _load_runtime()
+def test_runtime_calendar_tamper_is_blocked_before_super1_feature_use(synthetic_calendar) -> None:
+    runtime = _load_runtime(synthetic_calendar)
     tampered = copy.deepcopy(runtime)
     tampered["rth_session_calendar"]["sha256"] = "0" * 64
     with pytest.raises(super1.Super1FeatureError, match="raw hash mismatch"):
         super1.load_verified_rth_calendar(tampered)
 
 
-def test_calendar_extraction_mutation_fails_cross_source_and_runtime_checks(request) -> None:
+def test_calendar_extraction_mutation_fails_cross_source_and_runtime_checks(synthetic_calendar, request) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    nasdaq, nyse, sessions = _load_pair()
+    nasdaq, nyse, sessions = _load_pair(synthetic_calendar)
     tampered = copy.deepcopy(nasdaq)
     tampered["normalized_records"][0]["status"] = "EARLY_CLOSE"
     tampered["normalized_records"][0]["session_end"] = "13:00"
@@ -111,14 +80,14 @@ def test_calendar_extraction_mutation_fails_cross_source_and_runtime_checks(requ
 
 
 @pytest.mark.parametrize("source_id", ["NASDAQ_TRADING_CALENDAR_2026", "NYSE_TRADING_CALENDAR_2026"])
-def test_calendar_extraction_requires_explicit_source_location(source_id: str, tmp_path: Path) -> None:
-    nasdaq, nyse, _ = _load_pair()
+def test_calendar_extraction_requires_explicit_source_location(source_id: str, synthetic_calendar, tmp_path: Path) -> None:
+    nasdaq, nyse, _ = _load_pair(synthetic_calendar)
     extraction = copy.deepcopy(nasdaq if source_id.startswith("NASDAQ") else nyse)
     extraction["records"][0].pop("source_location")
     path = tmp_path / "tampered-extraction.json"
     source = next(
         item
-        for item in json.loads(_SYNTHETIC_CALENDAR.read_text(encoding="utf-8"))["source_records"]
+        for item in json.loads(synthetic_calendar.calendar.read_text(encoding="utf-8"))["source_records"]
         if item["id"] == source_id
     )
     path.write_text(json.dumps(extraction), encoding="utf-8")
@@ -155,16 +124,16 @@ def test_calendar_extraction_requires_explicit_source_location(source_id: str, t
     ],
 )
 def test_calendar_semantic_mutations_fail_through_full_validator(
-    mutation: str, expected_check: str, expected_error: str, monkeypatch, tmp_path: Path, request
+    mutation: str, expected_check: str, expected_error: str, synthetic_calendar, monkeypatch, tmp_path: Path, request
 ) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    runtime = _load_runtime()
+    runtime = _load_runtime(synthetic_calendar)
     source = next(
         item
-        for item in json.loads(_SYNTHETIC_CALENDAR.read_text(encoding="utf-8"))["source_records"]
+        for item in json.loads(synthetic_calendar.calendar.read_text(encoding="utf-8"))["source_records"]
         if item["id"] == "NASDAQ_TRADING_CALENDAR_2026"
     )
-    extraction_original = _SYNTHETIC_EXTRACTIONS["NASDAQ_TRADING_CALENDAR_2026"]
+    extraction_original = synthetic_calendar.extractions["NASDAQ_TRADING_CALENDAR_2026"]
     calendar_original = ROOT / "live_forward/calendars/us_equity_rth_2026.json"
     target = tmp_path / (
         "calendar-mutated.json" if expected_check == "runtime_loader" else "nasdaq-mutated.json"

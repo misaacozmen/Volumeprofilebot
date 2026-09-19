@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from plan_super1_campaign_continuation import (  # noqa: E402
     PARENT_BASELINE,
-    RUNTIME,
     super1_harness_hash,
     super1_harness_paths,
 )
@@ -49,8 +48,12 @@ from super1_continuation import (  # noqa: E402
     write_exclusive_json,
 )
 
-RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
-continuation_plan.RUNTIME = RUNTIME
+FIXTURE_RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
+
+
+@pytest.fixture(autouse=True)
+def configure_continuation_runtime(monkeypatch):
+    monkeypatch.setattr(continuation_plan, "RUNTIME", FIXTURE_RUNTIME)
 
 
 def _private_key() -> rsa.RSAPrivateKey:
@@ -743,9 +746,9 @@ def test_uncheckpointed_wal_last_commit_is_in_backup_and_wal_loss_is_specific(tm
         writer.close()
 
 
-def test_super1_harness_scope_is_ordered_and_not_capital_scope(request) -> None:
+def test_super1_harness_scope_is_ordered_and_not_capital_scope(request, monkeypatch, tmp_path) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    runtime = json.loads(RUNTIME.read_text(encoding="utf-8"))
+    runtime = json.loads(FIXTURE_RUNTIME.read_text(encoding="utf-8"))
     expected = [
         "run_super1_xm_mt5_forward.py",
         "run_xm_mt5_forward.py",
@@ -757,7 +760,11 @@ def test_super1_harness_scope_is_ordered_and_not_capital_scope(request) -> None:
     ]
     assert [path.name for path in super1_harness_paths(runtime)] == expected
     assert super1_harness_hash(runtime) != ""
-    assert super1_harness_hash(runtime) != __import__("run_capital_forward").harness_hash()
+    capital = __import__("run_capital_forward")
+    capital_runtime = tmp_path / "capital_demo_config.json"
+    capital_runtime.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(capital, "RUNTIME_CONFIG", capital_runtime)
+    assert super1_harness_hash(runtime) != capital.harness_hash()
     record_if_enabled(request, evidence_token)
 
 

@@ -285,6 +285,10 @@ def _default_history_refs(root: Path) -> list[str]:
         "refs/remotes",
         "refs/tags",
     ).decode("utf-8", "replace").splitlines()
+    remote_and_tags = [
+        ref for ref in remote_and_tags
+        if not (ref.startswith("refs/remotes/") and ref.endswith("/HEAD"))
+    ]
     return list(dict.fromkeys([current or "HEAD", *remote_and_tags]))
 
 
