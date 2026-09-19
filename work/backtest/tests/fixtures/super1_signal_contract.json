@@ -1,0 +1,45 @@
+{
+  "schema_version": 2,
+  "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V1",
+  "status": "DEMO_FRESH_FORWARD_UNPROVEN",
+  "execution_scope": "XM_MT5_DEMO_ONLY",
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "signal_source": {
+    "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",
+    "config_path": "forward_shadow/frozen_config.json",
+    "config_sha256": "618343c285d7c0b2161260ba85b07498b620a9cb2a7c94d86eef1501290fe284",
+    "generator_path": "scripts/run_capital_forward.py",
+    "generator_sha256": "6547b89b96b6481abc841226106c9bfc3d9d4308e58f7f5062e52b763576c881",
+    "payload_adapter_path": "scripts/run_forward_shadow.py",
+    "payload_adapter_sha256": "c3924a38bf4d8d48c14fdc1ef11c907bc833b3d7e0be71c1341440a93c135740",
+    "engine_source_sha256": "c23a6636d3386b17a15e612dfb5442d517cfe0d93eb6831419808643b19774a0"
+  },
+  "overlay_candidate": {
+    "path": "tests/fixtures/super1_candidate.json",
+    "file_sha256": "ee2f75cebf7b1d8d6b93d66f24d8558c22256713e3339621a35ba55123327ad4",
+    "artifact_sha256": "6c93d21ff0abbd001bfe078b228a3eea9f9f8e24950e1c9c248353e240bb44d7",
+    "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY",
+    "defines_base_signals": false,
+    "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
+    "runtime_sha256": "dde3dcce71e46bf54927408b177526a1e1a1835d3c18327e79ed052c5fe3fc86"
+  },
+  "demo_order_transport": {
+    "path": "scripts/run_xm_mt5_forward.py",
+    "sha256": "94b6a2cc282b48d0f4c471217d49bbc0ee2f68fc0f6452f540bfa118db0106df",
+    "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
+  },
+  "rth_session_calendar": {
+    "path": "live_forward/calendars/us_equity_rth_2026.json",
+    "sha256": "7252e37a11d95c62c97051639b3ca784dac3002d036fd637e6c66d82323ccf76",
+    "calendar_id": "US_EQUITY_RTH_2026"
+  },
+  "safety": {
+    "independent_super1_signal_producer_present": false,
+    "demo_order_execution_enabled": true,
+    "real_money_live_enabled": false,
+    "fresh_forward_required": true,
+    "real_money_execution_allowed": false,
+    "deployed_pipeline_historical_parity_proven": false,
+    "candidate_research_results_apply_to_deployed_pipeline": false
+  }
+}

@@ -10,8 +10,8 @@ from typing import Any
 
 import MetaTrader5 as mt5
 
+from broker_identity_env import read_account_login
 
-EXPECTED_LOGIN = 318413815
 EXPECTED_SERVER = "XMGlobal-MT5 7"
 EXPECTED_COMPANY = "XM Global Limited"
 SYMBOL = "US100Cash"
@@ -115,6 +115,7 @@ def write_evidence(path: Path, payload: dict[str, object]) -> None:
 
 
 def main() -> None:
+    account_login = read_account_login()
     parser = argparse.ArgumentParser(description="Exact-demo-gated MT5 market round-trip smoke test.")
     parser.add_argument("--terminal-path", required=True)
     parser.add_argument("--evidence", required=True)
@@ -151,7 +152,7 @@ def main() -> None:
         }
         evidence["identity"] = identity
         if identity != {
-            "login": EXPECTED_LOGIN,
+            "login": account_login,
             "server": EXPECTED_SERVER,
             "company": EXPECTED_COMPANY,
             "trade_mode": int(mt5.ACCOUNT_TRADE_MODE_DEMO),

@@ -10,6 +10,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "broker_identity_env.ps1")
+$ExpectedLogin = [long](Get-BrokerIdentityLogin)
 $OriginalPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
@@ -321,7 +323,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $runtime = Get-Content -LiteralPath $RuntimeCandidate -Raw | ConvertFrom-Json
 if (
-    [int]$runtime.account_login -ne 1301910045 -or
+    [long]$runtime.account_login -ne [long]$ExpectedLogin -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
 ) {
@@ -395,7 +397,7 @@ try {
         $identityChecks.Count -lt 5 -or $permissionChecks.Count -lt 5 -or
         -not [bool]$flat.identity_checks.windows_profile -or
         $identityChecks -contains $false -or $permissionChecks -contains $false -or
-        [int]$flat.account_login -ne [int]$runtime.account_login -or
+        [long]$flat.account_login -ne [long]$ExpectedLogin -or
         [string]$flat.server -cne [string]$runtime.expected_server -or
         [string]$flat.company -cne [string]$runtime.expected_company -or
         [int]$flat.open_orders -ne 0 -or [int]$flat.open_positions -ne 0 -or
@@ -475,7 +477,7 @@ try {
         [string]$internalFlat.readiness_sha256 -notmatch '^[a-f0-9]{64}$' -or
         (Get-Super1SecureSha256 -Path ([string]$internalFlat.readiness_evidence)) -cne
             [string]$internalFlat.readiness_sha256 -or
-        [int]$internalFlat.account_login -ne [int]$runtime.account_login -or
+        [long]$internalFlat.account_login -ne [long]$ExpectedLogin -or
         [string]$internalFlat.server -cne [string]$runtime.expected_server -or
         [string]$internalFlat.company -cne [string]$runtime.expected_company -or
         [int]$internalFlat.open_orders -ne 0 -or

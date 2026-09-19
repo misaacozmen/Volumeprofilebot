@@ -23,7 +23,26 @@ SPEC = importlib.util.spec_from_file_location("run_xm_mt5_forward", ROOT / "scri
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-MODULE.configure_core()
+FIXTURE_RUNTIME = ROOT / "tests" / "fixtures" / "xm_mt5_demo_config.json"
+
+
+@pytest.fixture(autouse=True)
+def configure_xm_runtime(monkeypatch):
+    for owner, name, value in (
+        (MODULE, "RUNTIME_CONFIG", FIXTURE_RUNTIME),
+        (MODULE.core, "RUNTIME_CONFIG", FIXTURE_RUNTIME),
+        (MODULE.core, "SCRIPT_PATH", MODULE.core.SCRIPT_PATH),
+        (MODULE.core, "HARNESS_PATHS", MODULE.core.HARNESS_PATHS),
+        (MODULE.core, "REQUIRED_ENV", MODULE.core.REQUIRED_ENV),
+        (MODULE.core, "CapitalDemoClient", MODULE.core.CapitalDemoClient),
+    ):
+        monkeypatch.setattr(owner, name, value)
+    monkeypatch.setattr(
+        MODULE.core.manual_state_module,
+        "assess_manual_state_day",
+        MODULE.core.manual_state_module.assess_manual_state_day,
+    )
+    MODULE.configure_core()
 
 
 def test_configure_core_locks_forward_shadow_adapter() -> None:
@@ -43,7 +62,7 @@ def test_optional_mt5_password_reaches_client_from_environment(monkeypatch) -> N
 def _login_client(mt5, *, password="", terminal_path="", portable=False):
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = mt5
-    client.login_id = 318413815
+    client.login_id = 10101001
     client.server = "XMGlobal-MT5 7"
     client.password = password
     client.terminal_path = terminal_path
@@ -67,7 +86,7 @@ def test_mt5_login_primary_success_does_not_use_fallback() -> None:
             return True
 
         def account_info(self):
-            return SimpleNamespace(login=318413815, server="XMGlobal-MT5 7", trade_mode=0)
+            return SimpleNamespace(login=10101001, server="XMGlobal-MT5 7", trade_mode=0)
 
         def shutdown(self):
             raise AssertionError("a valid primary session must remain connected")
@@ -77,7 +96,7 @@ def test_mt5_login_primary_success_does_not_use_fallback() -> None:
 
     result = client.login()
 
-    assert result["login"] == 318413815
+    assert result["login"] == 10101001
     assert len(mt5.initialize_calls) == 1
     assert mt5.initialize_calls[0][0] == ("C:/MT5/terminal64.exe",)
     assert mt5.initialize_calls[0][1]["portable"] is True
@@ -101,7 +120,7 @@ def test_mt5_login_primary_failure_uses_saved_session_fallback() -> None:
             return True
 
         def account_info(self):
-            return SimpleNamespace(login=318413815, server="XMGlobal-MT5 7", trade_mode=0)
+            return SimpleNamespace(login=10101001, server="XMGlobal-MT5 7", trade_mode=0)
 
         def shutdown(self):
             self.shutdown_count += 1
@@ -121,7 +140,7 @@ def test_mt5_login_primary_failure_uses_saved_session_fallback() -> None:
     assert "login" not in mt5.initialize_calls[1][1]
     assert mt5.initialize_calls[1][1]["portable"] is True
     assert mt5.login_calls == [
-        ((318413815,), {"server": "XMGlobal-MT5 7", "timeout": 60_000})
+        ((10101001,), {"server": "XMGlobal-MT5 7", "timeout": 60_000})
     ]
 
 
@@ -357,10 +376,10 @@ class FakeMt5:
         self.shutdown_called = False
 
     def initialize(self, **kwargs):
-        return kwargs["login"] == 318413815 and kwargs["server"] == "XM-DEMO"
+        return kwargs["login"] == 10101001 and kwargs["server"] == "XM-DEMO"
 
     def account_info(self):
-        return SimpleNamespace(login=318413815, server="XM-DEMO", trade_mode=0)
+        return SimpleNamespace(login=10101001, server="XM-DEMO", trade_mode=0)
 
     def copy_rates_range(self, symbol, timeframe, start, end):
         assert symbol == "US100Cash"
@@ -651,11 +670,11 @@ class FakeTradeMt5(FakeMt5):
         self.terminal_trade_allowed = terminal_trade_allowed
 
     def initialize(self, **kwargs):
-        return kwargs["login"] == 318413815 and kwargs["server"] == "XMGlobal-MT5 7"
+        return kwargs["login"] == 10101001 and kwargs["server"] == "XMGlobal-MT5 7"
 
     def account_info(self):
         return SimpleNamespace(
-            login=318413815,
+            login=10101001,
             server="XMGlobal-MT5 7",
             company="XM Global Limited",
             trade_mode=self.trade_mode,
@@ -772,7 +791,7 @@ class NoConflictStore:
 def test_mt5_adapter_emits_canonical_minute_bar_without_order_api() -> None:
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = FakeMt5()
-    client.login_id = 318413815
+    client.login_id = 10101001
     client.server = "XM-DEMO"
     client.password = "secret"
     client.terminal_path = ""
@@ -819,7 +838,7 @@ def test_mt5_adapter_excludes_the_still_open_minute(monkeypatch) -> None:
 
     client = object.__new__(MODULE.XmMt5ReadOnlyClient)
     client.mt5 = PartialMinuteMt5()
-    client.login_id = 318413815
+    client.login_id = 10101001
     client.server = "XM-DEMO"
     client.password = "secret"
     client.terminal_path = ""
@@ -1065,7 +1084,7 @@ def test_live_pair_cap_stays_latched_after_intraday_breach() -> None:
 def demo_client(fake_mt5: FakeTradeMt5) -> object:
     client = object.__new__(MODULE.XmMt5DemoOrderClient)
     client.mt5 = fake_mt5
-    client.login_id = 318413815
+    client.login_id = 10101001
     client.server = "XMGlobal-MT5 7"
     client.password = ""
     client.terminal_path = ""

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "environment": "XM_MT5_DEMO_ORDER",
+  "account_mode": "DEMO_ORDER",
+  "account_login": 20202002,
+  "feed": "XM_MT5",
+  "timezone": "America/New_York",
+  "closed_bar_delay_seconds": 8,
+  "poll_seconds": 30,
+  "history_days": 10,
+  "execution": "MT5_DEMO_ORDERS",
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "base_risk_percent": 1.0,
+  "terminal_path": "",
+  "portable": false,
+  "expected_company": "XM Global Limited",
+  "expected_server": "XMGlobal-MT5 6",
+  "magic_number": 260805101,
+  "order_comment_prefix": "FSP",
+  "deviation_points": 20,
+  "max_allowed_spread_points": 5.0,
+  "risk_rule": {
+    "lookback": 10,
+    "terminal_history_days": 365,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "market_schedule_ny": {
+    "timezone": "America/New_York",
+    "weekly_open_sunday": "21:00",
+    "weekly_close_friday": "20:00",
+    "daily_breaks": [["20:00", "21:00"]],
+    "planned_closures": []
+  },
+  "legs": {
+    "nq": {
+      "epic": "US100Cash",
+      "symbol": "XM_MT5_US100CASH",
+      "timeframe": "3m",
+      "trade_window_start": "09:30",
+      "trade_window_end": "10:30",
+      "reward_r": 3.0,
+      "vah_val_tolerance": 5.0
+    },
+    "spx": {
+      "epic": "US500Cash",
+      "symbol": "XM_MT5_US500CASH",
+      "timeframe": "5m",
+      "trade_window_start": "09:30",
+      "trade_window_end": "11:00",
+      "reward_r": 2.5,
+      "vah_val_tolerance": 5.0
+    }
+  },
+  "htf": "15m",
+  "candidate_path": "tests/fixtures/super1_candidate.json",
+  "candidate_file_sha256": "ee2f75cebf7b1d8d6b93d66f24d8558c22256713e3339621a35ba55123327ad4",
+  "candidate_artifact_sha256": "6c93d21ff0abbd001bfe078b228a3eea9f9f8e24950e1c9c248353e240bb44d7",
+  "signal_contract_path": "tests/fixtures/super1_signal_contract.json",
+  "signal_contract_sha256": "a1b55895badca9f1b1ae4daf35050b144da796f19b630d75bc7891fc83f62a11",
+  "rth_session_calendar": {
+    "path": "live_forward/calendars/us_equity_rth_2026.json",
+    "sha256": "7252e37a11d95c62c97051639b3ca784dac3002d036fd637e6c66d82323ccf76",
+    "calendar_id": "US_EQUITY_RTH_2026"
+  }
+}

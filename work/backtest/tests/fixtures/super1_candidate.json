@@ -1,0 +1,71 @@
+{
+  "artifact_id": "synthetic_super1_candidate",
+  "artifact_sha256": "6c93d21ff0abbd001bfe078b228a3eea9f9f8e24950e1c9c248353e240bb44d7",
+  "artifact_type": "strategy_candidate",
+  "checks": {
+    "criteria_pass": true,
+    "data_invalid_excluded": true,
+    "deterministic": true,
+    "development_prefix_matches_frozen_result": true,
+    "graph_evidence_pass": true,
+    "rolling_all_dd_at_most_13": true,
+    "rolling_all_positive": true,
+    "rolling_windows": 1
+  },
+  "criteria": {
+    "synthetic_fixture": true
+  },
+  "full_evaluation_result_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "fresh_forward_required": true,
+  "live_enabled": false,
+  "name": "SYNTHETIC_SUPER1_CANDIDATE",
+  "proven": false,
+  "provenance": {
+    "inputs": [
+      {
+        "path": "tests/fixtures/xm_mt5_demo_config.json",
+        "role": "research_dataset",
+        "bytes": 1020,
+        "sha256": "0a9d447e2da4814f4b06329dd3a370f496d20b442d2acb56e82e7597abfa0319"
+      }
+    ],
+    "environment": {
+      "python_version": "3.14.5",
+      "python_implementation": "CPython",
+      "dependencies": {
+        "pandas": "3.0.3",
+        "pytest": "9.1.1"
+      },
+      "git_commit": null
+    }
+  },
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "schema_version": 2,
+  "selection_protocol": {
+    "development_period": "synthetic",
+    "final_holdout_period": "synthetic",
+    "final_holdout_used_for_publication": false,
+    "final_holdout_used_for_selection": false
+  },
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "status": "SYNTHETIC_FIXTURE"
+}

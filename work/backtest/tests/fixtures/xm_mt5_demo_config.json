@@ -2,7 +2,7 @@
   "schema_version": 1,
   "environment": "XM_MT5_DEMO_ORDER",
   "account_mode": "DEMO_ORDER",
-  "account_login": null,
+  "account_login": 10101001,
   "feed": "XM_MT5",
   "timezone": "America/New_York",
   "closed_bar_delay_seconds": 8,
@@ -13,7 +13,7 @@
   "manual_required": false,
   "terminal_path": "",
   "expected_company": "XM Global Limited",
-  "expected_server": "XMGlobal-MT5",
+  "expected_server": "XMGlobal-MT5 7",
   "magic_number": 260729315,
   "order_comment_prefix": "FSP",
   "deviation_points": 20,
@@ -22,12 +22,7 @@
     "timezone": "America/New_York",
     "weekly_open_sunday": "21:00",
     "weekly_close_friday": "20:00",
-    "daily_breaks": [
-      [
-        "20:00",
-        "21:00"
-      ]
-    ],
+    "daily_breaks": [["20:00", "21:00"]],
     "planned_closures": []
   },
   "legs": {

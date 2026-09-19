@@ -1,0 +1,173 @@
+{
+  "findings": [
+    {
+      "match_count": 12,
+      "object": "00f54b61a9b389826f62dbd671b6025d26d79371",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "0c745d7dac5b75c226051dc8a9cfa7568d5d1385",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 12,
+      "object": "0fbf76d92b884c1086bd14b87669da82e6b1f41a",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "0ffe1469c2f96a8c8b611dbd07682b3e235ec9fa",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "10cd4e6daa0d1281589e85ba21546a053eae5d1e",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "13ac1d46bd0805db7f747383574c5ee10062a7b9",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "17a5b0fc489c1e5cab9aa316147df3d346d93455",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "17a7d40381f53dba4e4090b6d6e5797eb12b69f7",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "308bcc1d26df29f6fcd1a6b3b1180fa2ace636ff",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 6,
+      "object": "36d7af2fbdf4af7865240a2485eb0dd26b0d9d5c",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "424d5cc53a72cde995f9adda080366cac51ff93b",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 12,
+      "object": "496c1d829fc237b8258a8ecdf7df678881c83c64",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "4d901497d09b7e8a8045cb078394e30bb019763a",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "52db3daa7dccfad35cea8f243fb57c65219b22bf",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 12,
+      "object": "5cbf94a0c7da884f793a72c97951c5ab26cc90bd",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "62a2f37e34e0282cd1f09f314c044933fb60b07a",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "658c3a83ed134757fa14494de5b6feb3070f2074",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 12,
+      "object": "73dcad0171b2af30a3062b92000397f47812fee9",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 2,
+      "object": "83fd1d5ed5cc078c185000db23504cab5cc9f63d",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 1,
+      "object": "87290928a40315fa69a581461b10f1c9d3ddf9a7",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 12,
+      "object": "8bc023fd39df191bedf6ba327c6296d72822805b",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 13,
+      "object": "8f114b1f48d71779910c289a85c0e7bfd9f6c3f3",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 2,
+      "object": "97e0ac27ba6efd3e36df6adc7ba199e911882998",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    },
+    {
+      "match_count": 14,
+      "object": "bb947945e7b38d555561b73a3a92ae1e6b9ff76c",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "c4bc50c24ea47ad289ac0bea49cb7f2ce36d42b1",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "e97681f9fb80678a0cd84ed94b414faa8ff47013",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "f3d027e4a107a38568adc9291aea6b5f1473e16f",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 6,
+      "object": "f8f137c2ab9a75dec9ab25392f77e2f07b3f2119",
+      "object_type": "blob",
+      "rule_id": "denylist-01dae9d3d2af2332"
+    }
+  ],
+  "schema_version": 1
+}
