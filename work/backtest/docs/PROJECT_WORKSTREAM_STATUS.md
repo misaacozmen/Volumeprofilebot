@@ -121,4 +121,4 @@ Bu statüler birbirinin yerine kullanılmaz. Eski teslim raporları yeniden
 yazılmamış; tarihsel kayıt olarak bağlanmıştır. Her yeni teslim bu üç satırlık
 tabloyu koruyacak ve yalnız değişen durumları/yeni kanıtları açıklayacaktır.
 
-Son doğrulama zamanı: `2026-09-19T18:55:48Z`.
+Son doğrulama zamanı: `2026-09-19T19:05:59Z`.

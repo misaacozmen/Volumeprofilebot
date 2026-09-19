@@ -156,8 +156,8 @@ Ham kanıtlar repo dışındadır; denylist veya secret içermemektedir:
 - `...\baseline-023e39b.pytest.txt` — node `work/backtest/tests/test_deployment_security.py::test_super1_upgrade_pins_and_read_locks_the_release_trust_helper`, 1.355 byte, SHA-256 `BF8238FE2A71F32ED0DBB6D44D71832D4C3FF71F3CBDFD6F495DB129B1599A9B`.
 - `...\main-e205e66.pytest.txt` — aynı node, 1.355 byte, SHA-256 `6769D5971D3C5503103219C4E6394A4B741F15402FD9B54F13612E5FD6001C6C`.
 - Her iki ham çıktı aynı beklenen/gerçek ayrımını içerir: beklenen pinli sabit yok, gerçek byte hash `011008a0...`; gerçek sonuç `1 failed`, exit `1`.
-- `...\candidate-selection-mock-v2.txt` — exit `0`, 977 byte, SHA-256 `B9707CE02AB0357893BB82FFDA504838D273D6BBDCDE24AE42D4891F2D6B2C46`.
-- `C:\Users\ISAAC\Documents\release-integrity-evidence-20260919\candidate-selection-mock.ps1` — düzeltilmiş harness, SHA-256 `C8E8AA0D52900A250D7A0B43086E538B913F204EEB8D18EAC5BB572F1B860A4E`.
+- `...\candidate-selection-mock-v2.txt` — exit `0`, 1.068 byte, SHA-256 `2345B3BF4DE72E3418799DEAA674C88848A63A478559F67434ED534BC74362AE`.
+- `C:\Users\ISAAC\Documents\release-integrity-evidence-20260919\candidate-selection-mock.ps1` — düzeltilmiş harness, SHA-256 `DD4B230F916F38951978B6B0C4A6F6C736240FF41D2476B8B65F124D38D75610`.
 
 Mock kontrolünde `$PSScriptRoot` adayı seçildi, ilk aday mismatch olduğunda
 fallback yapılmadı, ilk aday yokken `$App\deploy` adayı seçildi. Ayrıca gerçek
@@ -197,4 +197,4 @@ hash’i körlemesine pine yazılmamıştır.
 | Dukascopy/promotion 12–19 | `ACTIVE_PREPARATION` | Proje mühendisi | Proje mimarı; dış girdilerde proje sahibi |
 | Broker-identity güvenliği | `CLOSED_WITH_RETAINED_HISTORY` | Proje mühendisi; sürekli tarama CI | Proje mimarı |
 
-Son doğrulama zamanı: `2026-09-19T18:55:48Z`.
+Son doğrulama zamanı: `2026-09-19T19:05:59Z`.

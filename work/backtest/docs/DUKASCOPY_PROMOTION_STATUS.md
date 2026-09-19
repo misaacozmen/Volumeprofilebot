@@ -118,4 +118,4 @@ olarak sunulmamıştır.
 | Dukascopy/promotion 12–19 | `ACTIVE_PREPARATION` | Proje mühendisi | Proje mimarı; dış girdilerde proje sahibi |
 | Broker-identity güvenliği | `CLOSED_WITH_RETAINED_HISTORY` | Proje mühendisi; sürekli tarama CI | Proje mimarı |
 
-Son doğrulama zamanı: `2026-09-19T18:55:48Z`.
+Son doğrulama zamanı: `2026-09-19T19:05:59Z`.

@@ -68,4 +68,4 @@ current-tree sonucunu tarihsel koruma kararıyla karıştırmaz.
 current-tree scan kanıtını kaydeder; history rewrite veya dış kabul tamamlandı
 iddiası taşımaz.
 
-Son doğrulama zamanı: `2026-09-19T18:55:48Z`.
+Son doğrulama zamanı: `2026-09-19T19:05:59Z`.
