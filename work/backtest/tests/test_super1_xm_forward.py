@@ -26,6 +26,10 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+MODULE.RUNTIME_CONFIG = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
+MODULE.SUPER1_MANIFEST = ROOT / "tests" / "fixtures" / "super1_manifest.json"
+MODULE.core.RUNTIME_CONFIG = MODULE.RUNTIME_CONFIG
+MODULE.xm.RUNTIME_CONFIG = MODULE.RUNTIME_CONFIG
 
 
 def record(level: str, price: float, touches: int | None = None) -> dict:

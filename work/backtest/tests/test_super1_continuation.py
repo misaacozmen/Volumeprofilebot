@@ -25,6 +25,7 @@ from plan_super1_campaign_continuation import (  # noqa: E402
     super1_harness_hash,
     super1_harness_paths,
 )
+import plan_super1_campaign_continuation as continuation_plan  # noqa: E402
 from v08_helpers import checkpoint_if_enabled, record_if_enabled
 from run_capital_forward import BarStore  # noqa: E402
 from run_xm_mt5_forward import XmMt5DemoOrderClient  # noqa: E402
@@ -47,6 +48,9 @@ from super1_continuation import (  # noqa: E402
     _jsonl_file,
     write_exclusive_json,
 )
+
+RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
+continuation_plan.RUNTIME = RUNTIME
 
 
 def _private_key() -> rsa.RSAPrivateKey:

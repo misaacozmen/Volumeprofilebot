@@ -7,6 +7,8 @@ import subprocess
 from scripts.scan_public_broker_identity import (
     _baseline_check,
     _history_scan,
+    _rules,
+    _scan_ref_trees,
     _write_baseline,
     concrete_paths,
     git_root,
@@ -36,6 +38,13 @@ def test_python_identity_literal_is_detected_without_evaluation() -> None:
         "$.environment_default_login",
         "$.login.default",
     ]
+
+
+def test_powershell_account_comparison_literal_is_detected() -> None:
+    from scripts.scan_public_broker_identity import powershell_concrete_paths
+
+    raw = b'if ([long]$runtime.account_login -ne "765432109") { throw "wrong" }\n'
+    assert powershell_concrete_paths(raw) == ["$.powershell_account_comparison"]
 
 
 def test_root_normalization_and_current_history_split(tmp_path: Path) -> None:
@@ -116,6 +125,75 @@ def test_second_branch_and_annotated_tag_are_in_history_scope(tmp_path: Path) ->
     assert any(row["path"] == "history-only.txt" for row in matches)
 
 
+def test_candidate_acceptance_ignores_dirty_main_but_repo_audit_finds_remote_tree_and_tag(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "remote", "add", "origin", "https://example.invalid/repo.git")
+    token = "765432109"
+
+    (repo / "leaked.txt").write_text(token, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "known leak")
+    known_bad = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    (repo / "leaked.txt").write_text("clean\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "clean main")
+    main_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "switch", "-c", "side")
+    (repo / "moved.txt").write_text(token, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "moved leak")
+    side_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    _git(repo, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(repo, "update-ref", "refs/remotes/origin/side", side_sha)
+    _git(
+        repo,
+        "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+        "tag", "-a", "new-dirty-tag", known_bad, "-m", "reuses known dirty blob",
+    )
+
+    deny = tmp_path / "deny.json"
+    deny.write_text(json.dumps({"denylist": [token]}), encoding="utf-8")
+    history, _ = _history_scan(repo, [token.encode()], ["refs/remotes/origin/main", "refs/remotes/origin/side"])
+    baseline = tmp_path / "baseline.json"
+    _write_baseline(baseline, history)
+    scanner = ROOT / "scripts" / "scan_public_broker_identity.py"
+
+    candidate = subprocess.run(
+        [
+            "py", "-3", str(scanner), "--root", str(repo), "--denylist", str(deny),
+            "--baseline", str(baseline), "--candidate-ref", "refs/remotes/origin/main",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert candidate.returncode == 0, candidate.stdout
+    assert '"scan_scope": "candidate_acceptance"' in candidate.stdout
+
+    tree_scans = _scan_ref_trees(
+        repo,
+        [("refs/remotes/origin/main", main_sha), ("refs/remotes/origin/side", side_sha), ("refs/tags/new-dirty-tag", known_bad)],
+        _rules([token.encode()]),
+    )
+    assert any(row["ref"] == "refs/remotes/origin/side" and row["denylist_match_count"] for row in tree_scans)
+    assert any(row["ref"] == "refs/tags/new-dirty-tag" and row["denylist_match_count"] for row in tree_scans)
+
+    audit = subprocess.run(
+        [
+            "py", "-3", str(scanner), "--root", str(repo), "--denylist", str(deny),
+            "--baseline", str(baseline), "--repo-audit",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert audit.returncode == 1, audit.stdout
+    assert '"repo_tree_violation": true' in audit.stdout
+
+
 def test_new_history_finding_is_outside_fixed_baseline(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -143,6 +221,13 @@ def test_cli_missing_denylist_is_blocked_and_structural_violation_fails(tmp_path
     _git(repo, "add", ".")
     _git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
     scanner = ROOT / "scripts" / "scan_public_broker_identity.py"
+    structural = subprocess.run(
+        ["py", "-3", str(scanner), "--root", str(repo), "--structural-only"],
+        capture_output=True,
+        text=True,
+    )
+    assert structural.returncode == 1
+    assert '"scan_scope": "candidate_structure"' in structural.stdout
     missing = subprocess.run(
         ["py", "-3", str(scanner), "--root", str(repo)],
         capture_output=True,

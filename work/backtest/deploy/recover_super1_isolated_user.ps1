@@ -85,6 +85,8 @@ Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
 $WorkerSource = @'
 $ErrorActionPreference = "Stop"
 $Root = "C:\Super1"
+. (Join-Path $Root "app\deploy\broker_identity_env.ps1")
+$ExpectedLogin = [long](Get-BrokerIdentityLogin)
 $Password = [Console]::In.ReadLine()
 if ([string]::IsNullOrWhiteSpace($Password)) { throw "Missing XM password on stdin." }
 $Secure = ConvertTo-SecureString $Password -AsPlainText -Force

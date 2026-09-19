@@ -1,0 +1,26 @@
+{
+  "name": "Super1",
+  "status": "LOCAL_FRESH_FORWARD_CANDIDATE_UNPROVEN",
+  "candidate_path": "tests/fixtures/super1_candidate.json",
+  "candidate_file_sha256": "ee2f75cebf7b1d8d6b93d66f24d8558c22256713e3339621a35ba55123327ad4",
+  "candidate_artifact_sha256": "6c93d21ff0abbd001bfe078b228a3eea9f9f8e24950e1c9c248353e240bb44d7",
+  "config_sha256": "e4148ab8955cf4f8c7cef796f2287a8eac7125c223c1c2e09da20e6f2d626087",
+  "signal_contract_path": "tests/fixtures/super1_signal_contract.json",
+  "signal_contract_sha256": "a1b55895badca9f1b1ae4daf35050b144da796f19b630d75bc7891fc83f62a11",
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "overlay_candidate_research_dataset_sha256": "0a9d447e2da4814f4b06329dd3a370f496d20b442d2acb56e82e7597abfa0319",
+  "overlay_candidate_research_result_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "deployed_pipeline_historical_parity_proven": false,
+  "deployed_pipeline_result_sha256": null,
+  "deployment": {
+    "target": "SYNTHETIC_TEST_FIXTURE",
+    "campaign_days": 1,
+    "isolation_required": true,
+    "demo_order_execution_enabled": true,
+    "real_money_live_enabled": false,
+    "real_money_execution_allowed": false,
+    "existing_campaign_must_remain_untouched": true
+  },
+  "fresh_forward_required": true,
+  "proven": false
+}

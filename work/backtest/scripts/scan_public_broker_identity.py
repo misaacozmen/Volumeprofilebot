@@ -21,6 +21,13 @@ POWERSHELL_ACCOUNT_LITERAL = re.compile(
     r"(?ix)(?:\$?account_login|\$?account_number|\$?expected_login|\$?login)"
     r"\s*(?:=|:)\s*['\"]?([1-9][0-9]*)['\"]?"
 )
+POWERSHELL_ACCOUNT_COMPARISON = re.compile(
+    r"(?ix)(?:\[[^\]\r\n]+\]\s*)*"
+    r"(?:\$?[a-z_][a-z0-9_]*\.)?"
+    r"(?:account_login|account_number|expected_login|login)"
+    r"\s*(?:-eq|-ne|-ceq|-cne|-ieq|-ine|-gt|-ge|-lt|-le|==|!=)\s*"
+    r"['\"]?([1-9][0-9]*)['\"]?"
+)
 POWERSHELL_LOGIN_PARAMETER = re.compile(r"(?ix)(?:-login|-accountlogin)\s+['\"]?([1-9][0-9]*)['\"]?")
 
 
@@ -172,6 +179,8 @@ def powershell_concrete_paths(raw: bytes) -> list[str]:
     found: list[str] = []
     for match in POWERSHELL_ACCOUNT_LITERAL.finditer(text):
         found.append("$.powershell_account_literal")
+    for match in POWERSHELL_ACCOUNT_COMPARISON.finditer(text):
+        found.append("$.powershell_account_comparison")
     for match in POWERSHELL_LOGIN_PARAMETER.finditer(text):
         found.append("$.powershell_login_parameter")
     return sorted(set(found))
@@ -273,7 +282,7 @@ def _default_history_refs(root: Path) -> list[str]:
         root,
         "for-each-ref",
         "--format=%(refname)",
-        "refs/remotes/origin",
+        "refs/remotes",
         "refs/tags",
     ).decode("utf-8", "replace").splitlines()
     return list(dict.fromkeys([current or "HEAD", *remote_and_tags]))
@@ -391,6 +400,80 @@ def _ref_name_matches(refs: list[tuple[str, str]], rules: list[tuple[str, bytes]
                 }
             )
     return matches
+
+
+def _tree_entries(root: Path, ref: str) -> list[tuple[str, str, str]]:
+    """Return (object id, object type, path) entries for one Git tree."""
+
+    output = _run(root, "ls-tree", "-r", "-z", "--full-tree", ref)
+    entries: list[tuple[str, str, str]] = []
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, path_bytes = record.split(b"\t", 1)
+            fields = metadata.split()
+            object_type = fields[1].decode("ascii")
+            object_id = fields[2].decode("ascii")
+        except (IndexError, ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError("Git tree entry is malformed") from exc
+        entries.append((object_id, object_type, path_bytes.decode("utf-8", "surrogateescape")))
+    return entries
+
+
+def _tree_ref_scan(
+    root: Path, ref: str, rules: list[tuple[str, bytes]]
+) -> dict[str, object]:
+    """Scan one ref's current tree independently of reachable history."""
+
+    commit_sha = _run(root, "rev-parse", "--verify", f"{ref}^{{commit}}").decode("ascii").strip()
+    tree_oid = _run(root, "rev-parse", "--verify", f"{ref}^{{tree}}").decode("ascii").strip()
+    entries = _tree_entries(root, ref)
+    blob_ids = list(dict.fromkeys(object_id for object_id, kind, _ in entries if kind == "blob"))
+    bodies = {object_id: body for object_id, kind, body in _read_objects(root, blob_ids) if kind == b"blob"}
+    matches: list[dict[str, object]] = []
+    for object_id, kind, path in entries:
+        if kind != "blob":
+            continue
+        body = bodies[object_id]
+        field_paths = _structural_paths(path, body)
+        deny_count, deny_rules = _match_rules(body, rules)
+        if not field_paths and not deny_count:
+            continue
+        matches.append(
+            {
+                "object": object_id,
+                "object_type": "tree_blob",
+                "path": path,
+                "ref": ref,
+                "commit_sha": commit_sha,
+                "tree_oid": tree_oid,
+                "field_paths": field_paths,
+                "structural_violation": bool(field_paths),
+                "denylist_match_count": deny_count,
+                "denylist_rules": deny_rules,
+                "blob_sha256": sha256(body).hexdigest(),
+            }
+        )
+    path_matches = _tree_path_matches(root, [(ref, commit_sha)], rules)
+    return {
+        "ref": ref,
+        "commit_sha": commit_sha,
+        "tree_oid": tree_oid,
+        "match_count": len(matches),
+        "structural_violation_count": sum(
+            1 for row in matches if row["structural_violation"]
+        ),
+        "denylist_match_count": sum(int(row["denylist_match_count"]) for row in matches),
+        "tree_path_match_count": sum(int(row["denylist_match_count"]) for row in path_matches),
+        "matches": matches,
+    }
+
+
+def _scan_ref_trees(
+    root: Path, refs: list[tuple[str, str]], rules: list[tuple[str, bytes]]
+) -> list[dict[str, object]]:
+    return [_tree_ref_scan(root, ref, rules) for ref, _ in refs]
 
 
 def _history_scan(
@@ -537,6 +620,17 @@ def main() -> None:
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--write-baseline", action="store_true")
     parser.add_argument("--history-ref", action="append", dest="history_refs")
+    parser.add_argument("--candidate-ref", help="Git ref whose current tree is the candidate")
+    parser.add_argument(
+        "--structural-only",
+        action="store_true",
+        help="Scan only the candidate tree for structural identity literals; no secret or history scan",
+    )
+    parser.add_argument(
+        "--repo-audit",
+        action="store_true",
+        help="Scan every remote branch/tag tip tree in addition to history",
+    )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
 
@@ -547,8 +641,44 @@ def main() -> None:
     report: dict[str, object]
     try:
         denied, denylist_sha256 = _deny_values(args.denylist)
-        working_matches = scan(root, args.denylist)
-        history_matches, counts = _history_scan(root, denied, args.history_refs)
+        scanner_hash = sha256(Path(__file__).read_bytes()).hexdigest()
+        all_ref_tips = _ref_names(root)
+        candidate_ref = args.candidate_ref or "HEAD"
+        candidate_tree = _tree_ref_scan(root, candidate_ref, _rules(denied))
+        if args.structural_only:
+            structural_candidates = [
+                row for row in candidate_tree["matches"] if row["structural_violation"]
+            ]
+            status = "VIOLATION" if structural_candidates else "PASS"
+            report = {
+                "schema_version": 4,
+                "status": status,
+                "scan_scope": "candidate_structure",
+                "candidate_ref": candidate_ref,
+                "candidate_commit_sha": candidate_tree["commit_sha"],
+                "candidate_tree_oid": candidate_tree["tree_oid"],
+                "source_head": before_head,
+                "all_ref_tips": [{"ref": ref, "sha": sha_value} for ref, sha_value in all_ref_tips],
+                "scanner_source_sha256": scanner_hash,
+                "private_denylist_sha256": None,
+                "candidate_tree_match_count": len(structural_candidates),
+                "candidate_tree_structural_violation_count": len(structural_candidates),
+                "candidate_tree_matches": structural_candidates,
+                "source_unchanged": before_head == _run(root, "rev-parse", "HEAD").decode("ascii").strip(),
+                "origin_unchanged": before_origin == _git_origin(root),
+                "started_at_utc": started.isoformat().replace("+00:00", "Z"),
+                "finished_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            print(json.dumps(report, indent=2, sort_keys=True))
+            raise SystemExit(1 if status == "VIOLATION" else 0)
+
+        history_refs = args.history_refs or (
+            _default_history_refs(root) if args.repo_audit else [candidate_ref]
+        )
+        history_matches, counts = _history_scan(root, denied, history_refs)
         baseline_result: dict[str, object] = {
             "baseline_entry_count": None,
             "new_historical_findings": [],
@@ -560,44 +690,57 @@ def main() -> None:
             _write_baseline(args.baseline, history_matches)
         elif args.baseline is not None:
             baseline_result = _baseline_check(history_matches, args.baseline)
+        repo_tree_scans = _scan_ref_trees(root, all_ref_tips, _rules(denied)) if args.repo_audit else []
         after_head = _run(root, "rev-parse", "HEAD").decode("ascii").strip()
         after_origin = _git_origin(root)
-        structural_working = [row for row in working_matches if row["structural_violation"]]
-        working_deny_count = sum(int(row["denylist_match_count"]) for row in working_matches)
+        candidate_structural = [
+            row for row in candidate_tree["matches"] if row["structural_violation"]
+        ]
+        candidate_deny_count = int(candidate_tree["denylist_match_count"])
         history_deny_count = int(counts["denylist_match_count"])
         baseline_violation = bool(
             baseline_result["new_historical_findings"]
+        )
+        repo_tree_violation = any(
+            int(item["structural_violation_count"]) or int(item["denylist_match_count"])
+            for item in repo_tree_scans
         )
         if args.denylist is None:
             status = "BLOCKED_MISSING_DENYLIST"
         elif not bool(counts["history_complete"]):
             status = "BLOCKED_INCOMPLETE_HISTORY"
-        elif structural_working or working_deny_count or baseline_violation:
+        elif candidate_structural or candidate_deny_count or baseline_violation or repo_tree_violation:
             status = "VIOLATION"
         elif args.baseline is None and not args.write_baseline:
             status = "BLOCKED_MISSING_BASELINE"
         else:
             status = "PASS"
         report = {
-            "schema_version": 3,
+            "schema_version": 4,
             "status": status,
-            "history_scope": args.history_refs or _default_history_refs(root),
+            "scan_scope": "repo_audit" if args.repo_audit else "candidate_acceptance",
+            "history_scope": history_refs,
+            "candidate_ref": candidate_ref,
+            "candidate_commit_sha": candidate_tree["commit_sha"],
+            "candidate_tree_oid": candidate_tree["tree_oid"],
             "source_head": before_head,
-            "all_ref_tips": [{"ref": ref, "sha": sha_value} for ref, sha_value in _ref_names(root)],
-            "scanner_source_sha256": sha256(Path(__file__).read_bytes()).hexdigest(),
+            "all_ref_tips": [{"ref": ref, "sha": sha_value} for ref, sha_value in all_ref_tips],
+            "scanner_source_sha256": scanner_hash,
             "private_denylist_sha256": denylist_sha256,
-            "working_tree_match_count": len(working_matches),
-            "working_tree_structural_violation_count": len(structural_working),
-            "working_tree_denylist_match_count": working_deny_count,
+            "candidate_tree_match_count": len(candidate_tree["matches"]),
+            "candidate_tree_structural_violation_count": len(candidate_structural),
+            "candidate_tree_denylist_match_count": candidate_deny_count,
             "reachable_history_match_count": len(history_matches),
             "reachable_history_denylist_match_count": history_deny_count,
+            "repo_tree_violation": repo_tree_violation,
+            "repo_tree_scans": repo_tree_scans,
             "source_unchanged": before_head == after_head,
             "origin_unchanged": before_origin == after_origin,
             "started_at_utc": started.isoformat().replace("+00:00", "Z"),
             "finished_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             **counts,
             **baseline_result,
-            "matches": working_matches,
+            "candidate_tree_matches": candidate_tree["matches"],
             "reachable_history_matches": history_matches,
         }
         if args.report:

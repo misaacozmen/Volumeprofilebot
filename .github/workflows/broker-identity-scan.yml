@@ -15,12 +15,15 @@ permissions:
   contents: read
 
 jobs:
-  scan:
+  identity-structure:
+    name: identity-structure
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout full history
+      - name: Checkout candidate commit without secrets
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Fetch every remote branch and tag
@@ -31,41 +34,117 @@ jobs:
             '+refs/heads/*:refs/remotes/origin/*' \
             '+refs/tags/*:refs/tags/*'
 
-      - name: Structural scan without secret for pull requests
-        if: github.event_name == 'pull_request'
+      - name: Structural scan only
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           python3 work/backtest/scripts/scan_public_broker_identity.py \
-            --baseline work/backtest/security/broker_identity_history_baseline.json \
-            --report "$RUNNER_TEMP/broker-identity-scan.json"
+            --candidate-ref "${{ github.event.pull_request.head.sha }}" \
+            --structural-only \
+            --report "$RUNNER_TEMP/broker-identity-structure.json"
 
-      - name: Protected denylist and history scan
-        if: github.event_name != 'pull_request'
+      - name: Upload structural report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-identity-structure-report
+          path: ${{ runner.temp }}/broker-identity-structure.json
+          if-no-files-found: error
+
+  identity-full:
+    name: identity-full
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Fetch every remote branch and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Protected candidate full scan
         shell: bash
         env:
           BROKER_IDENTITY_DENYLIST_JSON: ${{ secrets.BROKER_IDENTITY_DENYLIST_JSON }}
         run: |
           set -euo pipefail
           denylist_path="$RUNNER_TEMP/broker-identity-denylist.json"
-          report_path="$RUNNER_TEMP/broker-identity-scan.json"
+          report_path="$RUNNER_TEMP/broker-identity-full.json"
           cleanup() { rm -f -- "$denylist_path"; }
           trap cleanup EXIT
           if [ -z "${BROKER_IDENTITY_DENYLIST_JSON:-}" ]; then
-            printf '%s\n' '{"status":"BLOCKED_MISSING_DENYLIST"}' > "$report_path"
-            echo 'BROKER_IDENTITY_DENYLIST_JSON is unavailable; scan is blocked.' >&2
+            printf '%s\n' '{"status":"BLOCKED_MISSING_DENYLIST","candidate_sha":"'"$GITHUB_SHA"'"}' > "$report_path"
+            echo 'BROKER_IDENTITY_DENYLIST_JSON is unavailable; identity-full is blocked.' >&2
             exit 2
           fi
           printf '%s' "$BROKER_IDENTITY_DENYLIST_JSON" > "$denylist_path"
           python3 work/backtest/scripts/scan_public_broker_identity.py \
+            --candidate-ref "$GITHUB_SHA" \
             --denylist "$denylist_path" \
             --baseline work/backtest/security/broker_identity_history_baseline.json \
             --report "$report_path"
 
-      - name: Upload scan report
+      - name: Upload full report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: broker-identity-scan-report
-          path: ${{ runner.temp }}/broker-identity-scan.json
+          name: broker-identity-full-report
+          path: ${{ runner.temp }}/broker-identity-full.json
+          if-no-files-found: error
+
+  repository-audit:
+    name: repository-audit
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository audit revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Fetch every remote branch and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Protected remote-tree and history audit
+        shell: bash
+        env:
+          BROKER_IDENTITY_DENYLIST_JSON: ${{ secrets.BROKER_IDENTITY_DENYLIST_JSON }}
+        run: |
+          set -euo pipefail
+          denylist_path="$RUNNER_TEMP/broker-identity-denylist.json"
+          report_path="$RUNNER_TEMP/broker-identity-repository-audit.json"
+          cleanup() { rm -f -- "$denylist_path"; }
+          trap cleanup EXIT
+          if [ -z "${BROKER_IDENTITY_DENYLIST_JSON:-}" ]; then
+            printf '%s\n' '{"status":"BLOCKED_MISSING_DENYLIST","audit_sha":"'"$GITHUB_SHA"'"}' > "$report_path"
+            echo 'BROKER_IDENTITY_DENYLIST_JSON is unavailable; repository-audit is blocked.' >&2
+            exit 2
+          fi
+          printf '%s' "$BROKER_IDENTITY_DENYLIST_JSON" > "$denylist_path"
+          python3 work/backtest/scripts/scan_public_broker_identity.py \
+            --repo-audit \
+            --denylist "$denylist_path" \
+            --baseline work/backtest/security/broker_identity_history_baseline.json \
+            --report "$report_path"
+
+      - name: Upload repository audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-identity-repository-audit-report
+          path: ${{ runner.temp }}/broker-identity-repository-audit.json
           if-no-files-found: error
