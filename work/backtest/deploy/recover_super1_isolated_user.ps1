@@ -5,6 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "broker_identity_env.ps1")
+$ExpectedLogin = [long](Get-BrokerIdentityLogin)
 
 $Root = "C:\Super1"
 $App = Join-Path $Root "app"
@@ -97,7 +99,7 @@ try {
     if ($Discovery.state -ne "FOUND" -or -not $Discovery.demo_verified) {
         throw "Isolated discovery did not verify a demo account."
     }
-    if ($Discovery.login -ne 1301910045 -or $Discovery.server -ne "XMGlobal-MT5 6") {
+    if ([long]$Discovery.login -ne [long]$ExpectedLogin -or $Discovery.server -ne "XMGlobal-MT5 6") {
         throw "Unexpected isolated XM identity."
     }
     if ($Discovery.symbols.nq -ne "US100Cash" -or $Discovery.symbols.spx -ne "US500Cash") {
@@ -113,6 +115,7 @@ finally {
     $env:XM_MT5_READ_ONLY_PASSWORD = $null
     $env:XM_MT5_TERMINAL_PATH = $null
     $env:XM_MT5_SERVER = $null
+    $env:XM_MT5_ACCOUNT_LOGIN = $null
     $Password = $null
 }
 '@
@@ -133,6 +136,8 @@ try {
     $StartInfo.RedirectStandardInput = $true
     $StartInfo.RedirectStandardOutput = $true
     $StartInfo.RedirectStandardError = $true
+    $StartInfo.EnvironmentVariables["XM_MT5_ACCOUNT_LOGIN"] =
+        ([long]$ExpectedLogin).ToString([Globalization.CultureInfo]::InvariantCulture)
     $Process = [Diagnostics.Process]::Start($StartInfo)
     $Process.StandardInput.WriteLine($XmPlain)
     $Process.StandardInput.Close()

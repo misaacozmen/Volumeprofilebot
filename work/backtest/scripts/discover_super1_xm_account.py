@@ -4,13 +4,14 @@ import json
 import os
 from pathlib import Path
 
+from broker_identity_env import read_account_login
 
-LOGIN = 1301910045
 SERVER = "XMGlobal-MT5 6"
 COMPANY = "XM Global Limited"
 
 
 def main() -> None:
+    account_login = read_account_login()
     import MetaTrader5 as mt5
 
     password = os.environ.get("XM_MT5_READ_ONLY_PASSWORD", "")
@@ -19,7 +20,7 @@ def main() -> None:
         raise SystemExit("Password and dedicated terminal path are required.")
     if not mt5.initialize(
         terminal,
-        login=LOGIN,
+        login=account_login,
         password=password,
         server=SERVER,
         timeout=60_000,
@@ -33,7 +34,7 @@ def main() -> None:
         if (
             account is None
             or terminal_info is None
-            or int(account.login) != LOGIN
+            or int(account.login) != account_login
             or str(account.server) != SERVER
             or str(account.company) != COMPANY
             or int(account.trade_mode) != demo_mode

@@ -1,0 +1,71 @@
+name: Broker identity scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch every remote branch and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Structural scan without secret for pull requests
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 work/backtest/scripts/scan_public_broker_identity.py \
+            --baseline work/backtest/security/broker_identity_history_baseline.json \
+            --report "$RUNNER_TEMP/broker-identity-scan.json"
+
+      - name: Protected denylist and history scan
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          BROKER_IDENTITY_DENYLIST_JSON: ${{ secrets.BROKER_IDENTITY_DENYLIST_JSON }}
+        run: |
+          set -euo pipefail
+          denylist_path="$RUNNER_TEMP/broker-identity-denylist.json"
+          report_path="$RUNNER_TEMP/broker-identity-scan.json"
+          cleanup() { rm -f -- "$denylist_path"; }
+          trap cleanup EXIT
+          if [ -z "${BROKER_IDENTITY_DENYLIST_JSON:-}" ]; then
+            printf '%s\n' '{"status":"BLOCKED_MISSING_DENYLIST"}' > "$report_path"
+            echo 'BROKER_IDENTITY_DENYLIST_JSON is unavailable; scan is blocked.' >&2
+            exit 2
+          fi
+          printf '%s' "$BROKER_IDENTITY_DENYLIST_JSON" > "$denylist_path"
+          python3 work/backtest/scripts/scan_public_broker_identity.py \
+            --denylist "$denylist_path" \
+            --baseline work/backtest/security/broker_identity_history_baseline.json \
+            --report "$report_path"
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-identity-scan-report
+          path: ${{ runner.temp }}/broker-identity-scan.json
+          if-no-files-found: error

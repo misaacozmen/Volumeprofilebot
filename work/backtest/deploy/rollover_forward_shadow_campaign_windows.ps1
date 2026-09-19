@@ -3,6 +3,8 @@ param([string]$Root = "C:\ForwardShadow")
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "broker_identity_env.ps1")
+$ExpectedLogin = [long](Get-BrokerIdentityLogin)
 
 if (
     [string]$PSVersionTable.PSEdition -cne "Desktop" -or
@@ -286,7 +288,7 @@ foreach ($requiredContract in @(
 }
 $runtime = Get-Content -LiteralPath $RuntimeTarget -Raw | ConvertFrom-Json
 if (
-    [int]$runtime.account_login -ne 318413815 -or
+    [long]$runtime.account_login -ne [long]$ExpectedLogin -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
 ) { throw "ForwardShadow runtime has an unexpected broker identity." }

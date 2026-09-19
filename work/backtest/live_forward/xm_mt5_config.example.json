@@ -2,7 +2,7 @@
   "schema_version": 1,
   "environment": "XM_MT5_DEMO_ORDER",
   "account_mode": "DEMO_ORDER",
-  "account_login": 12345678,
+  "account_login": null,
   "feed": "XM_MT5",
   "timezone": "America/New_York",
   "closed_bar_delay_seconds": 8,

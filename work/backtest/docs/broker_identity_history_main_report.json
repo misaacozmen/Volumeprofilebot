@@ -1,0 +1,449 @@
+{
+  "all_ref_tips": [
+    {
+      "ref": "refs/heads/codex/main-broker-identity-forward-fix",
+      "sha": "023e39b288863ac93df9e7cfa1b7f218029f6458"
+    },
+    {
+      "ref": "refs/remotes/origin/HEAD",
+      "sha": "023e39b288863ac93df9e7cfa1b7f218029f6458"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/super1-clean-review-20260919",
+      "sha": "d995f99753aef8a84b79000beff35ec7d169fa86"
+    },
+    {
+      "ref": "refs/remotes/origin/main",
+      "sha": "023e39b288863ac93df9e7cfa1b7f218029f6458"
+    }
+  ],
+  "baseline_entry_count": 28,
+  "blob_count": 679,
+  "blob_denylist_occurrence_count": 103,
+  "blob_denylist_unique_object_count": 22,
+  "commit_count": 15,
+  "commit_message_match_count": 0,
+  "denylist_match_count": 103,
+  "denylist_occurrence_count": 103,
+  "denylist_unique_file_count": 12,
+  "denylist_unique_object_count": 22,
+  "finished_at_utc": "2026-09-19T14:52:16.390730Z",
+  "history_complete": true,
+  "history_scope": [
+    "refs/remotes/origin/main"
+  ],
+  "matches": [],
+  "missing_baseline_findings": [
+    {
+      "match_count": 12,
+      "object": "0fbf76d92b884c1086bd14b87669da82e6b1f41a",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 1,
+      "object": "10cd4e6daa0d1281589e85ba21546a053eae5d1e",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 12,
+      "object": "5cbf94a0c7da884f793a72c97951c5ab26cc90bd",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "658c3a83ed134757fa14494de5b6feb3070f2074",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "bb947945e7b38d555561b73a3a92ae1e6b9ff76c",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    },
+    {
+      "match_count": 14,
+      "object": "c4bc50c24ea47ad289ac0bea49cb7f2ce36d42b1",
+      "object_type": "blob",
+      "rule_id": "denylist-5c5e3c057c364750"
+    }
+  ],
+  "new_historical_findings": [],
+  "object_count": 834,
+  "origin_unchanged": true,
+  "private_denylist_sha256": "6c5a305e0d5d35eeeb9b24e423847745d181e83b36302a1b0d7d307fe22a0def",
+  "reachable_history_denylist_match_count": 103,
+  "reachable_history_match_count": 23,
+  "reachable_history_matches": [
+    {
+      "blob_sha256": "100a93650f16cfe708135eb65f4f8ada648521940d53c074cb7b7561ab78fef9",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "4d901497d09b7e8a8045cb078394e30bb019763a",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/recover_super1_isolated_user.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "c48fe7380cc4370cfe8eddc55070dc13fe450114e991495952fe9c8843cbabd2",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [],
+      "object": "e97681f9fb80678a0cd84ed94b414faa8ff47013",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_forward_shadow_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "40dd1f13797a5c2bb2681185603ba8c56dd13aa74e733960bb3841d24d552752",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "87290928a40315fa69a581461b10f1c9d3ddf9a7",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "81bc27dfda7f86aacbbd529824d1dd638a7c8ebd446c11818fa8f13eda118158",
+      "denylist_match_count": 0,
+      "denylist_rules": [],
+      "field_paths": [
+        "$.account_login"
+      ],
+      "object": "181ddb47e6d1238783c18446d273600df77ce12f",
+      "object_type": "blob",
+      "path": "work/backtest/live_forward/xm_mt5_config.example.json",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "f86878f1a75fc593ecd3730e4fbd6a5b6621bcd6f3e4b0fed6d3b30b66de0f91",
+      "denylist_match_count": 2,
+      "denylist_rules": [
+        {
+          "match_count": 2,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [
+        "$.powershell_account_literal"
+      ],
+      "object": "83fd1d5ed5cc078c185000db23504cab5cc9f63d",
+      "object_type": "blob",
+      "path": "work/backtest/outputs/live_recovery/20260830/v16-audit/operator/test_v16_recovery_controller.ps1",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "193471b6f11d603c8016c3ea4ec2a6f79e308675c340a2ea54206c1a245d6024",
+      "denylist_match_count": 2,
+      "denylist_rules": [
+        {
+          "match_count": 2,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [
+        "$.powershell_account_literal"
+      ],
+      "object": "97e0ac27ba6efd3e36df6adc7ba199e911882998",
+      "object_type": "blob",
+      "path": "work/backtest/outputs/live_recovery/20260830/v16-audit/operator/v16_controller_clean_process_e2e.ps1",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "d8b7c1bb41577d0025ca25029f0af1829693041d1ddd038fdc606437e8d6d351",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [
+        "$.powershell_account_literal"
+      ],
+      "object": "17a7d40381f53dba4e4090b6d6e5797eb12b69f7",
+      "object_type": "blob",
+      "path": "work/backtest/outputs/live_recovery/20260830/v16-audit/operator/v16_recovery_controller.ps1",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "71dd4e3b66c8f968534e87308f284e0df2e37bb9066ef1afcc3106b0f3394c2c",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [
+        "$.LOGIN"
+      ],
+      "object": "308bcc1d26df29f6fcd1a6b3b1180fa2ace636ff",
+      "object_type": "blob",
+      "path": "work/backtest/scripts/discover_super1_xm_account.py",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "aac9c831b3038fcfb9092ecf03d3d432bbe3b11e9346478561d9f8aa44c327da",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [
+        "$.ACCOUNT_LOGIN"
+      ],
+      "object": "f3d027e4a107a38568adc9291aea6b5f1473e16f",
+      "object_type": "blob",
+      "path": "work/backtest/scripts/discover_xm_mt5_server.py",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "98b6d8ce5266abf958e70040b4ce88320f720806e399e45c19d69ace7da910f8",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [
+        "$.EXPECTED_LOGIN"
+      ],
+      "object": "62a2f37e34e0282cd1f09f314c044933fb60b07a",
+      "object_type": "blob",
+      "path": "work/backtest/scripts/mt5_market_roundtrip_smoke.py",
+      "structural_violation": true
+    },
+    {
+      "blob_sha256": "de7795293146786f061d85f141abb8fb7e6155040539f51def60cdef3be54139",
+      "denylist_match_count": 6,
+      "denylist_rules": [
+        {
+          "match_count": 6,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "36d7af2fbdf4af7865240a2485eb0dd26b0d9d5c",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_super1_continuation.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "2dc8a3a30850373996b66f17f0941bf1b3177293ef0727eb9fdf729512eb34cb",
+      "denylist_match_count": 14,
+      "denylist_rules": [
+        {
+          "match_count": 14,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "13ac1d46bd0805db7f747383574c5ee10062a7b9",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_super1_xm_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "6ce20bf7acb087c746a325f58344db404acc0872941cb8ae6de6cc1cd562e48b",
+      "denylist_match_count": 12,
+      "denylist_rules": [
+        {
+          "match_count": 12,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [],
+      "object": "00f54b61a9b389826f62dbd671b6025d26d79371",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_xm_mt5_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "6d980d0affab76fa9eabe0b3ba61c8e63adb65947fd34352c4cfe831c611cb68",
+      "denylist_match_count": 6,
+      "denylist_rules": [
+        {
+          "match_count": 6,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "f8f137c2ab9a75dec9ab25392f77e2f07b3f2119",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_super1_continuation.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "c2e953160fad678587934198af9b4dc4f650338a980dc7ce9613682a9df15a29",
+      "denylist_match_count": 13,
+      "denylist_rules": [
+        {
+          "match_count": 13,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "8f114b1f48d71779910c289a85c0e7bfd9f6c3f3",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_super1_xm_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "658ec3ec1b88f46a9025bd05926bbc71ecae37d753f8bf0a6ceb2e392b5c23fd",
+      "denylist_match_count": 12,
+      "denylist_rules": [
+        {
+          "match_count": 12,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [],
+      "object": "73dcad0171b2af30a3062b92000397f47812fee9",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_xm_mt5_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "bde7655263d4cdd3f0579e2cf0165b6b0297ba75dfaf2978ea6b733ab2ceb1c3",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "424d5cc53a72cde995f9adda080366cac51ff93b",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "52add39bfb81e55bf9553d19b8bc675cdf186c6cb5159a7fd8808f51202b386c",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "0c745d7dac5b75c226051dc8a9cfa7568d5d1385",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_super1_xm_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "90e68d91982b944b33a1dc25da5a036738fbb616597d43d585cd677937916510",
+      "denylist_match_count": 12,
+      "denylist_rules": [
+        {
+          "match_count": 12,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [],
+      "object": "8bc023fd39df191bedf6ba327c6296d72822805b",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_xm_mt5_forward.py",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "d2039d20115253927c8165935111499312e412bc7b35cf85b111e164f2288b58",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "52db3daa7dccfad35cea8f243fb57c65219b22bf",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "e54a5a1ab72657640a001af3a738f158abaa10b27c6862efce166e0daa384122",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "17a5b0fc489c1e5cab9aa316147df3d346d93455",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "f64d27cdc69da1dcbc88ae198a8a1a0c734aad9fe5e093e5fb249c07d42f3a57",
+      "denylist_match_count": 1,
+      "denylist_rules": [
+        {
+          "match_count": 1,
+          "rule_id": "denylist-01dae9d3d2af2332"
+        }
+      ],
+      "field_paths": [],
+      "object": "0ffe1469c2f96a8c8b611dbd07682b3e235ec9fa",
+      "object_type": "blob",
+      "path": "work/backtest/deploy/rollover_super1_campaign_windows.ps1",
+      "structural_violation": false
+    },
+    {
+      "blob_sha256": "eb4a6737396c66b87f4d9436625cb9ba61c2a43aa36fd7a707e6a656a823f565",
+      "denylist_match_count": 12,
+      "denylist_rules": [
+        {
+          "match_count": 12,
+          "rule_id": "denylist-5c5e3c057c364750"
+        }
+      ],
+      "field_paths": [],
+      "object": "496c1d829fc237b8258a8ecdf7df678881c83c64",
+      "object_type": "blob",
+      "path": "work/backtest/tests/test_xm_mt5_forward.py",
+      "structural_violation": false
+    }
+  ],
+  "ref_name_match_count": 0,
+  "scanned_bytes": 126556580,
+  "scanner_source_sha256": "7fda43ad942a76120f807033f3fdbb00a0713b77276a1751c385fb15bc084ad3",
+  "schema_version": 3,
+  "source_head": "023e39b288863ac93df9e7cfa1b7f218029f6458",
+  "source_unchanged": true,
+  "started_at_utc": "2026-09-19T14:52:06.078715Z",
+  "status": "PASS",
+  "tag_note_match_count": 0,
+  "tree_path_match_count": 0,
+  "working_tree_denylist_match_count": 0,
+  "working_tree_match_count": 0,
+  "working_tree_structural_violation_count": 0
+}

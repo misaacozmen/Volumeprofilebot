@@ -116,7 +116,7 @@ def test_empty_terminal_history_starts_at_nonnegative_scale() -> None:
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045,
+                login=20202002,
                 server="XMGlobal-MT5 6",
                 company="XM Global Limited",
                 trade_mode=0,
@@ -193,7 +193,7 @@ def test_m03_terminal_r_uses_real_super1_deal_chain_and_lookback(monkeypatch, re
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045,
+                login=20202002,
                 server="XMGlobal-MT5 6",
                 company="XM Global Limited",
                 trade_mode=0,
@@ -254,7 +254,7 @@ def test_m03_terminal_r_is_broker_sidecar_bound_and_ignores_event_r_claims(tmp_p
     })
     broker_history = {
         "schema_version": 1,
-        "account_login": 1301910045,
+        "account_login": 20202002,
         "server": "XMGlobal-MT5 6",
         "observed_at": "2026-08-05T14:00:00+00:00",
         "terminal_history_days": 365,
@@ -262,7 +262,7 @@ def test_m03_terminal_r_is_broker_sidecar_bound_and_ignores_event_r_claims(tmp_p
     }
     positions = {
         "schema_version": 1,
-        "account_login": 1301910045,
+        "account_login": 20202002,
         "server": "XMGlobal-MT5 6",
         "observed_at": "2026-08-05T14:00:00+00:00",
         "terminal_history_days": 365,
@@ -287,7 +287,7 @@ def test_m03_terminal_r_is_broker_sidecar_bound_and_ignores_event_r_claims(tmp_p
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045, server="XMGlobal-MT5 6", company="XM Global Limited", trade_mode=0
+                login=20202002, server="XMGlobal-MT5 6", company="XM Global Limited", trade_mode=0
             )
 
         def terminal_info(self):
@@ -307,7 +307,7 @@ def test_m03_terminal_r_is_broker_sidecar_bound_and_ignores_event_r_claims(tmp_p
     client.mt5 = SidecarMt5()
     client.magic = 260805101
     client.config = json.loads(MODULE.RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    client.login_id = 1301910045
+    client.login_id = 20202002
     client.connected = True
     client.demo_verified = True
     state = client._terminal_r_state()
@@ -574,7 +574,7 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
             self.pending = []
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == 1301910045 and kwargs["server"] == "XMGlobal-MT5 6"
+            return kwargs["login"] == 20202002 and kwargs["server"] == "XMGlobal-MT5 6"
 
         def shutdown(self):
             pass
@@ -584,7 +584,7 @@ def test_super1_real_overlay_risk_request_reaches_controlled_broker_boundary(
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045,
+                login=20202002,
                 server="XMGlobal-MT5 6",
                 company="XM Global Limited",
                 trade_mode=0,
@@ -795,7 +795,7 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
             self.last_request = None
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == 1301910045 and kwargs["server"] == "XMGlobal-MT5 6"
+            return kwargs["login"] == 20202002 and kwargs["server"] == "XMGlobal-MT5 6"
 
         def shutdown(self):
             pass
@@ -805,7 +805,7 @@ def test_super1_c02_full_filter_risk_prefix_ledger_and_sdk_boundary(
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045,
+                login=20202002,
                 server="XMGlobal-MT5 6",
                 company="XM Global Limited",
                 trade_mode=0,
@@ -1206,7 +1206,7 @@ def test_t01_full_two_leg_fetch_aggregation_prefix_decision_and_real_reconcile(
 
             def account_info(self):
                 return SimpleNamespace(
-                    login=1301910045,
+                    login=20202002,
                     server="XMGlobal-MT5 6",
                     company="XM Global Limited",
                     trade_mode=0,
@@ -1379,14 +1379,14 @@ def test_super1_reconcile_uses_fresh_final_guard_and_preserves_later_spx_candida
             self.pending = []
 
         def initialize(self, **kwargs):
-            return kwargs["login"] == 1301910045 and kwargs["server"] == "XMGlobal-MT5 6"
+            return kwargs["login"] == 20202002 and kwargs["server"] == "XMGlobal-MT5 6"
 
         def shutdown(self):
             pass
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045,
+                login=20202002,
                 server="XMGlobal-MT5 6",
                 company="XM Global Limited",
                 trade_mode=0,
@@ -1838,7 +1838,7 @@ def test_c02_strictly_newer_filter_evidence_promotes_only_inside_window(
 
         def account_info(self):
             return SimpleNamespace(
-                login=1301910045, server="XMGlobal-MT5 6", company="XM Global Limited",
+                login=20202002, server="XMGlobal-MT5 6", company="XM Global Limited",
                 trade_mode=0, trade_allowed=True, trade_expert=True, equity=10_000.0,
             )
 
