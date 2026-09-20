@@ -57,6 +57,7 @@ tests/test_data_integrity.py::test_structural_contract_reports_nonfinite_negativ
 tests/test_data_integrity.py::test_loader_rejects_parse_loss_instead_of_dropping_row
 tests/test_data_integrity.py::test_loader_deduplicates_identical_overlap_bars_by_default
 tests/test_data_integrity.py::test_loader_rejects_conflicting_duplicate_even_in_identical_mode
+tests/test_deploy_001_evidence_manifest.py::test_evidence_manifest_binds_checkout_and_committed_bytes
 tests/test_deploy_001_release_contract.py::test_release_integrity_contract_binds_the_exact_git_source_and_bytes
 tests/test_deploy_001_release_contract.py::test_both_upgraders_have_exactly_the_contract_pin
 tests/test_deploy_001_release_contract.py::test_builder_byte_gate_rejects_crlf_bom_and_single_byte_corruption
@@ -64,8 +65,10 @@ tests/test_deploy_001_release_contract.py::test_preflight_failure_cannot_reach_r
 tests/test_deploy_001_release_contract.py::test_ast_harness_executes_real_stop_bodies_and_phase_guards
 tests/test_deploy_001_release_contract.py::test_phase_mutations_are_sensitive
 tests/test_deploy_001_release_contract.py::test_mutated_forward_preflight_guard_fails_the_real_catch_harness
+tests/test_deploy_001_release_contract.py::test_forward_production_phase_chain_rejects_stop_and_rollback_mutants
 tests/test_deploy_001_release_contract.py::test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries
 tests/test_deploy_001_release_contract.py::test_ast_main_catch_finally_preserves_preflight_ownership_and_primary_error
+tests/test_deploy_001_release_contract.py::test_super1_production_phase_chain_rejects_preentry_stop_mutants
 tests/test_deploy_001_release_contract.py::test_super1_ast_catch_and_finally_preflight_path_is_executed
 tests/test_deploy_001_release_contract.py::test_builder_checks_contract_before_signing_key_resolution
 tests/test_deployment_security.py::test_windows_installers_require_signed_archive_and_offline_hash_lock
@@ -527,4 +530,4 @@ E   RuntimeError: V08 manifest SHA-256 mismatch: 54bf69bc48357ae84e6c2343f707132
 =========================== short test summary info ===========================
 ERROR tests/test_super1_observation.py - RuntimeError: V08 manifest SHA-256 m...
 !!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-513 tests collected, 1 error in 0.62s
+516 tests collected, 1 error in 2.73s

@@ -37,19 +37,19 @@ helper entry’si aynı byte sözleşmesine uymalıdır; hash otomatik düzeltil
 ## Kanıt ve durum
 
 Yerel Windows PowerShell AST parse: üç production builder/upgrader script’inde hata yok.
-Hedef regresyon kümesi: CPython 3.14.5 üzerinde 96 test geçti. Genişletilmiş
-DEPLOY-001 + deployment/security + ForwardShadow + v16 + XM/check kümesi 213 test
-geçti. Tam koleksiyon 513 testte, aynı checkout’taki önceden mevcut `V08 manifest
+Hedef regresyon kümesi: CPython 3.14.5 üzerinde 98 test geçti. Genişletilmiş
+DEPLOY-001 + deployment/security + ForwardShadow + v16 + XM/check kümesi 215 test
+geçti. Tam koleksiyon 516 testte, aynı checkout’taki önceden mevcut `V08 manifest
 SHA-256 mismatch` import hatası nedeniyle durdu; bu hata başarı sayılmadı.
 Gerçek signing, deployment, MT5, broker, görev, süreç veya ACL işlemi
 çalıştırılmadı.
 
 Kanıt komutları Windows PowerShell 5.1 harness’i ve CPython 3.14.5/pytest 9.1.1 ile çalıştırıldı:
 
-- `python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py` — exit `0`, `96 passed`.
-- Genişletilmiş yedi dosyalı komut (yukarıdaki beş dosyaya `test_xm_mt5_forward.py` ve `test_check_mt5_flat.py` eklenerek) — exit `0`, `213 passed`.
-- Tam koleksiyon `python -m pytest --collect-only -q` — exit `1`, `513 collected`, V08 manifest import hatası.
-- AST harness — exit `0`; gerçek stop gövdeleri, gerçek catch/finally zincirleri, pre-entry guard, ownership cleanup, partial-stop, bağımsız lock disposal, cleanup failure ve mutation duyarlılığı doğrulandı.
+- `python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py` — exit `0`, `98 passed`.
+- Genişletilmiş yedi dosyalı komut (yukarıdaki beş dosyaya `test_xm_mt5_forward.py` ve `test_check_mt5_flat.py` eklenerek) — exit `0`, `215 passed`.
+- Tam koleksiyon `python -m pytest --collect-only -q` — exit `2`, `516 collected`, V08 manifest import hatası.
+- AST harness — exit `0`; ForwardShadow ve Super1 gerçek production faz geçişleri, gerçek catch/finally zincirleri, pre-entry guard, ownership cleanup, partial-stop, bağımsız lock disposal, cleanup failure ve erken-stop/bayrak/rollback-gate mutation duyarlılığı doğrulandı.
 - Builder missing-key probe — exit `1`; sözleşme kapısından sonra beklenen DPAPI key hatasına ulaştı.
 - Exact commit’e bağlı ham JUnit/log/AST çıktıları ve SHA-256 manifesti: `docs/DEPLOY_001_EVIDENCE/manifest.json`.
 
