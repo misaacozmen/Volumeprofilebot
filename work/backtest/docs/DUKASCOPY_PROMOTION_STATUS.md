@@ -1,5 +1,16 @@
 # Dukascopy 12–19 promotion durumu
 
+Güncelleme: **2026-09-20**. Yeni dosya-bağı doğrulaması ve dış kabul girdileri:
+[CURRENT_MAIN_ACCEPTANCE_20260920.md](CURRENT_MAIN_ACCEPTANCE_20260920.md).
+42 manifest/minute/derived bağı eşleşti; 14 legacy acceptance attestation bağı
+önceki snapshot ile eşleşmedi (auditor ve downloader kaynak hash'leri farklı).
+Provider/owner kabulü yok; residual 99 yalnız tarihsel snapshot sonucudur.
+
+## 19 Eylül kaydı — tarihsel referans
+
+Aşağıdaki kaynak ve kabul durumu bu eski tarihe aittir; 14 VERIFIED_LEGACY
+etiketi güncel dış kabul olarak kullanılamaz.
+
 Genel durum: `ACTIVE_PREPARATION`
 
 Bu hat askıya alınmış değildir. Dış girdiye bağlı maddeler ayrıca

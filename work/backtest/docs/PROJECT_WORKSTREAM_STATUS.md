@@ -1,5 +1,21 @@
 # Proje iş akışları güncel durum kaydı
 
+Güncelleme: **2026-09-20**. Güncel beş iş kalemi ve bağımsız kabul sonucu:
+[CURRENT_MAIN_ACCEPTANCE_20260920.md](CURRENT_MAIN_ACCEPTANCE_20260920.md).
+
+DEPLOY-001 `779a34f` ile main'e merge edildi. V08/Super1 checkout düzeltmesi
+`af07dcb` birleşik ref'inde; hedef regresyon 219 passed, verifier 2 passed,
+koleksiyon 576 node. Temiz checkout tam test: 571 passed, 5 failed.
+Tam release kapısı ve gerçek deployment kabulü açık.
+Risk 1–11'in ilgili uygulamaları main'de yok; promotion snapshot'ındaki 14 legacy
+attestation bağı güncel dosyalarla uyuşmuyor. **DEPLOYMENT_READY değildir.**
+
+## 19 Eylül kaydı — tarihsel referans
+
+Aşağıdaki commit, hash, test ve durumlar önceki denetimin kaydıdır; güncel
+main veya güncel dış kabul iddiası değildir. Yukarıdaki tarihli kabul kaydı
+önceliklidir.
+
 Kaynak worktree: `codex/workstream-status-release-audit`.
 
 DEPLOY-001 uygulama worktree’si: `codex/deploy-001-release-contract`, exact kaynak
