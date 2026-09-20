@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 
@@ -36,7 +37,7 @@ def test_forward_flat_acl_rights_are_materialized_before_cast() -> None:
 
 def test_forward_final_archive_seal_does_not_rewalk_locked_transactions() -> None:
     text = source()
-    final = text[text.index("$finalArchiveAclError = $null") :]
+    final = text[text.rindex("finally {") :]
     assert "-Path $ArchiveRoot `" in final
     assert "-RootOnly `" in final
 
@@ -155,11 +156,13 @@ def test_forward_upgrade_rollback_and_finally_are_fail_closed_on_running_code() 
     assert "Stop-ForwardRuntime" in text[finally_block:]
     assert "Assert-TaskPairStopped" in text[finally_block:]
     assert "Assert-NoForwardPythonProcesses" in text[finally_block:]
-    assert "final stopped-state enforcement failed" in text
-    final_lock_error = text.index("$finalLockCleanupError = $null", finally_block)
+    assert '"final stopped-state enforcement:' in text
+    final_lock_error = text.index("Close-SignedReleaseLocks -Locks $SignedReleaseLocks -Errors $cleanupErrors", finally_block)
     final_stop = text.index("Stop-ForwardRuntime", final_lock_error)
-    final_lock_throw = text.index("signed release lock cleanup failed", final_stop)
-    assert final_lock_error < final_stop < final_lock_throw
+    cleanup_summary = text.index("$cleanupSummary = $cleanupErrors -join '; '", final_stop)
+    assert final_lock_error < final_stop < cleanup_summary
+    assert "PSModulePath restore" in text[finally_block:]
+    assert "RunnerProbeTerminalConfigCreated" in text[finally_block:]
     process_filter = text[
         text.index("function Get-ForwardPythonProcesses") : text.index(
             "function Assert-TaskPairStopped"
@@ -324,7 +327,10 @@ def test_forward_upgrade_private_build_roots_and_parent_delete_guard_are_ordered
     assert create_stage < expand < protect_populated_stage
     assert create_venv < build_venv < install
 
-    create_validation = text.index("New-ForwardPrivateDirectory -Path $ValidationRoot")
+    create_validation = re.search(
+        r"New-ForwardPrivateDirectory\s+`?\s*-Path\s+\$ValidationRoot",
+        text,
+    ).start()
     init = text.index("--output-root $ValidationRoot init")
     assert create_validation < init
 
@@ -356,7 +362,10 @@ def test_forward_upgrade_private_trees_never_grant_the_caller_or_runner() -> Non
         "$VenvStaging",
         "$ValidationRoot",
     ):
-        assert f"New-ForwardPrivateDirectory -Path {private_root}" in text
+        assert re.search(
+            rf"New-ForwardPrivateDirectory\s+`?\s*-Path\s+{re.escape(private_root)}",
+            text,
+        )
 
     archive_lock = text[
         text.index("$TrustedInfrastructureSids") : text.index(

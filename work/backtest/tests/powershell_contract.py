@@ -79,7 +79,7 @@ function Test-Unreachable($node) {
     $facts += [ordered]@{ kind = "assignment"; left = $_.Left.Extent.Text; right_type = $_.Right.GetType().Name; right_text = $_.Right.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] }, $true) | ForEach-Object {
-    $facts += [ordered]@{ kind = "try"; has_finally = ($null -ne $_.Finally); has_catch = ($null -ne $_.CatchClauses); finally_text = if ($null -ne $_.Finally) { $_.Finally.Extent.Text } else { $null }; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
+    $facts += [ordered]@{ kind = "try"; has_finally = ($null -ne $_.Finally); has_catch = ($null -ne $_.CatchClauses); catch_text = if ($null -ne $_.CatchClauses) { (@($_.CatchClauses)[0]).Extent.Text } else { $null }; finally_text = if ($null -ne $_.Finally) { $_.Finally.Extent.Text } else { $null }; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset; scope = (Get-Scope $_) }
 }
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true) | ForEach-Object {
     $clauses = @($_.Clauses | ForEach-Object { [ordered]@{ condition = [string]$_.Item1.Extent.Text; branch = "true"; start = $_.Item2.Extent.StartOffset; end = $_.Item2.Extent.EndOffset } })

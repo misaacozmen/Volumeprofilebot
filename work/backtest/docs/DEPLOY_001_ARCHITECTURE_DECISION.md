@@ -1,6 +1,6 @@
 # DEPLOY-001 — Uygulama kararı
 
-Durum: uygulama adayı hazır; bağımsız mimar kabulü ve gerçek release/deployment kapıları açık.
+Durum: düzeltme adayı; bağımsız mimar kabulü ve gerçek release/deployment kapıları açık.
 
 ## Kaynak
 
@@ -25,7 +25,10 @@ task yazımı, aktif app/venv/state/config/ACL mutasyonu ve rollback çalışmaz
 Runtime kontrolüne girişten sonra mevcut stopped-state kapısı, transaction sahiplik
 bayrakları ve fail-closed rollback korunur. ForwardShadow’un bağımsız erken stop
 fonksiyonu kaldırılmıştır; Super1 cleanup ve rollback yolları faz bayrağıyla
-koşulludur.
+koşulludur. Probe dosyası ve validation root yalnız bu çağrının başarılı oluşturma
+bayrağıyla temizlenir; preflight reddinde mevcut yol silinmez. Lock, handle ve
+environment geri yüklemeleri birbirinden bağımsız denenir; cleanup hataları
+birincil exception’ı inner olarak korur.
 
 Builder, signing key’i çözmeden önce sözleşme metadata’sını, kaynak commit/tree/blob
 kimliğini, temiz checkout byte’larını ve iki upgrader pinini doğrular. Staging ve ZIP
@@ -34,23 +37,19 @@ helper entry’si aynı byte sözleşmesine uymalıdır; hash otomatik düzeltil
 ## Kanıt ve durum
 
 Yerel Windows PowerShell AST parse: üç production builder/upgrader script’inde hata yok.
-Hedef regresyon kümesi: CPython 3.11.9 üzerinde 92 test geçti. Ayrı artifact
-kapısında `test_deployment_security.py`, `test_xm_mt5_forward.py`,
-`test_check_mt5_flat.py` ve `test_v16_deployment_contract.py` birlikte 170 test
-geçti. `test_super1_xm_forward.py` ise değişmemiş baseline candidate hash
-uyuşmazlığı nedeniyle 50 setup hatası verdi; bu hata DEPLOY-001 kapsamına
-alınmadı ve başarı sayılmadı. Tam koleksiyon 507 testte, aynı checkout'taki
-önceden mevcut `V08 manifest SHA-256 mismatch` import hatası nedeniyle durdu.
+Hedef regresyon kümesi: CPython 3.14.5 üzerinde 96 test geçti. Genişletilmiş
+DEPLOY-001 + deployment/security + ForwardShadow + v16 + XM/check kümesi 213 test
+geçti. Tam koleksiyon 513 testte, aynı checkout’taki önceden mevcut `V08 manifest
+SHA-256 mismatch` import hatası nedeniyle durdu; bu hata başarı sayılmadı.
 Gerçek signing, deployment, MT5, broker, görev, süreç veya ACL işlemi
 çalıştırılmadı.
 
-Kanıt komutları Windows PowerShell 5.1 ve CPython 3.11.9 ile çalıştırıldı:
+Kanıt komutları Windows PowerShell 5.1 harness’i ve CPython 3.14.5/pytest 9.1.1 ile çalıştırıldı:
 
-- `py -3.11 -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py` — exit `0`, `92 passed`.
-- Artifact alt kümesi (`test_deployment_security.py`, `test_xm_mt5_forward.py`, `test_check_mt5_flat.py`, `test_v16_deployment_contract.py`) — exit `0`, `170 passed`.
-- Tam koleksiyon `py -3.11 -m pytest --collect-only -q` — exit `1`, `509 collected`, V08 manifest import hatası.
-- Birleşik artifact komutu — exit `1`, `170 passed`, `50 errors`; Super1 candidate hash fixture kapısı.
-- AST mock harness — exit `0`; gerçek stop gövdeleri, pre-entry guard, partial-stop ve mutation duyarlılığı doğrulandı.
+- `python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py` — exit `0`, `96 passed`.
+- Genişletilmiş yedi dosyalı komut (yukarıdaki beş dosyaya `test_xm_mt5_forward.py` ve `test_check_mt5_flat.py` eklenerek) — exit `0`, `213 passed`.
+- Tam koleksiyon `python -m pytest --collect-only -q` — exit `1`, `513 collected`, V08 manifest import hatası.
+- AST harness — exit `0`; gerçek stop gövdeleri, gerçek catch/finally zincirleri, pre-entry guard, ownership cleanup, partial-stop, bağımsız lock disposal, cleanup failure ve mutation duyarlılığı doğrulandı.
 - Builder missing-key probe — exit `1`; sözleşme kapısından sonra beklenen DPAPI key hatasına ulaştı.
 
 `PASS_CODE` yalnız bu yerel test kanıtını ifade eder. `MERGED_MAIN`,

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import zipfile
 from pathlib import Path
 
 from powershell_contract import facts, powershell_ast, powershell_harness
@@ -120,6 +121,17 @@ def _if_extent(path: Path, condition: str, minimum_start: int = 0) -> str:
         if item["condition_text"] == condition and item["start"] >= minimum_start
     )
     return source[fact["start"] : fact["end"]]
+
+
+def _main_try(path: Path) -> dict[str, object]:
+    return max(
+        (
+            item
+            for item in facts(path, "try")
+            if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]
+        ),
+        key=lambda item: int(item["end"]) - int(item["start"]),
+    )
 
 
 def test_ast_harness_executes_real_stop_bodies_and_phase_guards() -> None:
@@ -253,6 +265,324 @@ def test_phase_mutations_are_sensitive() -> None:
         except (AssertionError, ValueError):
             continue
         raise AssertionError("phase mutation unexpectedly passed the contract checks")
+
+
+def test_mutated_forward_preflight_guard_fails_the_real_catch_harness(tmp_path: Path) -> None:
+    source = (DEPLOY / "upgrade_forward_shadow_windows.ps1").read_text(encoding="utf-8")
+    original_path = tmp_path / "forward-original.ps1"
+    mutant_path = tmp_path / "forward-mutant.ps1"
+    original_path.write_text(source, encoding="utf-8")
+    mutant_path.write_text(
+        source.replace(
+            "    if (-not $runtimeControlEntered) {\n        throw $primaryError\n    }\n",
+            "",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    def run_catch(path: Path) -> subprocess.CompletedProcess[str]:
+        main_try = _main_try(path)
+        close_locks = _function(path, "Close-SignedReleaseLocks")
+        return powershell_harness(
+            r'''
+$events = [Collections.Generic.List[string]]::new()
+$UpgradeSucceeded = $false
+$runtimeControlEntered = $false
+$SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
+function Stop-ForwardRuntime {
+    [void]$events.Add("STOP")
+    throw "MUTANT_ROLLBACK_REACHED"
+}
+''' + close_locks + r'''
+try {
+    try { throw [Exception]::new("INJECTED_PREFLIGHT_FAILURE") }
+    ''' + str(main_try["catch_text"]) + r'''
+} catch { $observed = $_ }
+if ($events.Count -ne 0) { throw "preflight catch reached runtime rollback" }
+if ($observed.Exception.Message -notlike "*INJECTED_PREFLIGHT_FAILURE*") { throw $observed }
+'ORIGINAL_GUARD_PASS'
+''',
+        )
+
+    original = run_catch(original_path)
+    assert original.returncode == 0, original.stderr
+    assert "ORIGINAL_GUARD_PASS" in original.stdout
+
+    mutant = run_catch(mutant_path)
+    assert mutant.returncode != 0
+    assert "preflight catch reached runtime rollback" in mutant.stdout + mutant.stderr
+
+
+def test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries(
+    tmp_path: Path,
+) -> None:
+    builder = (DEPLOY / "build_signed_windows_release.ps1").read_text(encoding="utf-8")
+    functions = builder[
+        builder.index("function Get-ByteSha256") : builder.index("$ReleaseIntegrityContract =")
+    ]
+    value = contract()
+    contract_literal = (
+        "[pscustomobject]@{"
+        f"helper_path='deploy/release_integrity.ps1'; byte_length={value['byte_length']}; "
+        f"bom=$false; cr_count=0; lf_count={value['lf_count']}; "
+        f"sha256_lf='{value['sha256_lf']}'"
+        "}"
+    )
+    helper_bytes = (DEPLOY / "release_integrity.ps1").read_bytes()
+    cases = {
+        "valid": [("deploy/release_integrity.ps1", helper_bytes)],
+        "crlf": [("deploy/release_integrity.ps1", helper_bytes.replace(b"\n", b"\r\n"))],
+        "bom": [("deploy/release_integrity.ps1", b"\xef\xbb\xbf" + helper_bytes)],
+        "duplicate": [
+            ("deploy/release_integrity.ps1", helper_bytes),
+            ("deploy/release_integrity.ps1", helper_bytes),
+        ],
+        "missing": [("deploy/other.ps1", helper_bytes)],
+    }
+    for name, entries in cases.items():
+        path = tmp_path / f"{name}.zip"
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for entry_name, payload in entries:
+                archive.writestr(entry_name, payload)
+        result = powershell_harness(
+            functions
+            + r'''
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead($args[0])
+try {
+        Assert-ReleaseIntegrityZipEntry -Zip $zip -Contract (CONTRACT)
+}
+finally { $zip.Dispose() }
+'ZIP_PASS'
+'''.replace("CONTRACT", contract_literal),
+            str(path),
+        )
+        if name == "valid":
+            assert result.returncode == 0, result.stderr
+            assert "ZIP_PASS" in result.stdout
+        else:
+            assert result.returncode != 0
+
+
+def test_ast_main_catch_finally_preserves_preflight_ownership_and_primary_error() -> None:
+    forward = DEPLOY / "upgrade_forward_shadow_windows.ps1"
+    forward_try = _main_try(forward)
+    forward_catch = str(forward_try["catch_text"])
+    forward_finally = str(forward_try["finally_text"])
+    close_locks = _function(forward, "Close-SignedReleaseLocks")
+    remove_tree = _function(forward, "Remove-GeneratedTree")
+    preflight = powershell_harness(
+        r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeControlEntered = $false
+$failureToReport = $null
+$UpgradeSucceeded = $false
+$PreviousPSModulePath = "before-module-path"
+$PreviousPSModulePathCaptured = $true
+$PreviousServerEnv = $null
+$PreviousTerminalEnv = $null
+$PreviousPythonEnvironment = @{}
+$env:PSModulePath = "trusted-module-path"
+$TargetRunnerPassword = $null
+$RunnerProbeTerminalConfigLock = $null
+$ProductionTerminalConfigLock = $null
+$RunnerProbeTerminalConfigCreated = $false
+$ValidationRootCreated = $false
+$SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
+$ArchiveBoundaryHardened = $false
+$SelfReadLock = $null
+$RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
+$ValidationRoot = "C:\fixture\upgrade-validation.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+function Remove-Item {
+    param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+    throw "UNEXPECTED_DELETE:$LiteralPath"
+}
+''' + remove_tree + close_locks + r'''
+try { try { throw [Exception]::new("INJECTED_PREFLIGHT_FAILURE") } ''' + forward_catch + r''' finally ''' + forward_finally + r''' } catch { $observed = $_ }
+if (-not $observed) { throw "preflight failure was not observed" }
+if ($observed.Exception.Message -notlike "*INJECTED_PREFLIGHT_FAILURE*") { throw $observed }
+"OBSERVED=$($observed.Exception.Message)"
+"ENV=$env:PSModulePath"
+if ($env:PSModulePath -cne "before-module-path") { throw "PSModulePath was not restored" }
+'PREFLIGHT_PASS'
+''',
+    )
+    preflight_output = preflight.stdout + preflight.stderr
+    assert preflight.returncode == 0, preflight_output
+    assert "INJECTED_PREFLIGHT_FAILURE" in preflight_output
+    assert "UNEXPECTED_DELETE" not in preflight_output
+    assert "cleanup failed" not in preflight_output.lower()
+    assert "trusted-module-path" not in preflight_output
+    assert "PREFLIGHT_PASS" in preflight.stdout
+
+    lock_probe = powershell_harness(
+        r'''
+Add-Type @'
+using System;
+using System.Collections.Generic;
+public sealed class Deploy001FakeLock : IDisposable {
+    public static readonly List<string> Events = new List<string>();
+    private readonly string name;
+    private readonly bool fail;
+    public Deploy001FakeLock(string name, bool fail) { this.name = name; this.fail = fail; }
+    public void Dispose() { Events.Add("DISPOSE:" + name); if (fail) throw new InvalidOperationException("dispose:" + name); }
+}
+'@
+''' + close_locks + r'''
+$locks = [Collections.Generic.List[IDisposable]]::new()
+[void]$locks.Add([Deploy001FakeLock]::new("first", $true))
+[void]$locks.Add([Deploy001FakeLock]::new("second", $false))
+$errors = [Collections.Generic.List[string]]::new()
+Close-SignedReleaseLocks -Locks $locks -Errors $errors
+if ([string]::Join(",", [Deploy001FakeLock]::Events) -ne "DISPOSE:first,DISPOSE:second") { throw "all lock handles were not attempted" }
+if ($locks.Count -ne 1) { throw "failed lock was incorrectly recorded as disposed" }
+if ($errors.Count -ne 1) { throw "lock cleanup error was not collected" }
+'LOCKS_PASS'
+''',
+    )
+    assert lock_probe.returncode == 0, lock_probe.stderr
+    assert "LOCKS_PASS" in lock_probe.stdout
+
+    cleanup_failure = powershell_harness(
+        r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeControlEntered = $true
+$failureToReport = [Exception]::new("INJECTED_PRIMARY_FAILURE")
+$UpgradeSucceeded = $false
+$PreviousPSModulePath = "before-module-path"
+$PreviousPSModulePathCaptured = $true
+$PreviousServerEnv = $null
+$PreviousTerminalEnv = $null
+$PreviousPythonEnvironment = @{}
+$env:PSModulePath = "trusted-module-path"
+$TargetRunnerPassword = $null
+$RunnerProbeTerminalConfigLock = $null
+$ProductionTerminalConfigLock = $null
+$RunnerProbeTerminalConfigCreated = $true
+$ValidationRootCreated = $false
+$SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
+$ArchiveBoundaryHardened = $false
+$SelfReadLock = $null
+$RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
+function Stop-ForwardRuntime {}
+function Assert-TaskPairStopped {}
+function Assert-NoForwardPythonProcesses {}
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    $true
+}
+function Remove-Item {
+    param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+    throw "INJECTED_CLEANUP_FAILURE:$LiteralPath"
+}
+''' + close_locks + r'''
+try {
+    try { 'body' } finally ''' + forward_finally + r'''
+} catch { $observed = $_ }
+if (-not $observed) { throw "cleanup failure was not observed" }
+if ($observed.Exception.Message -notlike "*INJECTED_PRIMARY_FAILURE*") { throw $observed }
+if ($observed.Exception.Message -notlike "*INJECTED_CLEANUP_FAILURE*") { throw $observed }
+if ($observed.Exception.Message -like "ForwardShadow cleanup failed:*") { throw "primary failure was masked" }
+'CLEANUP_FAILURE_PASS'
+''',
+    )
+    assert cleanup_failure.returncode == 0, cleanup_failure.stderr
+    assert "CLEANUP_FAILURE_PASS" in cleanup_failure.stdout
+
+    owned_cleanup = powershell_harness(
+        r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeControlEntered = $true
+$failureToReport = $null
+$UpgradeSucceeded = $false
+$PreviousPSModulePathCaptured = $false
+$PreviousServerEnv = $null
+$PreviousTerminalEnv = $null
+$PreviousPythonEnvironment = @{}
+$TargetRunnerPassword = $null
+$RunnerProbeTerminalConfigLock = $null
+$ProductionTerminalConfigLock = $null
+$RunnerProbeTerminalConfigCreated = $true
+$ValidationRootCreated = $true
+$SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
+$ArchiveBoundaryHardened = $false
+$SelfReadLock = $null
+$RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
+$ValidationRoot = "C:\fixture\upgrade-validation.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+$events = [Collections.Generic.List[string]]::new()
+$observed = $null
+function Stop-ForwardRuntime {}
+function Assert-TaskPairStopped {}
+function Assert-NoForwardPythonProcesses {}
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    $true
+}
+function Remove-Item {
+    param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+    [void]$events.Add("probe-delete")
+}
+function Remove-GeneratedTree {
+    param([string]$Path, [string]$ExpectedLeafPattern)
+    [void]$events.Add("validation-delete")
+}
+''' + close_locks + r'''
+try { try { 'body' } finally ''' + forward_finally + r''' } catch { $observed = $_ }
+if ($observed) { throw $observed }
+if ($RunnerProbeTerminalConfigCreated -or $ValidationRootCreated) { throw "owned cleanup flags were not cleared" }
+if ([string]::Join(',', $events) -ne "probe-delete,validation-delete") { throw "owned cleanup did not run" }
+'OWNED_CLEANUP_PASS'
+''',
+    )
+    assert owned_cleanup.returncode == 0, owned_cleanup.stderr
+    assert "OWNED_CLEANUP_PASS" in owned_cleanup.stdout
+
+
+def test_super1_ast_catch_and_finally_preflight_path_is_executed() -> None:
+    super1 = DEPLOY / "upgrade_super1_signed_app_windows.ps1"
+    outer = _main_try(super1)
+    transactional_tries = sorted(
+        (
+            item
+            for item in facts(super1, "try")
+            if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]
+        ),
+        key=lambda item: int(item["end"]) - int(item["start"]),
+        reverse=True,
+    )
+    inner = transactional_tries[1]
+    result = powershell_harness(
+        r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeHelpersReady = $false
+$runtimeControlEntered = $false
+$RuntimeConfigEvidence = @()
+$ReleaseInputLocks = [Collections.Generic.List[IDisposable]]::new()
+$SelfScriptLock = $null
+$PowerShellHostLock = $null
+$TerminalLock = $null
+$BootstrapPythonLock = $null
+$IntegrityScriptLock = $null
+$OriginalPSModulePath = "before-module-path"
+$OriginalPythonHome = $null
+$OriginalPythonPath = $null
+$env:PSModulePath = "trusted-module-path"
+$primaryError = $null
+$Result = $null
+    try {
+    try { throw [Exception]::new("INJECTED_SUPER1_PREFLIGHT_FAILURE") }
+    ''' + str(inner["catch_text"]) + r'''
+}
+catch { $primaryError = $_ }
+finally ''' + str(outer["finally_text"]) + r'''
+if (-not $primaryError) { throw "Super1 preflight error was not preserved" }
+if ($primaryError.Exception.Message -notlike "*INJECTED_SUPER1_PREFLIGHT_FAILURE*") { throw $primaryError }
+'SUPER1_PASS'
+''',
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SUPER1_PASS" in result.stdout
 
 
 def test_builder_checks_contract_before_signing_key_resolution(tmp_path: Path) -> None:
