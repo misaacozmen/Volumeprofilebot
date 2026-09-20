@@ -7,8 +7,7 @@
     "work/backtest/deploy/upgrade_forward_shadow_windows.ps1",
     "work/backtest/tests/powershell_contract.py",
     "work/backtest/tests/test_deploy_001_release_contract.py",
-    "work/backtest/tests/test_forward_upgrade_transaction.py",
-    "work/backtest/tests/test_deploy_001_evidence_manifest.py"
+    "work/backtest/tests/test_forward_upgrade_transaction.py"
   ],
   "environment": {
     "python": "3.14.5",
