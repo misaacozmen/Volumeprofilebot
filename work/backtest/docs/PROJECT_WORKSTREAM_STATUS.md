@@ -2,6 +2,14 @@
 
 Kaynak worktree: `codex/workstream-status-release-audit`.
 
+DEPLOY-001 uygulama worktree’si: `codex/deploy-001-release-contract`, exact kaynak
+`65b4ff10f9f01618df4af3249217a97ea9eb1e88` / tree
+`accc7a0d662691f0ee3e978bc83f3036ea93a1be`. Byte sözleşmesi ve faz politikası
+uygulaması [DEPLOY_001_ARCHITECTURE_DECISION.md](DEPLOY_001_ARCHITECTURE_DECISION.md)
+belgesindedir. Durum: `PASS_CODE` yerel hedef kümede; bağımsız mimar kabulü,
+CPython 3.11 release kapısı ve dış kabul bekleniyor. `MERGED_MAIN`,
+`PASS_EXTERNAL_ACCEPTANCE`, `DEPLOYMENT_READY` değildir.
+
 - Başlangıç commit: `e205e66a57ec5c54585c40d9e5ec36d179f4f7cf`.
 - Başlangıç tree: `452d347c513ca98dfeffa32b316b13b7659e765e`.
 - Bu tur yalnızca dokümantasyon ve repo dışı kanıt üretir.

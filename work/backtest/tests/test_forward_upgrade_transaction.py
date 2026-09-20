@@ -97,8 +97,8 @@ def test_forward_upgrade_is_signed_staged_and_leaves_tasks_stopped() -> None:
     assert "-Path $Venv `" in text
     assert "Start-ScheduledTask" not in text
     assert "$registeredTask.Run($null)" in text
-    assert text.count("Stop-ScheduledTask -TaskName $MainTask") >= 2
-    assert text.count("Stop-ScheduledTask -TaskName $WatchdogTask") >= 2
+    assert text.count("Stop-ScheduledTask -TaskName $MainTask") >= 1
+    assert text.count("Stop-ScheduledTask -TaskName $WatchdogTask") >= 1
     assert "-RestartCount 3" in text
     assert "$definition.Principal.RunLevel = 0" in text
     assert "-notlike \"*$ExpectedScript*\"" not in text
@@ -135,15 +135,23 @@ def test_forward_upgrade_is_signed_staged_and_leaves_tasks_stopped() -> None:
 
 def test_forward_upgrade_rollback_and_finally_are_fail_closed_on_running_code() -> None:
     text = source()
-    catch = text.index("catch {", text.index('state = "UPGRADED_TASKS_STOPPED"'))
-    rollback_gate = text.index("$rollbackRuntimeStopped = $false", catch)
-    unsafe_abort = text.index("rollback was not attempted because stopped state could not be proven", catch)
+    main_try = text.index("try {", text.index("$CandidateResults ="))
+    preflight_archive = text.index("$ExternalReleaseManifest = Assert-SignedReleaseArchive", main_try)
+    first_runtime_stop = text.index("Stop-ForwardRuntime\n", main_try)
+    runtime_flag = text.index("$runtimeControlEntered = $true", main_try)
+    rights_hardening = text.index("Set-ForwardAccountRightsExact", first_runtime_stop)
+    catch = text.index("catch {\n    $UpgradeSucceeded = $false")
+    rollback_gate = text.index("if (-not $runtimeControlEntered)", catch)
+    rollback_stop = text.index("Stop-ForwardRuntime", catch)
     first_candidate_cleanup = text.index("foreach ($candidate in @($CreatedCandidates))", catch)
     first_app_move = text.index('-Label "Rollback new app removal"', catch)
     finally_block = text.rindex("finally {")
 
-    assert rollback_gate < unsafe_abort < first_candidate_cleanup < first_app_move
+    assert preflight_archive < runtime_flag < first_runtime_stop < rights_hardening
+    assert rollback_gate < rollback_stop < first_candidate_cleanup < first_app_move
     assert "filesystem rollback was not attempted" in text
+    assert "Stop-ForwardRuntimeEarly" not in text
+    assert "if ($runtimeControlEntered)" in text[finally_block:]
     assert "Stop-ForwardRuntime" in text[finally_block:]
     assert "Assert-TaskPairStopped" in text[finally_block:]
     assert "Assert-NoForwardPythonProcesses" in text[finally_block:]
@@ -152,25 +160,12 @@ def test_forward_upgrade_rollback_and_finally_are_fail_closed_on_running_code() 
     final_stop = text.index("Stop-ForwardRuntime", final_lock_error)
     final_lock_throw = text.index("signed release lock cleanup failed", final_stop)
     assert final_lock_error < final_stop < final_lock_throw
-    first_full_path = text.index("$Root = [IO.Path]::GetFullPath($Root)")
-    initialization_guard = text.index("Stop-ForwardRuntimeEarly -RootMarker $RootInput")
-    elevated_check = text.index("Run this script from an elevated PowerShell.")
-    main_try = text.index("try {", text.index("$CandidateResults"))
-    assert "function Stop-ForwardRuntimeEarly" in text[:first_full_path]
-    early_stop = text[
-        text.index("function Stop-ForwardRuntimeEarly") : first_full_path
-    ]
     process_filter = text[
         text.index("function Get-ForwardPythonProcesses") : text.index(
             "function Assert-TaskPairStopped"
         )
     ]
-    assert "ExecutablePath" in early_stop
-    assert "CommandLine" in early_stop
-    assert "$marker" in early_stop
     assert "run_capital_forward.py" in process_filter
-    assert first_full_path < initialization_guard
-    assert main_try < elevated_check
 
 
 def test_forward_upgrade_preserves_legacy_and_canonical_state() -> None:

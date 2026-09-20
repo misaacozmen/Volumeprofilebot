@@ -97,6 +97,135 @@ function Assert-JunitMatchesInventory {
     }
 }
 
+function Get-ByteSha256 {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hasher.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $hasher.Dispose() }
+}
+
+function Assert-ReleaseIntegrityPayload {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][object]$Contract,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $bom = $Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF
+    $crCount = @($Bytes | Where-Object { $_ -eq 13 }).Count
+    $lfCount = @($Bytes | Where-Object { $_ -eq 10 }).Count
+    $sha256 = Get-ByteSha256 -Bytes $Bytes
+    if (
+        $Bytes.Length -ne [int]$Contract.byte_length -or
+        $bom -ne [bool]$Contract.bom -or
+        $crCount -ne [int]$Contract.cr_count -or
+        $lfCount -ne [int]$Contract.lf_count -or
+        $sha256 -cne ([string]$Contract.sha256_lf).ToLowerInvariant()
+    ) {
+        throw "$Label does not match the release-integrity byte contract."
+    }
+}
+
+function Assert-ReleaseIntegrityFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][object]$Contract,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label is missing: $Path"
+    }
+    Assert-ReleaseIntegrityPayload `
+        -Bytes ([IO.File]::ReadAllBytes($Path)) `
+        -Contract $Contract `
+        -Label $Label
+}
+
+function Assert-ReleaseIntegrityContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+    $contractPath = Join-Path $SourceRoot "deploy\release_integrity_contract.json"
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "Release-integrity contract is missing: $contractPath"
+    }
+    $contract = [IO.File]::ReadAllText($contractPath) | ConvertFrom-Json
+    if ([int]$contract.schema_version -ne 1 -or
+        [string]$contract.helper_path -cne "deploy/release_integrity.ps1" -or
+        [string]$contract.encoding -cne "UTF-8" -or
+        [bool]$contract.bom -ne $false -or
+        [string]$contract.eol -cne "LF" -or
+        [int]$contract.cr_count -ne 0 -or
+        [int]$contract.lf_count -lt 0 -or
+        [string]$contract.source_commit -notmatch '^[A-Fa-f0-9]{40}$' -or
+        [string]$contract.source_tree -notmatch '^[A-Fa-f0-9]{40}$' -or
+        [string]$contract.source_blob_sha1 -notmatch '^[A-Fa-f0-9]{40}$' -or
+        [string]$contract.sha256_lf -notmatch '^[A-Fa-f0-9]{64}$'
+    ) {
+        throw "Release-integrity contract metadata is invalid."
+    }
+    $helperPath = Join-Path $SourceRoot ($contract.helper_path.Replace("/", "\"))
+    $sourceTree = (& git -C $RepoRoot rev-parse "$($contract.source_commit)^{tree}").Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceTree -cne [string]$contract.source_tree) {
+        throw "Release-integrity source tree does not match the contract."
+    }
+    $repoRelativeHelperPath = $helperPath.Substring($RepoRoot.Length).TrimStart('\').Replace('\', '/')
+    $sourceBlob = (& git -C $RepoRoot rev-parse "$($contract.source_commit):$repoRelativeHelperPath").Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceBlob -cne [string]$contract.source_blob_sha1) {
+        throw "Release-integrity source blob does not match the contract."
+    }
+    Assert-ReleaseIntegrityFile -Path $helperPath -Contract $contract -Label "Release-integrity checkout helper"
+    $checkoutBlob = (& git -C $RepoRoot hash-object -- $helperPath).Trim()
+    if ($LASTEXITCODE -ne 0 -or $checkoutBlob -cne [string]$contract.source_blob_sha1) {
+        throw "Release-integrity checkout helper is not the contracted Git blob."
+    }
+    $super1Text = [IO.File]::ReadAllText((Join-Path $SourceRoot "deploy\upgrade_super1_signed_app_windows.ps1"))
+    $forwardText = [IO.File]::ReadAllText((Join-Path $SourceRoot "deploy\upgrade_forward_shadow_windows.ps1"))
+    $expectedPin = ([string]$contract.sha256_lf).ToLowerInvariant()
+    foreach ($entry in @(
+        [pscustomobject]@{ Name = "Super1"; Text = $super1Text },
+        [pscustomobject]@{ Name = "ForwardShadow"; Text = $forwardText }
+    )) {
+        $matches = [regex]::Matches(
+            $entry.Text,
+            '\$ExpectedIntegrityScriptSha256\s*=\s*"([A-Fa-f0-9]{64})"'
+        )
+        if ($matches.Count -ne 1 -or [string]$matches[0].Groups[1].Value -cne $expectedPin) {
+            throw "$($entry.Name) integrity helper pin does not match the contracted source."
+        }
+    }
+    return $contract
+}
+
+function Assert-ReleaseIntegrityZipEntry {
+    param(
+        [Parameter(Mandatory = $true)][IO.Compression.ZipArchive]$Zip,
+        [Parameter(Mandatory = $true)][object]$Contract
+    )
+    $path = [string]$Contract.helper_path
+    $entries = @($Zip.Entries | Where-Object { $_.FullName.Replace("\", "/") -ceq $path })
+    if ($entries.Count -ne 1) {
+        throw "Release archive must contain exactly one integrity helper entry: $path"
+    }
+    $stream = $entries[0].Open()
+    $memory = New-Object IO.MemoryStream
+    try {
+        $stream.CopyTo($memory)
+        Assert-ReleaseIntegrityPayload `
+            -Bytes $memory.ToArray() `
+            -Contract $Contract `
+            -Label "Release archive integrity helper"
+    }
+    finally {
+        $memory.Dispose()
+        $stream.Dispose()
+    }
+}
+
+$ReleaseIntegrityContract = Assert-ReleaseIntegrityContract -SourceRoot $SourceRoot -RepoRoot $RepoRoot
 if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
     throw "DPAPI release signing key is missing: $PrivateKeyPath"
 }
@@ -173,6 +302,10 @@ try {
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
     }
+    Assert-ReleaseIntegrityFile `
+        -Path (Join-Path $Stage "deploy\release_integrity.ps1") `
+        -Contract $ReleaseIntegrityContract `
+        -Label "Release-integrity staging helper"
     $artifactTestFiles = @("test_deployment_security.py", "test_xm_mt5_forward.py", "test_super1_xm_forward.py", "test_check_mt5_flat.py", "test_v16_deployment_contract.py")
     $artifactTestRoot = Join-Path $Stage "artifact_tests"
     New-Item -ItemType Directory -Force -Path $artifactTestRoot | Out-Null
@@ -321,6 +454,7 @@ try {
     $requiredPayloadFiles = @(
         "backtest/__init__.py",
         "deploy/release_integrity.ps1",
+        "deploy/release_integrity_contract.json",
         "deploy/watchdog_windows.ps1",
         "deploy/run_forward_shadow_windows.ps1",
         "forward_shadow/baseline_lock.json",
@@ -374,7 +508,7 @@ try {
     }
     $zipCreate = [IO.Compression.ZipFile]::Open($Archive, [IO.Compression.ZipArchiveMode]::Create)
     try {
-        foreach ($file in Get-ChildItem -LiteralPath $Stage -Recurse -File) {
+    foreach ($file in Get-ChildItem -LiteralPath $Stage -Recurse -File) {
             $relative = $file.FullName.Substring($Stage.Length).TrimStart('\', '/') -replace '\\', '/'
             $entry = $zipCreate.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
             $input = [IO.File]::OpenRead($file.FullName); $output = $entry.Open()
@@ -386,6 +520,7 @@ try {
     $manifestFiles = @()
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
+        Assert-ReleaseIntegrityZipEntry -Zip $zip -Contract $ReleaseIntegrityContract
         $archiveEntries = @($zip.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
         foreach ($relative in $requiredPayloadFiles) {
             if ($relative -notin $archiveEntries) {
@@ -455,6 +590,12 @@ try {
         artifact_pytest_count = $artifactPassedCount
         artifact_pytest_command = $artifactPytestCommand
         artifact_test_files = $artifactTestFiles
+        release_integrity = [ordered]@{
+            helper_path = [string]$ReleaseIntegrityContract.helper_path
+            helper_sha256 = [string]$ReleaseIntegrityContract.sha256_lf
+            contract_path = "deploy/release_integrity_contract.json"
+            contract_sha256 = (Get-FileHash -LiteralPath (Join-Path $Stage "deploy\release_integrity_contract.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
         locked_dependencies = $lockedDependencies
         wheelhouse = @(
             Get-ChildItem -LiteralPath $Wheelhouse -File | Sort-Object Name | ForEach-Object {

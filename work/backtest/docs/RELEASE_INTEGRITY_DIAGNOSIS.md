@@ -2,6 +2,11 @@
 
 Durum: `ROOT_CAUSE_PARTIALLY_CONFIRMED`
 
+DEPLOY-001 kararı sonrasında yeni release hattı için kaynak sözleşmesi
+`docs/DEPLOY_001_ARCHITECTURE_DECISION.md` ve
+`deploy/release_integrity_contract.json` içindedir. Bu ek, aşağıdaki tarihsel
+teşhisi silmez veya eski artifact pinini doğrulanmış saymaz.
+
 Bu rapor yalnızca teşhis ve güvenli yeniden üretim içerir. Release hash’i,
 test beklentisi, production kodu, denylist, tarihsel baseline, GitHub secretı,
 deployment ve gerçek MT5 çalıştırması değiştirilmemiştir.
