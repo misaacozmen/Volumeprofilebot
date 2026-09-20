@@ -38,7 +38,8 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     assert payload.count(b"\n") == value["lf_count"] == 491
     assert hashlib.sha256(payload).hexdigest() == value["sha256_lf"]
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
-        "deploy/release_integrity.ps1 text eol=lf"
+        "deploy/release_integrity.ps1 text eol=lf",
+        "docs/DEPLOY_001_EVIDENCE/** -text",
     ]
 
 
