@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 from powershell_contract import facts, powershell_ast, powershell_harness
@@ -109,15 +110,24 @@ def test_preflight_failure_cannot_reach_runtime_stop_or_mutation() -> None:
     )
 
 
+@lru_cache(maxsize=None)
+def _ast(path: Path) -> dict[str, object]:
+    return powershell_ast(path)
+
+
+def _facts(path: Path, kind: str) -> list[dict[str, object]]:
+    return [item for item in _ast(path)["facts"] if item["kind"] == kind]
+
+
 def _function(path: Path, name: str) -> str:
-    return next(item["extent_text"] for item in powershell_ast(path)["facts"] if item["kind"] == "function" and item["name"] == name)
+    return next(item["extent_text"] for item in _ast(path)["facts"] if item["kind"] == "function" and item["name"] == name)
 
 
 def _if_extent(path: Path, condition: str, minimum_start: int = 0) -> str:
     source = path.read_bytes().decode("utf-8")
     fact = next(
         item
-        for item in facts(path, "if")
+        for item in _facts(path, "if")
         if item["condition_text"] == condition and item["start"] >= minimum_start
     )
     return source[fact["start"] : fact["end"]]
@@ -127,11 +137,133 @@ def _main_try(path: Path) -> dict[str, object]:
     return max(
         (
             item
-            for item in facts(path, "try")
+            for item in _facts(path, "try")
             if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]
         ),
         key=lambda item: int(item["end"]) - int(item["start"]),
     )
+
+
+def _forward_phase_fragments(path: Path) -> list[tuple[int, str]]:
+    source = path.read_bytes().decode("utf-8")
+    main = _main_try(path)
+    main_start = int(main["start"])
+    main_end = int(main["end"])
+    assignment = next(
+        item
+        for item in _facts(path, "assignment")
+        if item["scope"] == "top-level"
+        and item["left"] == "$runtimeControlEntered"
+        and item["right_text"].strip() == "$true"
+        and main_start <= int(item["start"]) < main_end
+    )
+    stop = next(
+        item
+        for item in _facts(path, "command")
+        if item["scope"] == "top-level"
+        and item["name"] == "Stop-ForwardRuntime"
+        and main_start <= int(item["start"]) < main_end
+    )
+    return [
+        (int(assignment["start"]), source[int(assignment["start"]) : int(assignment["end"])]),
+        (int(stop["start"]), source[int(stop["start"]) : int(stop["end"])]),
+    ]
+
+
+def _run_forward_phase_harness(
+    path: Path,
+    *,
+    initial_stop_failure: bool,
+    late_error: bool,
+) -> subprocess.CompletedProcess[str]:
+    main = _main_try(path)
+    forward_stop = _function(path, "Stop-ForwardRuntime")
+    forward_assert = _function(path, "Assert-TaskPairStopped")
+    forward_no_python = _function(path, "Assert-NoForwardPythonProcesses")
+    close_locks = _function(path, "Close-SignedReleaseLocks")
+    phase = "\n".join(fragment for _, fragment in sorted(_forward_phase_fragments(path)))
+    stop_failure_setup = "$true" if initial_stop_failure else "$false"
+    late_failure = (
+        "$script:stopFails = $true\n        throw [Exception]::new(\"INJECTED_LATE_FAILURE\")"
+        if late_error
+        else "throw [Exception]::new(\"INJECTED_PHASE_FAILURE\")"
+    )
+    script = (
+        r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeControlEntered = $false
+$failureToReport = $null
+$UpgradeSucceeded = $false
+$PreviousPSModulePath = $null
+$PreviousPSModulePathCaptured = $false
+$PreviousServerEnv = $null
+$PreviousTerminalEnv = $null
+$PreviousPythonEnvironment = @{}
+$TargetRunnerPassword = $null
+$RunnerProbeTerminalConfigLock = $null
+$ProductionTerminalConfigLock = $null
+$RunnerProbeTerminalConfigCreated = $true
+$ValidationRootCreated = $false
+$SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
+$ArchiveBoundaryHardened = $false
+$SelfReadLock = $null
+$RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
+$MainTask = "main"
+$WatchdogTask = "watch"
+$script:stopFails = STOP_FAILURE_SETUP
+$script:events = [Collections.Generic.List[string]]::new()
+function Stop-ScheduledTask {
+    [CmdletBinding()] param([string]$TaskName)
+    [void]$script:events.Add("TASK_STOP:$TaskName")
+}
+function Get-ScheduledTask {
+    [CmdletBinding()] param([string]$TaskName)
+    [pscustomobject]@{ State = if ($script:stopFails) { "Running" } else { "Stopped" } }
+}
+function Start-Sleep {
+    param([int]$Milliseconds)
+    [void]$script:events.Add("STOP_FAILURE")
+    throw "INJECTED_STOP_FAILURE"
+}
+function Get-ForwardPythonProcesses { @() }
+function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force) }
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    $true
+}
+function Remove-Item {
+    param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+    [void]$script:events.Add("DELETE:$LiteralPath")
+}
+''' + forward_assert + forward_stop + forward_no_python + close_locks + r'''
+try {
+    try {
+        __PHASE__
+        __LATE_FAILURE__
+    }
+    ''' + str(main["catch_text"]) + r'''
+    finally ''' + str(main["finally_text"]) + r'''
+} catch { $observed = $_ }
+if (-not $observed) { throw "phase failure was not observed" }
+if ($script:events -like "DELETE:*") { throw "probe file was deleted" }
+if (-not $RunnerProbeTerminalConfigCreated) { throw "probe ownership was cleared" }
+if (__LATE_MODE__ -and @($script:events | Where-Object { $_ -eq "STOP_FAILURE" }).Count -ne 2) {
+    throw "late rollback/final stop attempts were not both observed"
+}
+if (__INITIAL_MODE__ -and @($script:events | Where-Object { $_ -eq "STOP_FAILURE" }).Count -ne 3) {
+    throw "initial stop failure did not enter rollback/final stop chain"
+}
+'PHASE_CHAIN_PASS'
+'''
+    )
+    script = (
+        script.replace("STOP_FAILURE_SETUP", stop_failure_setup)
+        .replace("__PHASE__", phase)
+        .replace("__LATE_FAILURE__", late_failure)
+        .replace("__LATE_MODE__", "$true" if late_error else "$false")
+        .replace("__INITIAL_MODE__", "$true" if initial_stop_failure else "$false")
+    )
+    return powershell_harness(script)
 
 
 def test_ast_harness_executes_real_stop_bodies_and_phase_guards() -> None:
@@ -314,6 +446,72 @@ if ($observed.Exception.Message -notlike "*INJECTED_PREFLIGHT_FAILURE*") { throw
     assert "preflight catch reached runtime rollback" in mutant.stdout + mutant.stderr
 
 
+def test_forward_production_phase_chain_rejects_stop_and_rollback_mutants(
+    tmp_path: Path,
+) -> None:
+    source = (DEPLOY / "upgrade_forward_shadow_windows.ps1").read_text(encoding="utf-8")
+    original_path = tmp_path / "forward-phase-original.ps1"
+    original_path.write_text(source, encoding="utf-8")
+
+    early_stop = source.replace(
+        "    $ExternalReleaseManifest = Assert-SignedReleaseArchive",
+        "    Stop-ForwardRuntime\n    $ExternalReleaseManifest = Assert-SignedReleaseArchive",
+        1,
+    )
+    flag_after_stop = source.replace(
+        "    $runtimeControlEntered = $true\n    Stop-ForwardRuntime",
+        "    Stop-ForwardRuntime\n    $runtimeControlEntered = $true",
+        1,
+    )
+    rollback_gate_removed = source.replace(
+        "    if (-not $rollbackRuntimeStopped) {\n        $failureToReport = [InvalidOperationException]::new(",
+        "    $rollbackRuntimeStopped = $true\n    if ($false) {\n        $failureToReport = [InvalidOperationException]::new(",
+        1,
+    )
+
+    def write_source(name: str, value: str) -> Path:
+        path = tmp_path / name
+        path.write_text(value, encoding="utf-8")
+        return path
+
+    late_original = _run_forward_phase_harness(
+        original_path,
+        initial_stop_failure=False,
+        late_error=True,
+    )
+    assert late_original.returncode == 0, late_original.stderr
+    assert "PHASE_CHAIN_PASS" in late_original.stdout
+
+    initial_original = _run_forward_phase_harness(
+        original_path,
+        initial_stop_failure=True,
+        late_error=False,
+    )
+    assert initial_original.returncode == 0, initial_original.stderr
+    assert "PHASE_CHAIN_PASS" in initial_original.stdout
+
+    early_result = _run_forward_phase_harness(
+        write_source("forward-phase-early-stop.ps1", early_stop),
+        initial_stop_failure=True,
+        late_error=False,
+    )
+    assert early_result.returncode != 0
+
+    flag_result = _run_forward_phase_harness(
+        write_source("forward-phase-late-flag.ps1", flag_after_stop),
+        initial_stop_failure=True,
+        late_error=False,
+    )
+    assert flag_result.returncode != 0
+
+    rollback_result = _run_forward_phase_harness(
+        write_source("forward-phase-no-rollback-gate.ps1", rollback_gate_removed),
+        initial_stop_failure=False,
+        late_error=True,
+    )
+    assert rollback_result.returncode != 0
+
+
 def test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries(
     tmp_path: Path,
 ) -> None:
@@ -392,9 +590,13 @@ $ValidationRootCreated = $false
 $SignedReleaseLocks = [Collections.Generic.List[IDisposable]]::new()
 $ArchiveBoundaryHardened = $false
 $SelfReadLock = $null
-$RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
-$ValidationRoot = "C:\fixture\upgrade-validation.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-function Remove-Item {
+    $RunnerProbeTerminalConfig = "C:\fixture\runner-terminal-probe.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ini"
+    $ValidationRoot = "C:\fixture\upgrade-validation.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    function Test-Path {
+        param([string]$LiteralPath, [string]$PathType)
+        $true
+    }
+    function Remove-Item {
     param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
     throw "UNEXPECTED_DELETE:$LiteralPath"
 }
@@ -539,13 +741,156 @@ if ([string]::Join(',', $events) -ne "probe-delete,validation-delete") { throw "
     assert "OWNED_CLEANUP_PASS" in owned_cleanup.stdout
 
 
+def test_super1_production_phase_chain_rejects_preentry_stop_mutants(
+    tmp_path: Path,
+) -> None:
+    source = (DEPLOY / "upgrade_super1_signed_app_windows.ps1").read_text(encoding="utf-8")
+    original_path = tmp_path / "super1-phase-original.ps1"
+    original_path.write_text(source, encoding="utf-8")
+
+    def phase_parts(path: Path) -> tuple[str, str, str, str]:
+        text = path.read_bytes().decode("utf-8")
+        outer = _main_try(path)
+        main_start = int(outer["start"])
+        main_end = int(outer["end"])
+        assignment = next(
+            item
+            for item in _facts(path, "assignment")
+            if item["scope"] == "top-level"
+            and item["left"] == "$runtimeControlEntered"
+            and item["right_text"].strip() == "$true"
+            and main_start <= int(item["start"]) < main_end
+        )
+        stop = next(
+            item
+            for item in _facts(path, "command")
+            if item["scope"] == "top-level"
+            and item["name"] == "Stop-Super1RuntimeForRollback"
+            and main_start <= int(item["start"]) < main_end
+        )
+        phase = "\n".join(
+            text[start:end]
+            for start, end in sorted(
+                (
+                    (int(assignment["start"]), int(assignment["end"])),
+                    (int(stop["start"]), int(stop["end"])),
+                )
+            )
+        )
+        transactional = sorted(
+            (
+                item
+                for item in _facts(path, "try")
+                if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]
+            ),
+            key=lambda item: int(item["end"]) - int(item["start"]),
+            reverse=True,
+        )[1]
+        return phase, str(transactional["catch_text"]), str(outer["finally_text"]), _function(
+            path, "Stop-Super1RuntimeForRollback"
+        )
+
+    def run(path: Path, *, initial_failure: bool, late_failure: bool) -> subprocess.CompletedProcess[str]:
+        phase, inner_catch, outer_finally, stop_body = phase_parts(path)
+        late = (
+            "$script:stopFails = $true\n        throw [Exception]::new(\"INJECTED_SUPER1_LATE_FAILURE\")"
+            if late_failure
+            else "throw [Exception]::new(\"INJECTED_SUPER1_PHASE_FAILURE\")"
+        )
+        script = r'''
+$cleanupErrors = [Collections.Generic.List[string]]::new()
+$runtimeHelpersReady = $true
+$runtimeControlEntered = $false
+$RuntimeConfigEvidence = @()
+$ReleaseInputLocks = [Collections.Generic.List[IDisposable]]::new()
+$SelfScriptLock = $null
+$PowerShellHostLock = $null
+$TerminalLock = $null
+$BootstrapPythonLock = $null
+$IntegrityScriptLock = $null
+$OriginalPSModulePath = "before-module-path"
+$OriginalPythonHome = $null
+$OriginalPythonPath = $null
+$env:PSModulePath = "trusted-module-path"
+$script:stopFails = INITIAL_FAILURE
+$script:events = [Collections.Generic.List[string]]::new()
+function Stop-Super1Tasks { [void]$script:events.Add("TASK_STOP") }
+function Wait-Super1Stopped {
+    param([int]$TimeoutSeconds, [switch]$PreserveTerminal)
+    if ($script:stopFails) {
+        [void]$script:events.Add("STOP_FAILURE")
+        throw "INJECTED_SUPER1_STOP_FAILURE"
+    }
+}
+function Get-Super1TerminalProcesses { @() }
+function Get-Super1PythonProcesses { @() }
+function Get-UnexpectedSuper1RunnerProcesses { @() }
+function Get-Super1TaskRunnerSid { "S-1-5-18" }
+function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force) }
+__STOP_BODY__
+try {
+    try {
+        __PHASE__
+        __LATE__
+    }
+    __INNER_CATCH__
+    finally { }
+} catch {
+    $primaryError = $_
+} finally __OUTER_FINALLY__
+if (-not $primaryError) { throw "Super1 phase error was not preserved" }
+"EVENTS=$([string]::Join(',', $script:events))"
+if (@($script:events | Where-Object { $_ -eq "STOP_FAILURE" }).Count -lt EXPECTED_FAILURES) {
+    throw "Super1 rollback/final stop chain was not fully executed"
+}
+'SUPER1_PHASE_CHAIN_PASS'
+'''
+        expected_failures = "3"
+        script = (
+                script.replace("INITIAL_FAILURE", "$true" if initial_failure else "$false")
+                .replace("__PHASE__", phase)
+                .replace("__STOP_BODY__", stop_body)
+                .replace("__LATE__", late)
+            .replace("__INNER_CATCH__", inner_catch)
+            .replace("__OUTER_FINALLY__", outer_finally)
+            .replace("EXPECTED_FAILURES", expected_failures)
+        )
+        return powershell_harness(script)
+
+    late_result = run(original_path, initial_failure=False, late_failure=True)
+    assert late_result.returncode == 0, late_result.stdout + late_result.stderr
+    assert "SUPER1_PHASE_CHAIN_PASS" in late_result.stdout
+    initial_result = run(original_path, initial_failure=True, late_failure=False)
+    assert initial_result.returncode == 0, initial_result.stderr
+    assert "SUPER1_PHASE_CHAIN_PASS" in initial_result.stdout
+
+    flag_after_stop = source.replace(
+        "    $runtimeControlEntered = $true\n    Stop-Super1RuntimeForRollback",
+        "    Stop-Super1RuntimeForRollback\n    $runtimeControlEntered = $true",
+        1,
+    )
+    early_stop = source.replace(
+        "    $ReleaseManifest = Assert-SignedReleaseArchive `",
+        "    Stop-Super1RuntimeForRollback\n    $ReleaseManifest = Assert-SignedReleaseArchive `",
+        1,
+    )
+    for name, mutant in (
+        ("super1-phase-late-flag.ps1", flag_after_stop),
+        ("super1-phase-early-stop.ps1", early_stop),
+    ):
+        mutant_path = tmp_path / name
+        mutant_path.write_text(mutant, encoding="utf-8")
+        result = run(mutant_path, initial_failure=True, late_failure=False)
+        assert result.returncode != 0
+
+
 def test_super1_ast_catch_and_finally_preflight_path_is_executed() -> None:
     super1 = DEPLOY / "upgrade_super1_signed_app_windows.ps1"
     outer = _main_try(super1)
     transactional_tries = sorted(
         (
             item
-            for item in facts(super1, "try")
+            for item in _facts(super1, "try")
             if item["scope"] == "top-level" and item["has_catch"] and item["has_finally"]
         ),
         key=lambda item: int(item["end"]) - int(item["start"]),
@@ -612,3 +957,38 @@ def test_builder_checks_contract_before_signing_key_resolution(tmp_path: Path) -
     assert result.returncode != 0
     assert "DPAPI release signing key is missing" in combined
     assert "Release-integrity contract" not in combined
+
+
+def test_evidence_manifest_binds_checkout_and_committed_bytes() -> None:
+    evidence_root = ROOT / "docs" / "DEPLOY_001_EVIDENCE"
+    manifest = json.loads((evidence_root / "manifest.json").read_text(encoding="utf-8"))
+    repo_root = ROOT.parents[1]
+    tested_commit = str(manifest["tested_commit"])
+    assert subprocess.check_output(
+        ["git", "rev-parse", tested_commit], cwd=repo_root, text=True
+    ).strip() == tested_commit
+    assert subprocess.check_output(
+        ["git", "rev-parse", f"{tested_commit}^{{tree}}"],
+        cwd=repo_root,
+        text=True,
+    ).strip() == manifest["tested_tree"]
+
+    source_paths = [str(path) for path in manifest["production_test_paths"]]
+    assert subprocess.run(
+        ["git", "diff", "--quiet", tested_commit, "HEAD", "--", *source_paths],
+        cwd=repo_root,
+        check=False,
+    ).returncode == 0
+
+    for run in manifest["runs"]:
+        binding = run.get("junit", run.get("stdout_stderr"))
+        relative = str(binding["path"])
+        checkout = (evidence_root / relative).read_bytes()
+        checkout_sha256 = hashlib.sha256(checkout).hexdigest()
+        assert checkout_sha256 == binding["sha256"]
+        committed = subprocess.check_output(
+            ["git", "show", f"HEAD:work/backtest/docs/DEPLOY_001_EVIDENCE/{relative}"],
+            cwd=repo_root,
+        )
+        assert committed == checkout
+        assert hashlib.sha256(committed).hexdigest() == binding["git_blob_sha256"]

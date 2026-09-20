@@ -4166,15 +4166,6 @@ finally {
         }
     }
     catch { $cleanupErrors.Add("production terminal config lock cleanup: $($_.Exception.Message)") }
-    if ($runtimeControlEntered -and $RunnerProbeTerminalConfigCreated) {
-        try {
-            if (Test-Path -LiteralPath $RunnerProbeTerminalConfig) {
-                Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
-            }
-            $RunnerProbeTerminalConfigCreated = $false
-        }
-        catch { $cleanupErrors.Add("runner terminal config cleanup: $($_.Exception.Message)") }
-    }
     Close-SignedReleaseLocks -Locks $SignedReleaseLocks -Errors $cleanupErrors
     $finalStopError = $null
     if ($runtimeControlEntered) {
@@ -4187,6 +4178,15 @@ finally {
     }
     if ($finalStopError) {
         $cleanupErrors.Add("final stopped-state enforcement: $($finalStopError.Exception.Message)")
+    }
+    if (-not $finalStopError -and $runtimeControlEntered -and $RunnerProbeTerminalConfigCreated) {
+        try {
+            if (Test-Path -LiteralPath $RunnerProbeTerminalConfig) {
+                Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
+            }
+            $RunnerProbeTerminalConfigCreated = $false
+        }
+        catch { $cleanupErrors.Add("runner terminal config cleanup: $($_.Exception.Message)") }
     }
     if ($PreviousPSModulePathCaptured) {
         try {
