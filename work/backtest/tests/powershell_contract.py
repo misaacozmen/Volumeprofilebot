@@ -120,7 +120,7 @@ $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnSta
 def powershell_harness(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="otobt-ps-contract-") as directory:
         path = Path(directory) / "harness.ps1"
-        path.write_text("$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n" + script, encoding="utf-8")
+        path.write_bytes(("$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n" + script).encode("utf-8"))
         environment = dict(__import__("os").environ)
         for index, argument in enumerate(args):
             environment[f"OTOBT_HARNESS_ARG{index}"] = argument
