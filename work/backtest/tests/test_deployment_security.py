@@ -156,7 +156,8 @@ def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None
 def test_super1_signed_app_upgrade_is_offline_transactional_and_leaves_tasks_stopped() -> None:
     source = text("upgrade_super1_signed_app_windows.ps1")
 
-    assert 'Assert-SignedReleaseArchive -Archive $ArchivePath -ExpectedProfile "super1"' in source
+    assert 'Assert-SignedReleaseArchive `' in source
+    assert '-ExpectedProfile "super1"' in source
     assert "Install-LockedRelease -Python $StagedPython -App $Staging" in source
     assert '& $StagedPython -I -E -B -m compileall -q $Staging' in source
     assert "super1.validate_super1_candidate(runtime)" in source
@@ -194,7 +195,7 @@ def test_super1_upgrade_uses_a_reverified_immutable_release_copy() -> None:
     source = text("upgrade_super1_signed_app_windows.ps1")
 
     first_verify = source.index(
-        'Assert-SignedReleaseArchive -Archive $ArchivePath -ExpectedProfile "super1"'
+        'Assert-SignedReleaseArchive `\n        -Archive $ArchivePath `\n        -ExpectedProfile "super1"'
     )
     copy = source.index("Copy-FileCreateNew -Source $component -Target $destination")
     second_verify = source.index("$verifiedReleaseManifest = Assert-SignedReleaseArchive")

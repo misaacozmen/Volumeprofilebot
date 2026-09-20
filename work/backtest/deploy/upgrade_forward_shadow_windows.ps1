@@ -28,6 +28,10 @@ if (
     throw "ForwardShadow upgrade requires Windows PowerShell 5.1."
 }
 $ExpectedSelfSha256 = $ExpectedSelfSha256.ToLowerInvariant()
+$cleanupErrors = New-Object Collections.Generic.List[string]
+$PreviousPSModulePath = $null
+$PreviousPSModulePathCaptured = $false
+$failureToReport = $null
 $SelfPath = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
 $ExpectedDeployBase = [IO.Path]::GetFullPath("C:\Program Files\OtoBacktestDeploy")
 $ExpectedReleaseDirectory = [IO.Path]::GetFullPath(
@@ -117,11 +121,25 @@ try {
     }
 }
 catch {
-    $SelfReadLock.Dispose()
-    $SelfReadLock = $null
-    throw
+    $trustError = $_
+    try {
+        if ($SelfReadLock) {
+            $SelfReadLock.Dispose()
+            $SelfReadLock = $null
+        }
+    }
+    catch { $cleanupErrors.Add("self read lock cleanup: $($_.Exception.Message)") }
+    if ($cleanupErrors.Count -gt 0) {
+        throw [InvalidOperationException]::new(
+            "ForwardShadow trust preflight failed: $($trustError.Exception.Message); cleanup: $($cleanupErrors -join '; ')",
+            $trustError.Exception
+        )
+    }
+    throw $trustError
 }
+try {
 $PreviousPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
+$PreviousPSModulePathCaptured = $true
 $TrustedPSModulePath = [IO.Path]::GetFullPath((Join-Path $PSHOME "Modules"))
 [Environment]::SetEnvironmentVariable("PSModulePath", $TrustedPSModulePath, "Process")
 $ScheduledTasksModule = Join-Path $TrustedPSModulePath "ScheduledTasks\ScheduledTasks.psd1"
@@ -191,57 +209,34 @@ foreach ($trustedExecutable in @($IcaclsExe, $WindowsPowerShellExe)) {
         throw "Trusted Windows executable is missing: $trustedExecutable"
     }
 }
+}
+catch {
+    $moduleError = $_
+    if ($PreviousPSModulePathCaptured) {
+        try {
+            [Environment]::SetEnvironmentVariable("PSModulePath", $PreviousPSModulePath, "Process")
+        }
+        catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }
+    }
+    try {
+        if ($SelfReadLock) {
+            $SelfReadLock.Dispose()
+            $SelfReadLock = $null
+        }
+    }
+    catch { $cleanupErrors.Add("self read lock cleanup: $($_.Exception.Message)") }
+    if ($cleanupErrors.Count -gt 0) {
+        throw [InvalidOperationException]::new(
+            "ForwardShadow trusted module preflight failed: $($moduleError.Exception.Message); cleanup: $($cleanupErrors -join '; ')",
+            $moduleError.Exception
+        )
+    }
+    throw $moduleError
+}
 
 $MainTask = "ForwardShadowXM"
 $WatchdogTask = "ForwardShadowWatchdog"
 
-function Stop-ForwardRuntimeEarly {
-    param([AllowEmptyString()][string]$RootMarker)
-    Stop-ScheduledTask -TaskName $WatchdogTask -ErrorAction SilentlyContinue
-    Stop-ScheduledTask -TaskName $MainTask -ErrorAction SilentlyContinue
-    $marker = if ([string]::IsNullOrWhiteSpace($RootMarker)) { "ForwardShadow" } else { $RootMarker }
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-    do {
-        Stop-ScheduledTask -TaskName $WatchdogTask -ErrorAction SilentlyContinue
-        Stop-ScheduledTask -TaskName $MainTask -ErrorAction SilentlyContinue
-        $runningTasks = @(
-            @($MainTask, $WatchdogTask) | Where-Object {
-                $task = Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
-                $task -and [string]$task.State -in @("Running", "Queued")
-            }
-        )
-        $processes = @(
-            Get-CimInstance Win32_Process -ErrorAction Stop |
-                Where-Object {
-                    $_.Name -like "python*.exe" -and
-                    (
-                        (
-                            -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
-                            [string]$_.ExecutablePath.IndexOf(
-                                $marker,
-                                [StringComparison]::OrdinalIgnoreCase
-                            ) -ge 0
-                        ) -or
-                        (
-                            -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine) -and
-                            [string]$_.CommandLine.IndexOf(
-                                $marker,
-                                [StringComparison]::OrdinalIgnoreCase
-                            ) -ge 0
-                        )
-                    )
-                }
-        )
-        foreach ($process in $processes) {
-            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
-        }
-        if ($runningTasks.Count -eq 0 -and $processes.Count -eq 0) { return }
-        Start-Sleep -Milliseconds 250
-    } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "ForwardShadow early fail-closed shutdown could not prove tasks/processes stopped."
-}
-
-$RootInput = [string]$Root
 try {
     $Root = [IO.Path]::GetFullPath($Root)
     $ArchivePath = [IO.Path]::GetFullPath($Archive)
@@ -265,7 +260,7 @@ try {
     $WatchdogHealth = [IO.Path]::GetFullPath((Join-Path $CanonicalState "health.json"))
     $WatchdogStatus = [IO.Path]::GetFullPath((Join-Path $Root "watchdog_status.json"))
     $IntegrityScript = Join-Path $PSScriptRoot "release_integrity.ps1"
-    $ExpectedIntegrityScriptSha256 = "4051f4e68b4aa575df2952a7205ac4fdbdecf6e3da4ca9e170d760e8d9d3dcfe"
+$ExpectedIntegrityScriptSha256 = "bfa1fa7ddcc54bb172e1c33e399ba7d259d36b8baa69e66de41237879db0722c"
     $ExpectedTerminalSha256 = $ExpectedTerminalSha256.ToLowerInvariant()
     $RunId = [Guid]::NewGuid().ToString("N")
     $RunnerProbeTerminalConfig = [IO.Path]::GetFullPath(
@@ -277,6 +272,7 @@ try {
     $ValidationRoot = [IO.Path]::GetFullPath(
         (Join-Path $ArchiveRoot "upgrade-validation.$RunId")
     )
+    $ValidationRootCreated = $false
     $LegacyStateHold = [IO.Path]::GetFullPath(
         (Join-Path $ArchiveRoot "legacy-state.hold.$RunId")
     )
@@ -321,6 +317,7 @@ try {
     $OriginalRunnerSid = $null
     $TaskDefinitionsChanged = $false
     $UpgradeSucceeded = $false
+    $runtimeControlEntered = $false
     $StateMode = $null
     $CanonicalStateFingerprint = $null
     $CanonicalStateAclSnapshot = $null
@@ -335,6 +332,7 @@ try {
     $RunnerTokenProbePassed = $false
     $RunnerBrokerProof = $null
     $RunnerProbeTerminalConfigLock = $null
+    $RunnerProbeTerminalConfigCreated = $false
     $ProductionTerminalConfigLock = $null
     $ProductionTerminalConfigCreated = $false
     $ProductionTerminalConfigHardened = $false
@@ -362,13 +360,24 @@ try {
 }
 catch {
     $initializationError = $_
-    try { Stop-ForwardRuntimeEarly -RootMarker $RootInput }
-    catch {
-        throw "ForwardShadow initialization failed and fail-closed shutdown was not proven: $($initializationError.Exception.Message); $($_.Exception.Message)"
+    if ($PreviousPSModulePathCaptured) {
+        try {
+            [Environment]::SetEnvironmentVariable("PSModulePath", $PreviousPSModulePath, "Process")
+        }
+        catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }
     }
-    if ($SelfReadLock) {
-        $SelfReadLock.Dispose()
-        $SelfReadLock = $null
+    try {
+        if ($SelfReadLock) {
+            $SelfReadLock.Dispose()
+            $SelfReadLock = $null
+        }
+    }
+    catch { $cleanupErrors.Add("self read lock cleanup: $($_.Exception.Message)") }
+    if ($cleanupErrors.Count -gt 0) {
+        throw [InvalidOperationException]::new(
+            "ForwardShadow path initialization failed: $($initializationError.Exception.Message); cleanup: $($cleanupErrors -join '; ')",
+            $initializationError.Exception
+        )
     }
     throw $initializationError
 }
@@ -797,7 +806,10 @@ namespace ForwardShadowUpgrade {
 }
 
 function New-ForwardPrivateDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowNull()][ref]$Created
+    )
     $resolved = [IO.Path]::GetFullPath($Path)
     Assert-RootChildPath -Path $resolved -Label "Private ForwardShadow directory"
     if (Test-Path -LiteralPath $resolved) {
@@ -840,6 +852,9 @@ function New-ForwardPrivateDirectory {
     $restorePrivilege = New-ForwardRestorePrivilegeScope
     try {
         $directory.Create($security)
+        if ($null -ne $Created) {
+            $Created.Value = $true
+        }
     }
     finally {
         $restorePrivilege.Dispose()
@@ -1694,11 +1709,31 @@ function Get-TrustedExecutableEvidence {
 }
 
 function Close-SignedReleaseLocks {
-    param([Parameter(Mandatory = $true)]$Locks)
+    param(
+        [Parameter(Mandatory = $true)]$Locks,
+        [AllowNull()][Collections.Generic.List[string]]$Errors = $null
+    )
+    $localErrors = New-Object Collections.Generic.List[string]
     foreach ($lock in @($Locks)) {
-        if ($lock) { $lock.Dispose() }
+        if (-not $lock) {
+            [void]$Locks.Remove($lock)
+            continue
+        }
+        try {
+            $lock.Dispose()
+            [void]$Locks.Remove($lock)
+        }
+        catch { $localErrors.Add("signed release lock dispose: $($_.Exception.Message)") }
     }
-    $Locks.Clear()
+    if ($null -ne $Errors) {
+        foreach ($errorText in @($localErrors)) { [void]$Errors.Add($errorText) }
+    }
+    elseif ($localErrors.Count -gt 0) {
+        throw [InvalidOperationException]::new(
+            "Signed release lock cleanup failed: $($localErrors -join '; ')",
+            [Exception]::new($localErrors[0])
+        )
+    }
 }
 
 function Get-ForwardPythonProcesses {
@@ -2661,7 +2696,6 @@ function New-CandidateIfMissing {
 $CandidateResults = [ordered]@{}
 
 try {
-    Stop-ForwardRuntime
     foreach ($name in $PreviousPythonEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
@@ -2721,26 +2755,6 @@ try {
     ).Value
     Assert-ForwardNonAdminRunner -Identity $RunnerIdentity -Sid $RunnerSid
     $RunnerOriginalAccountRights = @(Get-ForwardAccountRights -Sid $RunnerSid)
-    $RunnerRightsHardened = $true
-    try {
-        Set-ForwardAccountRightsExact `
-            -RunnerSid $RunnerSid `
-            -Rights @(Get-ForwardRequiredRunnerLogonRights)
-        Assert-ForwardRunnerLogonRights -RunnerSid $RunnerSid
-    }
-    catch {
-        $rightsError = $_
-        try {
-            Set-ForwardAccountRightsExact `
-                -RunnerSid $RunnerSid `
-                -Rights @($RunnerOriginalAccountRights)
-            $RunnerRightsHardened = $false
-        }
-        catch {
-            throw "ForwardShadow runner-right hardening failed and exact recovery also failed: $($rightsError.Exception.Message); $($_.Exception.Message)"
-        }
-        throw $rightsError
-    }
     $OriginalMainTaskXml = Export-ScheduledTask -TaskName $MainTask -ErrorAction Stop
     $OriginalWatchdogTaskXml = Export-ScheduledTask -TaskName $WatchdogTask -ErrorAction Stop
     $OriginalMainActions = @($mainTaskDefinition.Actions)
@@ -2807,12 +2821,6 @@ try {
     . $IntegrityScript
 
     $RootAclSnapshot = Get-ForwardRootAclSnapshot
-    $RootAclHardened = $true
-    Protect-ForwardRoot -RunnerSid $RunnerSid
-    $BrokerSettingsHardened = $true
-    Protect-ForwardPrivateFile -Path $ServerFile -RunnerSid $RunnerSid
-    Protect-ForwardPrivateFile -Path $TerminalFile -RunnerSid $RunnerSid
-
     foreach ($required in @($ArchivePath, $App, $Venv, $Python, $ServerFile, $TerminalFile)) {
         if (-not (Test-Path -LiteralPath $required)) {
             throw "Missing required upgrade path: $required"
@@ -2851,6 +2859,17 @@ try {
         $LegacyStateFingerprint = Get-TreeFingerprint -Path $LegacyState
     }
 
+    $ManifestPath = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.json")
+    $SignaturePath = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.sig")
+    foreach ($component in @($ArchivePath, $ManifestPath, $SignaturePath)) {
+        $componentLock = [IO.File]::Open(
+            $component,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        [void]$SignedReleaseLocks.Add($componentLock)
+    }
     $ExternalReleaseManifest = Assert-SignedReleaseArchive `
         -Archive $ArchivePath `
         -ExpectedProfile "forward-shadow" `
@@ -2858,14 +2877,49 @@ try {
     if ([string]$ExternalReleaseManifest.archive_file -ne [IO.Path]::GetFileName($ArchivePath)) {
         throw "Signed manifest archive name does not match the requested archive path."
     }
-    $ManifestPath = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.json")
-    $SignaturePath = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.sig")
-
     Assert-NoUntrustedDeleteChild -Path $Root -TrustedSids $TrustedInfrastructureSids
     if (Test-Path -LiteralPath $ArchiveRoot) {
         if (-not (Test-Path -LiteralPath $ArchiveRoot -PathType Container)) {
             throw "ForwardShadow archive root is not a directory: $ArchiveRoot"
         }
+        Assert-NoUntrustedDeleteChild `
+            -Path $ArchiveRoot `
+            -TrustedSids $TrustedInfrastructureSids
+    }
+
+    $runtimeControlEntered = $true
+    Stop-ForwardRuntime
+    Assert-TaskPairStopped
+    Assert-NoForwardPythonProcesses
+
+    $RunnerRightsHardened = $true
+    try {
+        Set-ForwardAccountRightsExact `
+            -RunnerSid $RunnerSid `
+            -Rights @(Get-ForwardRequiredRunnerLogonRights)
+        Assert-ForwardRunnerLogonRights -RunnerSid $RunnerSid
+    }
+    catch {
+        $rightsError = $_
+        try {
+            Set-ForwardAccountRightsExact `
+                -RunnerSid $RunnerSid `
+                -Rights @($RunnerOriginalAccountRights)
+            $RunnerRightsHardened = $false
+        }
+        catch {
+            throw "ForwardShadow runner-right hardening failed and exact recovery also failed: $($rightsError.Exception.Message); $($_.Exception.Message)"
+        }
+        throw $rightsError
+    }
+
+    $RootAclHardened = $true
+    Protect-ForwardRoot -RunnerSid $RunnerSid
+    $BrokerSettingsHardened = $true
+    Protect-ForwardPrivateFile -Path $ServerFile -RunnerSid $RunnerSid
+    Protect-ForwardPrivateFile -Path $TerminalFile -RunnerSid $RunnerSid
+
+    if (Test-Path -LiteralPath $ArchiveRoot) {
         Protect-ForwardTree `
             -Path $ArchiveRoot `
             -AllowEmpty `
@@ -3083,7 +3137,9 @@ try {
             -RequireTrustedOwner
     }
 
-    New-ForwardPrivateDirectory -Path $ValidationRoot
+    New-ForwardPrivateDirectory `
+        -Path $ValidationRoot `
+        -Created ([ref]$ValidationRootCreated)
     $env:XM_MT5_SERVER = $Server
     $env:XM_MT5_TERMINAL_PATH = $Terminal
     $InitOutput = @(
@@ -3327,6 +3383,7 @@ try {
         [IO.FileAccess]::Write,
         [IO.FileShare]::None
     )
+    $RunnerProbeTerminalConfigCreated = $true
     try {
         $probeConfigText = "[Experts]`r`nEnabled=0`r`nAllowLiveTrading=0`r`nAllowDllImport=0`r`nWebRequest=0`r`n"
         $probeConfigBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
@@ -3379,6 +3436,7 @@ try {
     $RunnerProbeTerminalConfigLock.Dispose()
     $RunnerProbeTerminalConfigLock = $null
     Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
+    $RunnerProbeTerminalConfigCreated = $false
     $productionBrokerProof = Invoke-ForwardRunnerBrokerProof `
         -Launcher $Launcher `
         -RunnerIdentity $RunnerIdentity `
@@ -3552,6 +3610,7 @@ try {
     Remove-GeneratedTree `
         -Path $ValidationRoot `
         -ExpectedLeafPattern '^upgrade-validation\.[0-9a-f]{32}$'
+    $ValidationRootCreated = $false
     Assert-TreeFingerprint `
         -Path $PreviousApp `
         -Expected $PreviousAppFingerprint `
@@ -3637,11 +3696,14 @@ try {
 catch {
     $UpgradeSucceeded = $false
     $primaryError = $_
+    $failureToReport = $primaryError.Exception
+    if (-not $runtimeControlEntered) {
+        throw $primaryError
+    }
     $rollbackErrors = [Collections.Generic.List[string]]::new()
     $stateRollbackVerified = $true
 
-    try { Close-SignedReleaseLocks -Locks $SignedReleaseLocks }
-    catch { $rollbackErrors.Add("signed release lock cleanup: $($_.Exception.Message)") }
+    Close-SignedReleaseLocks -Locks $SignedReleaseLocks -Errors $rollbackErrors
     $rollbackRuntimeStopped = $false
     try {
         Stop-ForwardRuntime
@@ -3651,10 +3713,11 @@ catch {
     }
     catch { $rollbackErrors.Add("rollback stop gate: $($_.Exception.Message)") }
     if (-not $rollbackRuntimeStopped) {
-        throw [InvalidOperationException]::new(
+        $failureToReport = [InvalidOperationException]::new(
             "ForwardShadow upgrade failed and rollback was not attempted because stopped state could not be proven: $($primaryError.Exception.Message); $($rollbackErrors -join '; ')",
             $primaryError.Exception
         )
+        throw $failureToReport
     }
     if ($RunnerProbeTerminalConfigLock) {
         try {
@@ -3663,8 +3726,11 @@ catch {
         }
         catch { $rollbackErrors.Add("runner terminal config lock cleanup: $($_.Exception.Message)") }
     }
-    if (Test-Path -LiteralPath $RunnerProbeTerminalConfig) {
-        try { Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force }
+    if ($RunnerProbeTerminalConfigCreated -and (Test-Path -LiteralPath $RunnerProbeTerminalConfig)) {
+        try {
+            Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
+            $RunnerProbeTerminalConfigCreated = $false
+        }
         catch { $rollbackErrors.Add("runner terminal config cleanup: $($_.Exception.Message)") }
     }
     if ($ProductionTerminalConfigLock) {
@@ -3674,11 +3740,6 @@ catch {
         }
         catch { $rollbackErrors.Add("production terminal config lock cleanup: $($_.Exception.Message)") }
     }
-    [Environment]::SetEnvironmentVariable(
-        "PSModulePath",
-        $PreviousPSModulePath,
-        "Process"
-    )
     if ($AppBootstrapSealed -and (Test-Path -LiteralPath $App -PathType Container)) {
         try {
             Protect-ForwardTree `
@@ -4077,65 +4138,89 @@ catch {
     } else {
         " App rollback completed."
     }
-    throw [InvalidOperationException]::new(
+    $failureToReport = [InvalidOperationException]::new(
         "ForwardShadow signed app upgrade failed: $($primaryError.Exception.Message).$suffix",
         $primaryError.Exception
     )
+    throw $failureToReport
 }
 finally {
-    $finalSelfLockCleanupError = $null
-    $finalPasswordCleanupError = $null
     try {
         if ($TargetRunnerPassword) {
             $TargetRunnerPassword.Dispose()
             $TargetRunnerPassword = $null
         }
     }
-    catch { $finalPasswordCleanupError = $_ }
-    $finalProbeConfigCleanupError = $null
+    catch { $cleanupErrors.Add("runner credential cleanup: $($_.Exception.Message)") }
     try {
         if ($RunnerProbeTerminalConfigLock) {
             $RunnerProbeTerminalConfigLock.Dispose()
             $RunnerProbeTerminalConfigLock = $null
         }
+    }
+    catch { $cleanupErrors.Add("runner terminal config lock cleanup: $($_.Exception.Message)") }
+    try {
         if ($ProductionTerminalConfigLock) {
             $ProductionTerminalConfigLock.Dispose()
             $ProductionTerminalConfigLock = $null
         }
-        if (Test-Path -LiteralPath $RunnerProbeTerminalConfig) {
-            Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
-        }
     }
-    catch { $finalProbeConfigCleanupError = $_ }
-    $finalLockCleanupError = $null
-    try { Close-SignedReleaseLocks -Locks $SignedReleaseLocks }
-    catch { $finalLockCleanupError = $_ }
+    catch { $cleanupErrors.Add("production terminal config lock cleanup: $($_.Exception.Message)") }
+    Close-SignedReleaseLocks -Locks $SignedReleaseLocks -Errors $cleanupErrors
     $finalStopError = $null
+    if ($runtimeControlEntered) {
+        try {
+            Stop-ForwardRuntime
+            Assert-TaskPairStopped
+            Assert-NoForwardPythonProcesses
+        }
+        catch { $finalStopError = $_ }
+    }
+    if ($finalStopError) {
+        $cleanupErrors.Add("final stopped-state enforcement: $($finalStopError.Exception.Message)")
+    }
+    if (-not $finalStopError -and $runtimeControlEntered -and $RunnerProbeTerminalConfigCreated) {
+        try {
+            if (Test-Path -LiteralPath $RunnerProbeTerminalConfig) {
+                Remove-Item -LiteralPath $RunnerProbeTerminalConfig -Force
+            }
+            $RunnerProbeTerminalConfigCreated = $false
+        }
+        catch { $cleanupErrors.Add("runner terminal config cleanup: $($_.Exception.Message)") }
+    }
+    if ($PreviousPSModulePathCaptured) {
+        try {
+            [Environment]::SetEnvironmentVariable("PSModulePath", $PreviousPSModulePath, "Process")
+        }
+        catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }
+    }
     try {
-        Stop-ForwardRuntime
-        Assert-TaskPairStopped
-        Assert-NoForwardPythonProcesses
+        [Environment]::SetEnvironmentVariable("XM_MT5_SERVER", $PreviousServerEnv, "Process")
     }
-    catch { $finalStopError = $_ }
-    [Environment]::SetEnvironmentVariable("XM_MT5_SERVER", $PreviousServerEnv, "Process")
-    [Environment]::SetEnvironmentVariable("XM_MT5_TERMINAL_PATH", $PreviousTerminalEnv, "Process")
+    catch { $cleanupErrors.Add("XM_MT5_SERVER restore: $($_.Exception.Message)") }
+    try {
+        [Environment]::SetEnvironmentVariable("XM_MT5_TERMINAL_PATH", $PreviousTerminalEnv, "Process")
+    }
+    catch { $cleanupErrors.Add("XM_MT5_TERMINAL_PATH restore: $($_.Exception.Message)") }
     foreach ($name in $PreviousPythonEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable(
-            $name,
-            [string]$PreviousPythonEnvironment[$name],
-            "Process"
-        )
+        try {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                [string]$PreviousPythonEnvironment[$name],
+                "Process"
+            )
+        }
+        catch { $cleanupErrors.Add("$name restore: $($_.Exception.Message)") }
     }
-    $finalCleanupError = $null
-    if (-not $finalStopError) {
+    if (-not $finalStopError -and $runtimeControlEntered -and $ValidationRootCreated) {
         try {
             Remove-GeneratedTree `
                 -Path $ValidationRoot `
                 -ExpectedLeafPattern '^upgrade-validation\.[0-9a-f]{32}$'
+            $ValidationRootCreated = $false
         }
-        catch { $finalCleanupError = $_ }
+        catch { $cleanupErrors.Add("validation tree cleanup: $($_.Exception.Message)") }
     }
-    $finalArchiveAclError = $null
     if (
         $ArchiveBoundaryHardened
     ) {
@@ -4153,7 +4238,7 @@ finally {
                     -DirectoryRoot
             }
         }
-        catch { $finalArchiveAclError = $_ }
+        catch { $cleanupErrors.Add("final archive ACL seal: $($_.Exception.Message)") }
     }
     try {
         if ($SelfReadLock) {
@@ -4161,26 +4246,18 @@ finally {
             $SelfReadLock = $null
         }
     }
-    catch { $finalSelfLockCleanupError = $_ }
-    if ($finalStopError) {
-        throw "ForwardShadow final stopped-state enforcement failed: $($finalStopError.Exception.Message)"
-    }
-    if ($finalPasswordCleanupError) {
-        throw "ForwardShadow runner credential cleanup failed: $($finalPasswordCleanupError.Exception.Message)"
-    }
-    if ($finalProbeConfigCleanupError) {
-        throw "ForwardShadow read-only terminal probe cleanup failed: $($finalProbeConfigCleanupError.Exception.Message)"
-    }
-    if ($finalLockCleanupError) {
-        throw "ForwardShadow signed release lock cleanup failed: $($finalLockCleanupError.Exception.Message)"
-    }
-    if ($finalArchiveAclError) {
-        throw "ForwardShadow final archive ACL seal failed: $($finalArchiveAclError.Exception.Message)"
-    }
-    if ($finalCleanupError) {
-        throw "ForwardShadow final validation cleanup failed: $($finalCleanupError.Exception.Message)"
-    }
-    if ($finalSelfLockCleanupError) {
-        throw "ForwardShadow upgrader self-lock cleanup failed: $($finalSelfLockCleanupError.Exception.Message)"
+    catch { $cleanupErrors.Add("upgrader self-lock cleanup: $($_.Exception.Message)") }
+    if ($cleanupErrors.Count -gt 0) {
+        $cleanupSummary = $cleanupErrors -join '; '
+        if ($failureToReport) {
+            throw [InvalidOperationException]::new(
+                "ForwardShadow operation failed: $($failureToReport.Message); cleanup: $cleanupSummary",
+                $failureToReport
+            )
+        }
+        throw [InvalidOperationException]::new(
+            "ForwardShadow cleanup failed: $cleanupSummary",
+            [Exception]::new($cleanupSummary)
+        )
     }
 }

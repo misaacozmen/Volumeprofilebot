@@ -1,0 +1,2 @@
+deploy/release_integrity.ps1 text eol=lf
+docs/DEPLOY_001_EVIDENCE/** -text

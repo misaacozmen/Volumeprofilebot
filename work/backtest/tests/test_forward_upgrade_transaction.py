@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 
@@ -36,7 +37,7 @@ def test_forward_flat_acl_rights_are_materialized_before_cast() -> None:
 
 def test_forward_final_archive_seal_does_not_rewalk_locked_transactions() -> None:
     text = source()
-    final = text[text.index("$finalArchiveAclError = $null") :]
+    final = text[text.rindex("finally {") :]
     assert "-Path $ArchiveRoot `" in final
     assert "-RootOnly `" in final
 
@@ -97,8 +98,8 @@ def test_forward_upgrade_is_signed_staged_and_leaves_tasks_stopped() -> None:
     assert "-Path $Venv `" in text
     assert "Start-ScheduledTask" not in text
     assert "$registeredTask.Run($null)" in text
-    assert text.count("Stop-ScheduledTask -TaskName $MainTask") >= 2
-    assert text.count("Stop-ScheduledTask -TaskName $WatchdogTask") >= 2
+    assert text.count("Stop-ScheduledTask -TaskName $MainTask") >= 1
+    assert text.count("Stop-ScheduledTask -TaskName $WatchdogTask") >= 1
     assert "-RestartCount 3" in text
     assert "$definition.Principal.RunLevel = 0" in text
     assert "-notlike \"*$ExpectedScript*\"" not in text
@@ -135,42 +136,39 @@ def test_forward_upgrade_is_signed_staged_and_leaves_tasks_stopped() -> None:
 
 def test_forward_upgrade_rollback_and_finally_are_fail_closed_on_running_code() -> None:
     text = source()
-    catch = text.index("catch {", text.index('state = "UPGRADED_TASKS_STOPPED"'))
-    rollback_gate = text.index("$rollbackRuntimeStopped = $false", catch)
-    unsafe_abort = text.index("rollback was not attempted because stopped state could not be proven", catch)
+    main_try = text.index("try {", text.index("$CandidateResults ="))
+    preflight_archive = text.index("$ExternalReleaseManifest = Assert-SignedReleaseArchive", main_try)
+    first_runtime_stop = text.index("Stop-ForwardRuntime\n", main_try)
+    runtime_flag = text.index("$runtimeControlEntered = $true", main_try)
+    rights_hardening = text.index("Set-ForwardAccountRightsExact", first_runtime_stop)
+    catch = text.index("catch {\n    $UpgradeSucceeded = $false")
+    rollback_gate = text.index("if (-not $runtimeControlEntered)", catch)
+    rollback_stop = text.index("Stop-ForwardRuntime", catch)
     first_candidate_cleanup = text.index("foreach ($candidate in @($CreatedCandidates))", catch)
     first_app_move = text.index('-Label "Rollback new app removal"', catch)
     finally_block = text.rindex("finally {")
 
-    assert rollback_gate < unsafe_abort < first_candidate_cleanup < first_app_move
+    assert preflight_archive < runtime_flag < first_runtime_stop < rights_hardening
+    assert rollback_gate < rollback_stop < first_candidate_cleanup < first_app_move
     assert "filesystem rollback was not attempted" in text
+    assert "Stop-ForwardRuntimeEarly" not in text
+    assert "if ($runtimeControlEntered)" in text[finally_block:]
     assert "Stop-ForwardRuntime" in text[finally_block:]
     assert "Assert-TaskPairStopped" in text[finally_block:]
     assert "Assert-NoForwardPythonProcesses" in text[finally_block:]
-    assert "final stopped-state enforcement failed" in text
-    final_lock_error = text.index("$finalLockCleanupError = $null", finally_block)
+    assert '"final stopped-state enforcement:' in text
+    final_lock_error = text.index("Close-SignedReleaseLocks -Locks $SignedReleaseLocks -Errors $cleanupErrors", finally_block)
     final_stop = text.index("Stop-ForwardRuntime", final_lock_error)
-    final_lock_throw = text.index("signed release lock cleanup failed", final_stop)
-    assert final_lock_error < final_stop < final_lock_throw
-    first_full_path = text.index("$Root = [IO.Path]::GetFullPath($Root)")
-    initialization_guard = text.index("Stop-ForwardRuntimeEarly -RootMarker $RootInput")
-    elevated_check = text.index("Run this script from an elevated PowerShell.")
-    main_try = text.index("try {", text.index("$CandidateResults"))
-    assert "function Stop-ForwardRuntimeEarly" in text[:first_full_path]
-    early_stop = text[
-        text.index("function Stop-ForwardRuntimeEarly") : first_full_path
-    ]
+    cleanup_summary = text.index("$cleanupSummary = $cleanupErrors -join '; '", final_stop)
+    assert final_lock_error < final_stop < cleanup_summary
+    assert "PSModulePath restore" in text[finally_block:]
+    assert "RunnerProbeTerminalConfigCreated" in text[finally_block:]
     process_filter = text[
         text.index("function Get-ForwardPythonProcesses") : text.index(
             "function Assert-TaskPairStopped"
         )
     ]
-    assert "ExecutablePath" in early_stop
-    assert "CommandLine" in early_stop
-    assert "$marker" in early_stop
     assert "run_capital_forward.py" in process_filter
-    assert first_full_path < initialization_guard
-    assert main_try < elevated_check
 
 
 def test_forward_upgrade_preserves_legacy_and_canonical_state() -> None:
@@ -329,7 +327,10 @@ def test_forward_upgrade_private_build_roots_and_parent_delete_guard_are_ordered
     assert create_stage < expand < protect_populated_stage
     assert create_venv < build_venv < install
 
-    create_validation = text.index("New-ForwardPrivateDirectory -Path $ValidationRoot")
+    create_validation = re.search(
+        r"New-ForwardPrivateDirectory\s+`?\s*-Path\s+\$ValidationRoot",
+        text,
+    ).start()
     init = text.index("--output-root $ValidationRoot init")
     assert create_validation < init
 
@@ -361,7 +362,10 @@ def test_forward_upgrade_private_trees_never_grant_the_caller_or_runner() -> Non
         "$VenvStaging",
         "$ValidationRoot",
     ):
-        assert f"New-ForwardPrivateDirectory -Path {private_root}" in text
+        assert re.search(
+            rf"New-ForwardPrivateDirectory\s+`?\s*-Path\s+{re.escape(private_root)}",
+            text,
+        )
 
     archive_lock = text[
         text.index("$TrustedInfrastructureSids") : text.index(

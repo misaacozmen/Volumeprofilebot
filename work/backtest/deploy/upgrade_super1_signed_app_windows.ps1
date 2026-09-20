@@ -24,6 +24,7 @@ $PowerShellHostLock = $null
 $TerminalLock = $null
 $BootstrapPythonLock = $null
 $IntegrityScriptLock = $null
+$ReleaseInputLocks = New-Object Collections.Generic.List[IDisposable]
 $RuntimeConfigEvidence = @()
 $Result = $null
 $primaryError = $null
@@ -227,7 +228,7 @@ if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([str
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "4051f4e68b4aa575df2952a7205ac4fdbdecf6e3da4ca9e170d760e8d9d3dcfe"
+$ExpectedIntegrityScriptSha256 = "bfa1fa7ddcc54bb172e1c33e399ba7d259d36b8baa69e66de41237879db0722c"
 
 function Test-PathWithin {
     param(
@@ -1962,6 +1963,27 @@ try {
         throw "Protected Super1 upgrader changed while its self read lock was held."
     }
 
+    $sourceManifest = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.json")
+    $sourceSignature = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.sig")
+    $sourceComponents = @($ArchivePath, $sourceManifest, $sourceSignature)
+    foreach ($component in $sourceComponents) {
+        $componentLock = [IO.File]::Open(
+            $component,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        [void]$ReleaseInputLocks.Add($componentLock)
+    }
+    $ReleaseManifest = Assert-SignedReleaseArchive `
+        -Archive $ArchivePath `
+        -ExpectedProfile "super1" `
+        -RequireProvenance
+    $sourceHashes = [ordered]@{}
+    foreach ($component in $sourceComponents) {
+        $sourceHashes[[IO.Path]::GetFileName($component)] = Get-ReleaseSha256 -Path $component
+    }
+
     $runtimeControlEntered = $true
     Stop-Super1RuntimeForRollback
 
@@ -1978,15 +2000,6 @@ try {
         if (Test-Path -LiteralPath $spec.Target) {
             throw "Refusing to overwrite an existing Super1 rollover candidate: $($spec.Target)"
         }
-    }
-
-    $ReleaseManifest = Assert-SignedReleaseArchive -Archive $ArchivePath -ExpectedProfile "super1" -RequireProvenance
-    $sourceManifest = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.json")
-    $sourceSignature = [IO.Path]::ChangeExtension($ArchivePath, ".manifest.sig")
-    $sourceComponents = @($ArchivePath, $sourceManifest, $sourceSignature)
-    $sourceHashes = [ordered]@{}
-    foreach ($component in $sourceComponents) {
-        $sourceHashes[[IO.Path]::GetFileName($component)] = Get-ReleaseSha256 -Path $component
     }
 
     Assert-NoUntrustedDeleteChild `
@@ -2383,6 +2396,9 @@ try {
 }
 catch {
     $failure = $_
+    if (-not $runtimeControlEntered) {
+        throw $failure
+    }
     $rollbackErrors = New-Object Collections.Generic.List[string]
     try {
         Stop-Super1RuntimeForRollback
@@ -2533,6 +2549,9 @@ finally {
     try { if ($TerminalLock) { $TerminalLock.Dispose(); $TerminalLock = $null } } catch { $cleanupErrors.Add("TerminalLock: $($_.Exception.Message)") }
     try { if ($BootstrapPythonLock) { $BootstrapPythonLock.Dispose(); $BootstrapPythonLock = $null } } catch { $cleanupErrors.Add("BootstrapPythonLock: $($_.Exception.Message)") }
     try { if ($IntegrityScriptLock) { $IntegrityScriptLock.Dispose(); $IntegrityScriptLock = $null } } catch { $cleanupErrors.Add("IntegrityScriptLock: $($_.Exception.Message)") }
+    foreach ($releaseInputLock in @($ReleaseInputLocks)) {
+        try { if ($releaseInputLock) { $releaseInputLock.Dispose() } } catch { $cleanupErrors.Add("release input lock: $($_.Exception.Message)") }
+    }
     try { if ($PowerShellHostLock) { $PowerShellHostLock.Dispose(); $PowerShellHostLock = $null } } catch { $cleanupErrors.Add("PowerShellHostLock: $($_.Exception.Message)") }
     try { if ($SelfScriptLock) { $SelfScriptLock.Dispose(); $SelfScriptLock = $null } } catch { $cleanupErrors.Add("SelfScriptLock: $($_.Exception.Message)") }
     try { $env:PSModulePath = $OriginalPSModulePath } catch { $cleanupErrors.Add("PSModulePath restore: $($_.Exception.Message)") }

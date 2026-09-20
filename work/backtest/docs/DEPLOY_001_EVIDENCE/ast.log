@@ -1,0 +1,3 @@
+deploy\upgrade_forward_shadow_windows.ps1: errors=0 facts=6178
+deploy\upgrade_super1_signed_app_windows.ps1: errors=0 facts=4465
+deploy\build_signed_windows_release.ps1: errors=0 facts=1295

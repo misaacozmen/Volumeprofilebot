@@ -1,0 +1,65 @@
+{
+  "schema": "deploy-001-evidence-v1",
+  "tested_commit": "9a59acc8fec35c761c82c78a7b118575bd74c327",
+  "tested_tree": "fa9c43c7cc9a8b1beeb391d0fcd64b5f8b81dc07",
+  "branch": "codex/deploy-001-release-contract",
+  "production_test_paths": [
+    "work/backtest/deploy/upgrade_forward_shadow_windows.ps1",
+    "work/backtest/tests/powershell_contract.py",
+    "work/backtest/tests/test_deploy_001_release_contract.py",
+    "work/backtest/tests/test_forward_upgrade_transaction.py"
+  ],
+  "environment": {
+    "python": "3.14.5",
+    "pytest": "9.1.1",
+    "powershell_harness": "Windows PowerShell 5.1"
+  },
+  "runs": [
+    {
+      "suite": "targeted",
+      "command": "python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
+      "exit_code": 0,
+      "passed": 215,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "junit": {
+        "path": "targeted.junit.xml",
+        "sha256": "37a2e15ce32fe5cee788f257213b854d95fa7f50f598c2d4ae45eea999399130",
+        "git_blob_sha256": "37a2e15ce32fe5cee788f257213b854d95fa7f50f598c2d4ae45eea999399130"
+      },
+      "stdout_stderr": {
+        "path": "targeted.log",
+        "sha256": "849e142bee969e6ab26969d30ff30ae029ecd86746463ecf93a1342d4601426d",
+        "git_blob_sha256": "849e142bee969e6ab26969d30ff30ae029ecd86746463ecf93a1342d4601426d"
+      }
+    },
+    {
+      "suite": "collection",
+      "command": "python -m pytest --collect-only -q",
+      "exit_code": 2,
+      "collected": 516,
+      "status": "blocked_by_existing_v08_manifest_sha256_mismatch",
+      "stdout_stderr": {
+        "path": "collection.log",
+        "sha256": "cc168622329e531f03068ffaa08c10615105b9af6d4bc2c0a339825331915ce7",
+        "git_blob_sha256": "cc168622329e531f03068ffaa08c10615105b9af6d4bc2c0a339825331915ce7"
+      }
+    },
+    {
+      "suite": "powershell_ast",
+      "command": "python -c AST parser inventory for the three production builder/upgrader scripts",
+      "exit_code": 0,
+      "stdout_stderr": {
+        "path": "ast.log",
+        "sha256": "ff4735f2563b1ca65e56037b07c15ab674143625cb1104e6311428475b09be3f",
+        "git_blob_sha256": "ff4735f2563b1ca65e56037b07c15ab674143625cb1104e6311428475b09be3f"
+      }
+    }
+  ],
+  "notes": [
+    "No signing, deployment, MT5/broker, scheduled-task, service, transfer, or ACL operation was executed.",
+    "The collection failure is the pre-existing V08 manifest SHA-256 mismatch reported in collection.log; it is not counted as a pass.",
+    "The targeted JUnit is a fresh run and is not reused as collection evidence."
+  ]
+}
