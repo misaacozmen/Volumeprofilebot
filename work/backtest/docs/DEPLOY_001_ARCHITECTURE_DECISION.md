@@ -51,6 +51,7 @@ Kanıt komutları Windows PowerShell 5.1 harness’i ve CPython 3.14.5/pytest 9.
 - Tam koleksiyon `python -m pytest --collect-only -q` — exit `1`, `513 collected`, V08 manifest import hatası.
 - AST harness — exit `0`; gerçek stop gövdeleri, gerçek catch/finally zincirleri, pre-entry guard, ownership cleanup, partial-stop, bağımsız lock disposal, cleanup failure ve mutation duyarlılığı doğrulandı.
 - Builder missing-key probe — exit `1`; sözleşme kapısından sonra beklenen DPAPI key hatasına ulaştı.
+- Exact commit’e bağlı ham JUnit/log/AST çıktıları ve SHA-256 manifesti: `docs/DEPLOY_001_EVIDENCE/manifest.json`.
 
 `PASS_CODE` yalnız bu yerel test kanıtını ifade eder. `MERGED_MAIN`,
 `PASS_EXTERNAL_ACCEPTANCE` ve `DEPLOYMENT_READY` bu teslimle verilmez.

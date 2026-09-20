@@ -1,0 +1,55 @@
+{
+  "schema": "deploy-001-evidence-v1",
+  "tested_commit": "e91573a85d643119da1808e18b7cc3317d6951f5",
+  "tested_tree": "768728fe7088fb4130dca3b81862d885b886b3d7",
+  "branch": "codex/deploy-001-release-contract",
+  "environment": {
+    "python": "3.14.5",
+    "pytest": "9.1.1",
+    "powershell_harness": "Windows PowerShell 5.1"
+  },
+  "runs": [
+    {
+      "suite": "targeted",
+      "command": "python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
+      "exit_code": 0,
+      "passed": 213,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "junit": {
+        "path": "targeted.junit.xml",
+        "sha256": "d847bfc26d71f727e578ee9877266ed395c97c4053601caf267047a5ccd716e3"
+      },
+      "stdout_stderr": {
+        "path": "targeted.log",
+        "sha256": "485b4ad245c229ac2306ccadb743ca36293d5fb5f1f1441b843c978e8895b25e"
+      }
+    },
+    {
+      "suite": "collection",
+      "command": "python -m pytest --collect-only -q",
+      "exit_code": 2,
+      "collected": 513,
+      "status": "blocked_by_existing_v08_manifest_sha256_mismatch",
+      "stdout_stderr": {
+        "path": "collection.log",
+        "sha256": "0f7ad7ba118ad606807a73b6b2b9b6dd78d3551d4299f8b70790a00b27a34de4"
+      }
+    },
+    {
+      "suite": "powershell_ast",
+      "command": "python -c AST parser inventory for the three production builder/upgrader scripts",
+      "exit_code": 0,
+      "stdout_stderr": {
+        "path": "ast.log",
+        "sha256": "28512781960fe81c932b397001dc7ce5dfb9e7ee93745e282ce5971efe4f7e5"
+      }
+    }
+  ],
+  "notes": [
+    "No signing, deployment, MT5/broker, scheduled-task, service, transfer, or ACL operation was executed.",
+    "The collection failure is the pre-existing V08 manifest SHA-256 mismatch reported in collection.log; it is not counted as a pass.",
+    "The targeted JUnit is a fresh run and is not reused as collection evidence."
+  ]
+}
