@@ -58,6 +58,7 @@ tests/test_data_integrity.py::test_loader_rejects_parse_loss_instead_of_dropping
 tests/test_data_integrity.py::test_loader_deduplicates_identical_overlap_bars_by_default
 tests/test_data_integrity.py::test_loader_rejects_conflicting_duplicate_even_in_identical_mode
 tests/test_deploy_001_evidence_manifest.py::test_evidence_manifest_binds_checkout_and_committed_bytes
+tests/test_deploy_001_evidence_manifest.py::test_evidence_manifest_rejects_each_individually_corrupted_artifact
 tests/test_deploy_001_release_contract.py::test_release_integrity_contract_binds_the_exact_git_source_and_bytes
 tests/test_deploy_001_release_contract.py::test_both_upgraders_have_exactly_the_contract_pin
 tests/test_deploy_001_release_contract.py::test_builder_byte_gate_rejects_crlf_bom_and_single_byte_corruption
@@ -196,6 +197,10 @@ tests/test_pending_order_lifecycle.py::test_target_before_fill_has_explicit_term
 tests/test_pending_order_lifecycle.py::test_synthetic_target_can_be_ignored_when_manual_target_is_not_authoritative
 tests/test_pending_order_lifecycle.py::test_opposite_cisd_cancels_pending_order
 tests/test_pending_order_lifecycle.py::test_unfilled_order_reaches_trade_window_terminal
+tests/test_pinned_checkout_bytes.py::test_pinned_bytes_are_independent_of_autocrlf[true]
+tests/test_pinned_checkout_bytes.py::test_pinned_bytes_are_independent_of_autocrlf[false]
+tests/test_powershell_harness_newlines.py::test_harness_preserves_powershell_line_continuations[\n]
+tests/test_powershell_harness_newlines.py::test_harness_preserves_powershell_line_continuations[\r\n]
 tests/test_public_identity_scan.py::test_concrete_account_identity_is_detected
 tests/test_public_identity_scan.py::test_python_identity_literal_is_detected_without_evaluation
 tests/test_public_identity_scan.py::test_powershell_account_comparison_literal_is_detected
@@ -302,6 +307,61 @@ tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_e
 tests/test_super1_continuation.py::test_m03_snapshot_mutation_is_rejected_with_exact_code[unknown]
 tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[minute_bars_and_conflicts]
 tests/test_super1_continuation.py::test_m03_uncheckpointed_wal_continuity[order_store]
+tests/test_super1_observation.py::test_observation_writer_is_unique_and_contains_checkpoint_bound_raw_capture
+tests/test_super1_observation.py::test_evidence_report_rejects_junit_pass_without_two_suite_observations
+tests/test_super1_observation.py::test_v03_actual_tamper_is_rejected
+tests/test_super1_observation.py::test_v02_required_node_without_record_actual_fails_session
+tests/test_super1_observation.py::test_v02_required_node_double_record_actual_fails_session
+tests/test_super1_observation.py::test_v02_required_node_without_checkpoint_fails_session
+tests/test_super1_observation.py::test_v02_required_node_double_checkpoint_fails_session
+tests/test_super1_observation.py::test_v02_nonrequired_node_observation_is_rejected
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[attempt_id_split]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[authoritative_before_verified_receipt]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_before_fail_after_pass_contract]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_hash_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[baseline_missing]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[canonical_run_name_collision]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[claim_formula_changed]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[csv_temp_path]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_final_stdout_tamper]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[decoded_prepublish_stdout_tamper]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[diff_temp_path]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[fake_trace_actual]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[final_failure_quarantine_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_duplicate_required_node]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_foreign_node]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[junit_missing_required_node]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[log_temp_path]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[mandatory_xm_config_missing]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_extra]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[manifest_missing]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[nested_json_absolute_path]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[normative_required_set_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[predecessor_changed]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_hash_changed]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[preseal_inventory_changed]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_checkpoint_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[raw_identity_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_failure_quarantine_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_name_collision]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_partial_write]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[receipt_verifier_source_sha_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[semantic_verifier_source_sha_mismatch]
+tests/test_super1_observation.py::test_v03_evidence_and_publication_protocol_case[stale_required_set]
+tests/test_super1_observation.py::test_v02_foreign_run_id_is_rejected
+tests/test_super1_observation.py::test_v02_foreign_suite_is_rejected
+tests/test_super1_observation.py::test_v02_foreign_nodeid_is_rejected
+tests/test_super1_observation.py::test_v02_foreign_scenario_nonce_is_rejected
+tests/test_super1_observation.py::test_v02_foreign_attempt_is_rejected
+tests/test_super1_observation.py::test_v02_foreign_checkpoint_is_rejected
+tests/test_super1_observation.py::test_v03_trace_actual_override_is_rejected
+tests/test_super1_observation.py::test_v03_trace_tamper_is_rejected
+tests/test_super1_observation.py::test_v03_ledger_tamper_is_rejected
+tests/test_super1_observation.py::test_v03_snapshot_tamper_is_rejected
+tests/test_super1_observation.py::test_v03_missing_raw_source_is_rejected
+tests/test_super1_observation.py::test_v03_stale_raw_source_from_other_attempt_is_rejected
+tests/test_super1_observation.py::test_v03_test_supplied_expected_is_rejected
+tests/test_super1_observation.py::test_v03_test_supplied_measurement_is_rejected
 tests/test_super1_rollback_harness.py::test_power_shell_rollback_harness_latches_all_injected_failures
 tests/test_super1_rollback_harness.py::test_o01_harness_uses_same_policy_ast_contract
 tests/test_super1_rollback_harness.py::test_o01_production_policy_call_ast_contract
@@ -515,19 +575,4 @@ tests/test_xm_mt5_forward.py::test_pending_remove_keeps_unknown_when_order_fill_
 tests/test_xm_mt5_forward.py::test_pending_remove_blocks_unprotected_order_specific_position
 tests/test_xm_mt5_forward.py::test_sqlite_unique_intent_is_process_safe
 
-=================================== ERRORS ====================================
-______________ ERROR collecting tests/test_super1_observation.py ______________
-tests\test_super1_observation.py:11: in <module>
-    from super1_observation import ObservationRecorder
-scripts\super1_observation.py:19: in <module>
-    from super1_required_nodes import ALL_REQUIRED_NODES, BEHAVIOR_REQUIRED_NODES, V09_BEHAVIOR_BINDINGS, required_raw_sources
-scripts\super1_required_nodes.py:35: in <module>
-    MANIFEST = _load_manifest()
-               ^^^^^^^^^^^^^^^^
-scripts\super1_required_nodes.py:28: in _load_manifest
-    raise RuntimeError(f"V08 manifest SHA-256 mismatch: {actual}")
-E   RuntimeError: V08 manifest SHA-256 mismatch: 54bf69bc48357ae84e6c2343f7071328301c55300992a9db9f12f53d9f0a7ff9
-=========================== short test summary info ===========================
-ERROR tests/test_super1_observation.py - RuntimeError: V08 manifest SHA-256 m...
-!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-516 tests collected, 1 error in 2.73s
+576 tests collected in 0.38s

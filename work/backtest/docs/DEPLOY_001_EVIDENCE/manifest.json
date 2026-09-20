@@ -1,65 +1,69 @@
 {
   "schema": "deploy-001-evidence-v1",
-  "tested_commit": "9a59acc8fec35c761c82c78a7b118575bd74c327",
-  "tested_tree": "fa9c43c7cc9a8b1beeb391d0fcd64b5f8b81dc07",
-  "branch": "codex/deploy-001-release-contract",
+  "tested_commit": "448df9b88cd45ba7512176c4d302302a7790b953",
+  "tested_tree": "887eae832f9b628d6ceb2ac2bde7f7edbc860de9",
+  "branch": "codex/hash-checkout-contract",
   "production_test_paths": [
     "work/backtest/deploy/upgrade_forward_shadow_windows.ps1",
     "work/backtest/tests/powershell_contract.py",
     "work/backtest/tests/test_deploy_001_release_contract.py",
-    "work/backtest/tests/test_forward_upgrade_transaction.py"
+    "work/backtest/tests/test_forward_upgrade_transaction.py",
+    ".gitattributes",
+    "work/backtest/tests/test_pinned_checkout_bytes.py",
+    "work/backtest/tests/test_powershell_harness_newlines.py"
   ],
   "environment": {
-    "python": "3.14.5",
+    "python": "3.11.9",
     "pytest": "9.1.1",
     "powershell_harness": "Windows PowerShell 5.1"
   },
   "runs": [
     {
       "suite": "targeted",
-      "command": "python -m pytest -q tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
+      "command": "py -3.11 -m pytest -q -p no:cacheprovider tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py tests/test_pinned_checkout_bytes.py tests/test_powershell_harness_newlines.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
       "exit_code": 0,
-      "passed": 215,
+      "passed": 219,
       "failed": 0,
       "errors": 0,
       "skipped": 0,
       "junit": {
         "path": "targeted.junit.xml",
-        "sha256": "37a2e15ce32fe5cee788f257213b854d95fa7f50f598c2d4ae45eea999399130",
-        "git_blob_sha256": "37a2e15ce32fe5cee788f257213b854d95fa7f50f598c2d4ae45eea999399130"
+        "sha256": "718afc300e6ce5dfcd1b5f0a70e97c826ef3618c24739e5f3a2510942f13a570",
+        "git_blob_sha256": "718afc300e6ce5dfcd1b5f0a70e97c826ef3618c24739e5f3a2510942f13a570"
       },
       "stdout_stderr": {
         "path": "targeted.log",
-        "sha256": "849e142bee969e6ab26969d30ff30ae029ecd86746463ecf93a1342d4601426d",
-        "git_blob_sha256": "849e142bee969e6ab26969d30ff30ae029ecd86746463ecf93a1342d4601426d"
+        "sha256": "425f6598b5ce99b4e6227cf4464e470a5dd5d770e0082d1da80e94ed2a32249f",
+        "git_blob_sha256": "425f6598b5ce99b4e6227cf4464e470a5dd5d770e0082d1da80e94ed2a32249f"
       }
     },
     {
       "suite": "collection",
-      "command": "python -m pytest --collect-only -q",
-      "exit_code": 2,
-      "collected": 516,
-      "status": "blocked_by_existing_v08_manifest_sha256_mismatch",
+      "command": "py -3.11 -m pytest --collect-only -q -p no:cacheprovider",
+      "exit_code": 0,
+      "collected": 576,
+      "status": "PASS_COLLECTION",
       "stdout_stderr": {
         "path": "collection.log",
-        "sha256": "cc168622329e531f03068ffaa08c10615105b9af6d4bc2c0a339825331915ce7",
-        "git_blob_sha256": "cc168622329e531f03068ffaa08c10615105b9af6d4bc2c0a339825331915ce7"
+        "sha256": "12776edd2813689e4db0ebd42725e26f0e9752172900980fa92e620d7b4d80ec",
+        "git_blob_sha256": "12776edd2813689e4db0ebd42725e26f0e9752172900980fa92e620d7b4d80ec"
       }
     },
     {
       "suite": "powershell_ast",
-      "command": "python -c AST parser inventory for the three production builder/upgrader scripts",
+      "command": "py -3.11: powershell_contract.powershell_ast for the three production builder/upgrader scripts",
       "exit_code": 0,
       "stdout_stderr": {
         "path": "ast.log",
-        "sha256": "ff4735f2563b1ca65e56037b07c15ab674143625cb1104e6311428475b09be3f",
-        "git_blob_sha256": "ff4735f2563b1ca65e56037b07c15ab674143625cb1104e6311428475b09be3f"
+        "sha256": "74decbbe12bd7dbee4b9c57c82aa0391631fd83a640e3a752f8535ccd3bdf348",
+        "git_blob_sha256": "74decbbe12bd7dbee4b9c57c82aa0391631fd83a640e3a752f8535ccd3bdf348"
       }
     }
   ],
   "notes": [
-    "No signing, deployment, MT5/broker, scheduled-task, service, transfer, or ACL operation was executed.",
-    "The collection failure is the pre-existing V08 manifest SHA-256 mismatch reported in collection.log; it is not counted as a pass.",
-    "The targeted JUnit is a fresh run and is not reused as collection evidence."
+    "These runs did not sign a release, deploy, contact MT5/broker or modify tasks/services/ACLs.",
+    "All 576 nodes collect. Targeted 219 passes are not a full-suite pass or external acceptance.",
+    "Previous evidence remains available at d1c0b07cdbf5729136cc436746f78ddcc00544ec.",
+    "Separate external key-access challenge evidence is not a signed release or deployment."
   ]
 }

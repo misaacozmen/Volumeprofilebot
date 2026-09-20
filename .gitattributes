@@ -1,0 +1,12 @@
+# Preserve the byte representations already approved by the immutable V08/V09 pins.
+docs/SUPER1_REQUIRED_NODE_MANIFEST_V08_20260901.json text eol=lf
+docs/SUPER1_SEMANTIC_CONTRACT_V09_20260902.json text eol=crlf
+work/backtest/tests/fixtures/super1_candidate.json text eol=lf
+work/backtest/tests/fixtures/super1_signal_contract.json text eol=lf
+work/backtest/tests/fixtures/xm_mt5_demo_config.json text eol=lf
+work/backtest/forward_shadow/frozen_config.json text eol=crlf
+work/backtest/scripts/run_capital_forward.py text eol=crlf
+work/backtest/scripts/run_forward_shadow.py text eol=crlf
+work/backtest/scripts/run_super1_xm_mt5_forward.py text eol=crlf
+work/backtest/scripts/run_xm_mt5_forward.py text eol=crlf
+work/backtest/backtest/*.py text eol=crlf
