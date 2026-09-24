@@ -110,7 +110,8 @@ def test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets(tm
             literals = ",".join("'" + node + "'" for node in inventory + ["2 tests collected"])
             junit = "<testsuites><testsuite>" + "".join(junit_cases) + "</testsuite></testsuites>"
             result = powershell_harness(
-                functions
+                'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility")\n'
+                + functions
                 + f"\n$ids = @(Get-CollectionNodeIds -Output @({literals}))"
                 + "\nWrite-NodeIdInventory -NodeIds $ids -Path $args[0] | Out-Null"
                 + f"\n[xml]$junit = '{junit}'"
