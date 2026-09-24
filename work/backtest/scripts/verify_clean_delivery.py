@@ -78,6 +78,9 @@ def verify(repo: Path, evidence: Path, ref: str) -> dict:
     manifest = verify_bindings(repo, evidence, ref)
     project = repo / "work/backtest"
     helper_path = project / "docs/DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f/verify_final_evidence.py"
+    for source in (helper_path, helper_path.parent / "collection.log"):
+        require(source.read_bytes() == git(repo, "show", f"{ref}:{source.relative_to(repo).as_posix()}"),
+                "node verifier source differs from committed bytes")
     spec = importlib.util.spec_from_file_location("historical_node_contract", helper_path)
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
