@@ -1,0 +1,38 @@
+{
+  "schema": "engine-audit-inputs-v1",
+  "source": {
+    "provider": "Dukascopy",
+    "source_url": "https://www.dukascopy.com/api/data/get/historical-data-export",
+    "observed_at_utc": "2026-09-24T17:29:39Z",
+    "provenance_note": "Workspace-local Dukascopy-format exports; original provider download receipt and retrieval timestamp were not present. Source attribution follows the export filenames/format; observation time is not asserted as retrieval time."
+  },
+  "window": {
+    "timezone": "America/New_York",
+    "start_inclusive": "2025-01-25T00:00:00-05:00",
+    "end_exclusive": "2025-04-04T00:00:00-04:00"
+  },
+  "datasets": [
+    {
+      "leg_key": "nq",
+      "symbol": "DUKASCOPY_USATECHIDXUSD",
+      "timeframe": "3m",
+      "files": [
+        {
+          "path": "nq/DUKASCOPY_USATECHIDXUSD, 3m_2025-01-25_2025-04-05.csv",
+          "sha256": "d1fd03c368200f08db2664806a36442f16123c0f48cbb5766b472f4eb1426672"
+        }
+      ]
+    },
+    {
+      "leg_key": "spx",
+      "symbol": "DUKASCOPY_USA500IDXUSD",
+      "timeframe": "5m",
+      "files": [
+        {
+          "path": "spx/DUKASCOPY_USA500IDXUSD, 5m_2025-01-25_2025-04-05.csv",
+          "sha256": "a44e99109d1571f14af1640db58a014923290514271c3aacc804e4c551a8efd6"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "status": "PASS",
+  "candidate_commit_sha": "c574e55c01ff7a9e9531823d355a51f0f40515e5",
+  "candidate_tree_oid": "da560e481d6ea0f13f7bc37ed1ec788c9291367f",
+  "candidate_tree_denylist_match_count": 0,
+  "candidate_tree_structural_violation_count": 0,
+  "history_complete": true,
+  "scanner_source_sha256": "22c7cd1d94467f4ea9b4137b74c86ad1ba10ef3e86f8ccc0d1c021a6e760e87e",
+  "started_at_utc": "2026-09-24T19:56:37.914755Z",
+  "finished_at_utc": "2026-09-24T19:56:43.692108Z",
+  "new_history_findings": 0,
+  "accepted_baseline_unchanged": true
+}

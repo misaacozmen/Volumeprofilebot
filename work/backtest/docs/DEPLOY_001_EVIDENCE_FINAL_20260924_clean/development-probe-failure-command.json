@@ -1,0 +1,14 @@
+{
+  "name": "postbootstrap",
+  "command": [
+    "C:\\Users\\ISAAC\\Documents\\risk-clean-delivery-20260924\\venv\\Scripts\\python.exe",
+    "C:/Users/ISAAC/Documents/risk-clean-delivery-20260924/postbootstrap_probe.py"
+  ],
+  "cwd": "C:\\Users\\ISAAC\\Documents\\risk-clean-delivery-20260924\\checkout\\work\\backtest",
+  "tested_commit": "5c950bcef4f0202dbfe7e6d84cf3258ee33dde3a",
+  "started_at": "2026-09-24T19:52:54.388489+00:00",
+  "finished_at": "2026-09-24T19:53:43.727246+00:00",
+  "exit_code": 1,
+  "stdout": "postbootstrap.log",
+  "stderr": "postbootstrap.stderr.log"
+}
