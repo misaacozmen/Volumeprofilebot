@@ -64,16 +64,63 @@ def test_release_builder_collection_parser_preserves_whitespace_parameter_ids() 
     node_ids = [
         "tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[   ]",
         "tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[None]",
+        "artifact_tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[   ]",
+        "artifact_tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[None]",
     ]
     literals = ",".join("'" + node_id + "'" for node_id in node_ids)
     script = (
         function
-        + f"\n$ids = Get-CollectionNodeIds -Output @({literals})"
+        + f"\n$ids = Get-CollectionNodeIds -Output @({literals}, '4 tests collected', 'other/test_bad.py::test_bad')"
         + "\nConvertTo-Json -InputObject @($ids) -Compress"
     )
     result = powershell_harness(script)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip()) == node_ids
+
+
+def test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets(tmp_path: Path) -> None:
+    builder_path = DEPLOY / "build_signed_windows_release.ps1"
+    functions = "\n".join(
+        item["extent_text"] for item in facts(builder_path, "function")
+        if item["name"] in {
+            "Get-CollectionNodeIds", "Get-JunitNodeIds",
+            "Write-NodeIdInventory", "Assert-JunitMatchesInventory",
+        }
+    )
+    for root in ("tests", "artifact_tests"):
+        nodes = [f"{root}/test_example.py::test_case[  spaced  ]", f"{root}/test_example.py::test_second"]
+        cases = [
+            f'<testcase classname="{root}.test_example" name="test_case[  spaced  ]"/>',
+            f'<testcase classname="{root}.test_example" name="test_second"/>',
+        ]
+        scenarios = {
+            "valid": (nodes, cases, True),
+            "valid-duplicates": (nodes + nodes[:1], cases + cases[:1], True),
+            "missing-inventory": (nodes[:1], cases, False),
+            "empty-inventory": ([], cases, False),
+            "duplicate-replaces-node": (nodes[:1] * 2, cases, False),
+            "extra-inventory": (nodes + [f"{root}/test_example.py::test_extra"], cases, False),
+            "missing-junit": (nodes, cases[:1], False),
+            "empty-junit": (nodes, [], False),
+            "wrong-root": ([node.replace(root + "/", "other/", 1) for node in nodes], cases, False),
+        }
+        for bad in ("failure", "error", "skipped"):
+            scenarios[bad] = (nodes, [cases[0].replace("/>", f"><{bad}/></testcase>"), cases[1]], False)
+        for name, (inventory, junit_cases, accepted) in scenarios.items():
+            literals = ",".join("'" + node + "'" for node in inventory + ["2 tests collected"])
+            junit = "<testsuites><testsuite>" + "".join(junit_cases) + "</testsuite></testsuites>"
+            result = powershell_harness(
+                functions
+                + f"\n$ids = @(Get-CollectionNodeIds -Output @({literals}))"
+                + "\nWrite-NodeIdInventory -NodeIds $ids -Path $args[0] | Out-Null"
+                + f"\n[xml]$junit = '{junit}'"
+                + "\nAssert-JunitMatchesInventory -InventoryPath $args[0] -Junit $junit -SuiteName 'Harness' | Out-Null"
+                + "\n'PASS'",
+                str(tmp_path / f"{root}-{name}.txt"),
+            )
+            assert (result.returncode == 0) is accepted, (root, name, result.stdout, result.stderr)
+            if accepted:
+                assert "PASS" in result.stdout
 
 
 def test_release_builder_fixture_guard_accepts_owner_link_and_rejects_invalid_root(
@@ -151,7 +198,7 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",
         "docs/DEPLOY_001_EVIDENCE/** -text",
-        "docs/DEPLOY_001_EVIDENCE_FINAL_20260922_*/** -text",
+        "docs/DEPLOY_001_EVIDENCE_FINAL_*/** -text",
     ]
 
 

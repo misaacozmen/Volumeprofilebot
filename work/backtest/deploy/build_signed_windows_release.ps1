@@ -77,7 +77,7 @@ function Get-CollectionNodeIds {
     $nodeIds = @()
     foreach ($line in $Output) {
         $trimmed = ([string]$line).Trim()
-        if ($trimmed -match '^(tests/\S+\.py::.+)$') {
+        if ($trimmed -match '^((?:tests|artifact_tests)/\S+\.py::.+)$') {
             $nodeIds += $Matches[1]
         }
     }

@@ -9,6 +9,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FINAL_EVIDENCE_ROOT = ROOT / "docs" / "DEPLOY_001_EVIDENCE_FINAL_20260922_a6988d9"
+# Clean import of the immutable historical records, parented only by accepted main.
+# Original tested refs remain metadata; making their private ancestry reachable is forbidden.
+HISTORICAL_ARCHIVE_COMMIT = "5c2879bef9c9babcd7b8e7d450d8ce68e5abfc74"
 
 
 def _verify_evidence_manifest(
@@ -19,23 +22,14 @@ def _verify_evidence_manifest(
 ) -> None:
     manifest = json.loads((evidence_root / "manifest.json").read_text(encoding="utf-8"))
     committed_evidence_root = f"HEAD:work/backtest/docs/{evidence_root.name}"
-    tested_commit = str(manifest["tested_commit"])
-    assert subprocess.check_output(
-        ["git", "rev-parse", tested_commit], cwd=repo_root, text=True
-    ).strip() == tested_commit
-    assert subprocess.check_output(
-        ["git", "rev-parse", f"{tested_commit}^{{tree}}"],
+    archived_manifest = subprocess.check_output(
+        ["git", "show", f"{HISTORICAL_ARCHIVE_COMMIT}:work/backtest/docs/{evidence_root.name}/manifest.json"],
         cwd=repo_root,
-        text=True,
-    ).strip() == manifest["tested_tree"]
-
-    if require_current_source:
-        source_paths = [str(path) for path in manifest["production_test_paths"]]
-        assert subprocess.run(
-            ["git", "diff", "--quiet", tested_commit, "HEAD", "--", *source_paths],
-            cwd=repo_root,
-            check=False,
-        ).returncode == 0
+    )
+    assert (evidence_root / "manifest.json").read_bytes() == archived_manifest
+    # This binds the unmodified original commit/tree declaration and all artifact
+    # hashes without pretending that archived runs accept the new clean source.
+    assert not require_current_source, "Historical evidence cannot accept current source; run the clean delivery verifier"
 
     for run in manifest["runs"]:
         for binding_name in ("junit", "stdout_stderr"):
