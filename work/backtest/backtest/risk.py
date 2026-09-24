@@ -5,6 +5,7 @@ from collections.abc import Iterable
 import pandas as pd
 
 from .data_inspector import parse_timeframe_minutes
+from .numeric_contracts import finite_float
 
 
 def apply_pair_risk_rule(
@@ -34,7 +35,7 @@ def apply_pair_risk_rule(
     )
     if rule == "skip_second_after_first_loss":
         return skip_second_after_first_symbol_loss(frame, group_col, date_col, label_col, r_col)
-    return apply_daily_loss_cap(frame, float(rule), group_col, date_col, r_col)
+    return apply_daily_loss_cap(frame, finite_float(rule, "pair_cap_r"), group_col, date_col, r_col)
 
 
 def normalize_pair_risk_frame(
@@ -104,6 +105,8 @@ def apply_daily_loss_cap(
 ) -> pd.DataFrame:
     if trades.empty:
         return trades.copy()
+    for value in trades[r_col]:
+        finite_float(value, r_col)
     ensure_columns(
         trades,
         [
@@ -146,6 +149,8 @@ def skip_second_after_first_symbol_loss(
 ) -> pd.DataFrame:
     if trades.empty:
         return trades.copy()
+    for value in trades[r_col]:
+        finite_float(value, r_col)
     ensure_columns(
         trades,
         [

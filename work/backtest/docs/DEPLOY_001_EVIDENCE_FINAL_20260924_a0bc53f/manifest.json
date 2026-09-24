@@ -1,0 +1,648 @@
+{
+  "schema": "deploy-001-evidence-v3",
+  "tested_commit": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+  "tested_tree": "9d6e58445ece28f863165326075ac610f6e52c10",
+  "branch": "codex/risk-hardening-1-11",
+  "evidence_package": "DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f",
+  "production_test_paths": [
+    ".github/workflows/super1-risk-gates.yml",
+    "work/backtest/deploy/build_signed_windows_release.ps1",
+    "work/backtest/schemas/super1_environment_v1.schema.json",
+    "work/backtest/backtest/live/risk_guard.py",
+    "work/backtest/backtest/live/production_flow.py",
+    "work/backtest/backtest/live/halt.py",
+    "work/backtest/backtest/live/execution.py",
+    "work/backtest/backtest/live/retry.py",
+    "work/backtest/backtest/live/order_state.py",
+    "work/backtest/backtest/live/instruments.py",
+    "work/backtest/backtest/live/approval.py",
+    "work/backtest/backtest/live/settings.py",
+    "work/backtest/backtest/live/strategy_health.py",
+    "work/backtest/backtest/sandbox.py",
+    "work/backtest/backtest/numeric_contracts.py",
+    "work/backtest/backtest/risk_xray.py",
+    "work/backtest/backtest/evaluation_window.py",
+    "work/backtest/backtest/walk_forward.py",
+    "work/backtest/backtest/optimization.py",
+    "work/backtest/scripts/backtest_sandbox_worker.py",
+    "work/backtest/scripts/windows_appcontainer_launcher.py",
+    "work/backtest/scripts/run_super1_xm_mt5_forward.py",
+    "work/backtest/scripts/prepare_risk_provenance.py",
+    "work/backtest/scripts/prepare_engine_audit_inputs.py",
+    "work/backtest/scripts/run_engine_reliability_audit.py",
+    "work/backtest/scripts/scan_project_environment.py",
+    "work/backtest/scripts/scan_public_broker_identity.py",
+    "work/backtest/scripts/finalize_strategy_improvement_loop_v4.py",
+    "work/backtest/live_forward/super1_xm_mt5_demo_config_v4.json",
+    "work/backtest/forward_shadow/frozen_config.json",
+    "work/backtest/forward_shadow/baseline_lock.json",
+    "work/backtest/forward_shadow/engine_reliability_audit_2025_feb_mar_manifest.json",
+    "work/backtest/research_candidates/calibration/first30_thresholds_pre2025_v1.json",
+    "work/backtest/data/provenance/first30_pre2025_inputs.sha256",
+    "work/backtest/tests/test_live_architecture_boundary.py",
+    "work/backtest/tests/test_environment_schema_scanner.py",
+    "work/backtest/tests/test_backtest_sandbox.py",
+    "work/backtest/tests/test_deploy_001_release_contract.py",
+    "work/backtest/tests/test_deploy_001_evidence_manifest.py",
+    "work/backtest/tests/test_super1_instruction_1_11.py",
+    "work/backtest/tests/test_super1_risk_e2e.py",
+    "work/backtest/tests/test_live_risk_guard.py",
+    "work/backtest/tests/test_live_retry_policy.py",
+    "work/backtest/tests/test_instrument_contract.py",
+    "work/backtest/tests/test_evaluation_window.py",
+    "work/backtest/tests/test_order_approval.py",
+    "work/backtest/tests/test_optimization_walk_forward.py",
+    "work/backtest/tests/test_risk_causality.py",
+    "work/backtest/tests/test_risk_xray.py",
+    "work/backtest/tests/test_strategy_health.py",
+    "work/backtest/tests/test_runtime_settings.py",
+    "work/backtest/tests/test_financial_numeric_contracts.py",
+    "work/backtest/tests/test_candidate_artifacts.py",
+    "work/backtest/tests/test_pinned_checkout_bytes.py"
+  ],
+  "reviewed_base": {
+    "commit": "a350263abc57a8add3827a533befd189b58bc01e",
+    "tree": "80d5d24e94e2ce76fe71077b82c867839bc438e5",
+    "decision": "CHANGES_REQUIRED",
+    "source_attachment_sha256": "7e2764bb68de54f6e18ae4f570f454b789af6302d16c8c58efb52dbb07a9d8b0"
+  },
+  "commits_since_reviewed_base": [
+    {
+      "sha": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+      "subject": "Scan repository-root workflows in environment gate"
+    },
+    {
+      "sha": "e18f466666c13cd34a7950ceff221000836d4a32",
+      "subject": "Preserve exact pytest collection node identities"
+    },
+    {
+      "sha": "3bc99fe73527c9cbd39fe90a5f668abe749f815a",
+      "subject": "Bind historical evidence to its tested source"
+    },
+    {
+      "sha": "38cf2bb6e7a5776449175a6616fc067dac8630a9",
+      "subject": "Keep frozen threshold provenance unchanged"
+    },
+    {
+      "sha": "b02ce70183e95c23abcc5671036163d2b8d7e697",
+      "subject": "Close risk provenance and release fixture gates"
+    },
+    {
+      "sha": "d3560fdcd164578fd4cf08bd0774c2a833717882",
+      "subject": "docs: bind final identity rescan"
+    },
+    {
+      "sha": "4f9bce7c09617a8c6f36c995a20a445d9ae7e5db",
+      "subject": "docs: record independent final acceptance"
+    },
+    {
+      "sha": "a1d5c4dbc2ccaa57025a4f96e276985bbd5be54a",
+      "subject": "evidence: retain final acceptance logs"
+    },
+    {
+      "sha": "ea3debae5a910280884c9c562bc7d26fbf11bffe",
+      "subject": "evidence: bind final acceptance at 93debdd"
+    },
+    {
+      "sha": "93debdd0cd79506fd077e6bf36ee87febc09ceb6",
+      "subject": "test: point acceptance verifier at current evidence"
+    },
+    {
+      "sha": "a6988d9f506d615754cb4d1261a206878f243063",
+      "subject": "test: keep historical evidence immutable"
+    },
+    {
+      "sha": "d07ecf52eb6192bd8cbc4d99523c8ce9728844c3",
+      "subject": "test: bind final evidence attributes"
+    },
+    {
+      "sha": "0267ce78645e5001286c4d5c7f4e23e3762d4360",
+      "subject": "docs: link owner-fixture identity rescan"
+    },
+    {
+      "sha": "af0e77ab64e63cfec31d06edaa2f2490738cde51",
+      "subject": "docs: record successful owner-fixture acceptance"
+    },
+    {
+      "sha": "73691c1fd579c435880083dabb65fba37145d687",
+      "subject": "docs: bind normalized final evidence bytes"
+    },
+    {
+      "sha": "cd50f9f48b46e878e9b22dd78435a934d3b52560",
+      "subject": "fix: preserve final evidence bytes across checkout"
+    },
+    {
+      "sha": "7d70e0d2310c08fb2118032c43472ba171039804",
+      "subject": "test: publish owner-fixture full acceptance evidence"
+    },
+    {
+      "sha": "5104a59385ee2f621a3dd62a77147d2a83dcd319",
+      "subject": "test: bind live architecture boundary to v4 config"
+    }
+  ],
+  "upstream": {
+    "ref": "origin/main",
+    "sha_observed": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+    "tested_ref_descends_from_main": true,
+    "commits_ahead_at_tested_ref": 72,
+    "pushed_or_merged": false
+  },
+  "environment": {
+    "interpreter": "CPython 3.11.9",
+    "python_executable": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/evidence/venv-py311-a0bc53f/Scripts/python.exe",
+    "dependencies": [
+      "cffi==2.1.1",
+      "colorama==0.4.6",
+      "cryptography==50.0.1",
+      "iniconfig==2.3.0",
+      "metatrader5==5.0.6090",
+      "numpy==2.4.6",
+      "-e git+https://github.com/misaacozmen/Volumeprofilebot.git@a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2#egg=otobacktest&subdirectory=..\\..\\..\\risk-hardening-closeout-20260924\\clean-final-a0bc53f\\work\\backtest",
+      "packaging==26.3",
+      "pandas==3.0.3",
+      "pluggy==1.6.0",
+      "pycparser==3.0",
+      "Pygments==2.21.0",
+      "pytest==9.1.1",
+      "python-dateutil==2.9.0.post0",
+      "six==1.17.0",
+      "tzdata==2026.4"
+    ],
+    "core_autocrlf": "true",
+    "core_eol": "unset",
+    "pytest_addopts_set": false,
+    "legacy_ignored_config_present_in_clean_checkout": false,
+    "module_paths": [
+      "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest/backtest/__init__.py",
+      "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest/scripts/scan_project_environment.py"
+    ],
+    "working_directory": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest",
+    "owner_fixture_root": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922",
+    "administrator_session": false
+  },
+  "provenance": {
+    "pinned_raw_input_count": 144,
+    "raw_input_manifest_sha256": "192a06d08d8b7029aa9e080a8bbd608cbe3868c6a67145ed8861dc51b331d8a4",
+    "engine_audit_manifest_sha256": "34c3021554e93b1868c9e94ed5c32915ac90263a47aa83986a9457afd5563aa3",
+    "engine_audit_receipt_present": false,
+    "engine_audit_provenance_note": "Dukascopy-format workspace exports; original provider receipt/retrieval timestamp was not present; observed timestamp is not asserted as retrieval time.",
+    "private_denylist_environment_configured": false,
+    "identity_full_status": "BLOCKED_MISSING_DENYLIST"
+  },
+  "source_scope": {
+    "production_test_paths": [
+      ".github/workflows/super1-risk-gates.yml",
+      "work/backtest/deploy/build_signed_windows_release.ps1",
+      "work/backtest/schemas/super1_environment_v1.schema.json",
+      "work/backtest/backtest/live/risk_guard.py",
+      "work/backtest/backtest/live/production_flow.py",
+      "work/backtest/backtest/live/halt.py",
+      "work/backtest/backtest/live/execution.py",
+      "work/backtest/backtest/live/retry.py",
+      "work/backtest/backtest/live/order_state.py",
+      "work/backtest/backtest/live/instruments.py",
+      "work/backtest/backtest/live/approval.py",
+      "work/backtest/backtest/live/settings.py",
+      "work/backtest/backtest/live/strategy_health.py",
+      "work/backtest/backtest/sandbox.py",
+      "work/backtest/backtest/numeric_contracts.py",
+      "work/backtest/backtest/risk_xray.py",
+      "work/backtest/backtest/evaluation_window.py",
+      "work/backtest/backtest/walk_forward.py",
+      "work/backtest/backtest/optimization.py",
+      "work/backtest/scripts/backtest_sandbox_worker.py",
+      "work/backtest/scripts/windows_appcontainer_launcher.py",
+      "work/backtest/scripts/run_super1_xm_mt5_forward.py",
+      "work/backtest/scripts/prepare_risk_provenance.py",
+      "work/backtest/scripts/prepare_engine_audit_inputs.py",
+      "work/backtest/scripts/run_engine_reliability_audit.py",
+      "work/backtest/scripts/scan_project_environment.py",
+      "work/backtest/scripts/scan_public_broker_identity.py",
+      "work/backtest/scripts/finalize_strategy_improvement_loop_v4.py",
+      "work/backtest/live_forward/super1_xm_mt5_demo_config_v4.json",
+      "work/backtest/forward_shadow/frozen_config.json",
+      "work/backtest/forward_shadow/baseline_lock.json",
+      "work/backtest/forward_shadow/engine_reliability_audit_2025_feb_mar_manifest.json",
+      "work/backtest/research_candidates/calibration/first30_thresholds_pre2025_v1.json",
+      "work/backtest/data/provenance/first30_pre2025_inputs.sha256",
+      "work/backtest/tests/test_live_architecture_boundary.py",
+      "work/backtest/tests/test_environment_schema_scanner.py",
+      "work/backtest/tests/test_backtest_sandbox.py",
+      "work/backtest/tests/test_deploy_001_release_contract.py",
+      "work/backtest/tests/test_deploy_001_evidence_manifest.py",
+      "work/backtest/tests/test_super1_instruction_1_11.py",
+      "work/backtest/tests/test_super1_risk_e2e.py",
+      "work/backtest/tests/test_live_risk_guard.py",
+      "work/backtest/tests/test_live_retry_policy.py",
+      "work/backtest/tests/test_instrument_contract.py",
+      "work/backtest/tests/test_evaluation_window.py",
+      "work/backtest/tests/test_order_approval.py",
+      "work/backtest/tests/test_optimization_walk_forward.py",
+      "work/backtest/tests/test_risk_causality.py",
+      "work/backtest/tests/test_risk_xray.py",
+      "work/backtest/tests/test_strategy_health.py",
+      "work/backtest/tests/test_runtime_settings.py",
+      "work/backtest/tests/test_financial_numeric_contracts.py",
+      "work/backtest/tests/test_candidate_artifacts.py",
+      "work/backtest/tests/test_pinned_checkout_bytes.py"
+    ],
+    "packaging_metadata_path": "work/backtest/.gitattributes",
+    "packaging_metadata_purpose": "-text rule preserves this evidence directory byte-for-byte with core.autocrlf=true"
+  },
+  "runs": [
+    {
+      "suite": "prestage-focused-failure",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" -m pytest -q -p no:cacheprovider tests/test_live_architecture_boundary.py tests/test_super1_xm_forward.py tests/test_candidate_artifacts.py --symlink-fixture-root 'C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922'",
+      "working_directory": "work/backtest in clean detached checkout",
+      "exit_code": 1,
+      "collected": 58,
+      "passed": 57,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "classification": "144 pinned raw inputs had not yet been staged; preserved, not counted as final result",
+      "stdout_stderr": {
+        "path": "prestage-failure.log",
+        "sha256": "1d5c45f6c7dc8ba6bbcb2170aa7b7a96fa06731fe9ccdab5aea37db0560e3c6b",
+        "git_blob_sha256": "1d5c45f6c7dc8ba6bbcb2170aa7b7a96fa06731fe9ccdab5aea37db0560e3c6b"
+      }
+    },
+    {
+      "suite": "focused-regression",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" -m pytest -q -p no:cacheprovider tests/test_live_architecture_boundary.py tests/test_environment_schema_scanner.py tests/test_super1_xm_forward.py tests/test_candidate_artifacts.py --symlink-fixture-root 'C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922'",
+      "working_directory": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest",
+      "exit_code": 0,
+      "collected": 64,
+      "passed": 64,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "stdout_stderr": {
+        "path": "focused.log",
+        "sha256": "7bc5ea7edf62d586b65fbcc942f3e712154866d7c39b5eb2e1085ce2d3ea87b7",
+        "git_blob_sha256": "7bc5ea7edf62d586b65fbcc942f3e712154866d7c39b5eb2e1085ce2d3ea87b7"
+      }
+    },
+    {
+      "suite": "provenance-and-engine-audit",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" scripts/prepare_risk_provenance.py --source-root \"C:\\Users\\ISAAC\\Documents\\otobacktestprojesi-risk-integration\\work\\backtest\" --engine-audit-source-root \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\engine-audit-source\"",
+      "working_directory": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest",
+      "exit_code": 0,
+      "raw_inputs_hash_verified": 144,
+      "threshold_sha256": "2bffd175490af718f66dc79cb0b037e059ceea6b13a694f78d5bc673f36b4d0d",
+      "baseline_manifest_sha256": "266835384775e3924fee2a1c72ca66d54bdf8ad4ec87f9caec3bcfed2f2506c5",
+      "core_tests_passed": true,
+      "deterministic_rerun": true,
+      "prefix_violation_count": 0,
+      "prefix_checks": 48,
+      "invalid_data_days_blocked": 3,
+      "canonical_decisions": 57,
+      "forward_shadow_ready": true,
+      "stdout_stderr": {
+        "path": "provenance.log",
+        "sha256": "705fc05ab35662d29164fe1c13ed3fa64512b917da42000cc71bd739826e7758",
+        "git_blob_sha256": "705fc05ab35662d29164fe1c13ed3fa64512b917da42000cc71bd739826e7758"
+      }
+    },
+    {
+      "suite": "environment-schema-scan",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" scripts/scan_project_environment.py",
+      "working_directory": "work/backtest in clean checkout",
+      "exit_code": 0,
+      "status": "CLEAN",
+      "finding_count": 0,
+      "stdout_stderr": {
+        "path": "environment-scan.json",
+        "sha256": "45a50fb9bf86b72c3cef92f91d0ce6903774eefc3403648871d59743bfb75032",
+        "git_blob_sha256": "45a50fb9bf86b72c3cef92f91d0ce6903774eefc3403648871d59743bfb75032"
+      }
+    },
+    {
+      "suite": "identity-structural-only",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" scripts/scan_public_broker_identity.py --root . --structural-only",
+      "working_directory": "work/backtest in clean checkout",
+      "exit_code": 0,
+      "status": "PASS",
+      "candidate_tree_structural_violation_count": 0,
+      "source_unchanged": true,
+      "origin_unchanged": true,
+      "private_denylist_scan": "NOT_RUN_BLOCKED_MISSING_DENYLIST",
+      "stdout_stderr": {
+        "path": "identity-structural.json",
+        "sha256": "050408f7df829e422899b6512c6a2d4481003ea28923380280d80351d22ee436",
+        "git_blob_sha256": "050408f7df829e422899b6512c6a2d4481003ea28923380280d80351d22ee436"
+      }
+    },
+    {
+      "suite": "collection",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root 'C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922'",
+      "working_directory": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest",
+      "exit_code": 0,
+      "collected": 799,
+      "deselected": 0,
+      "stdout_stderr": {
+        "path": "collection.log",
+        "sha256": "c555cd7c2e05106440b867a9d3f173e775f60fe3d1ea2941bb4f6050553b38b9",
+        "git_blob_sha256": "c555cd7c2e05106440b867a9d3f173e775f60fe3d1ea2941bb4f6050553b38b9"
+      }
+    },
+    {
+      "suite": "full",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" -m pytest -q -p no:cacheprovider tests --symlink-fixture-root 'C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922' \"--junitxml=C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\final-a0bc53f\\full.xml\"",
+      "working_directory": "C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest",
+      "exit_code": 0,
+      "collected": 799,
+      "passed": 799,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "warnings": 1,
+      "elapsed_seconds": 452.45,
+      "junit": {
+        "path": "full.xml",
+        "sha256": "7d14babb6f46ce3e4fdbba436229b92ee173f100344e2b6ef4d87bd66b310e25",
+        "git_blob_sha256": "7d14babb6f46ce3e4fdbba436229b92ee173f100344e2b6ef4d87bd66b310e25"
+      },
+      "stdout_stderr": {
+        "path": "full.log",
+        "sha256": "21f728fc0efdc1eaf7dce6ffc885036bce73a808e793dd39510ad9c252c24e27",
+        "git_blob_sha256": "21f728fc0efdc1eaf7dce6ffc885036bce73a808e793dd39510ad9c252c24e27"
+      }
+    },
+    {
+      "suite": "collection-junit-and-risk-node-inventory",
+      "command": "& \"C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\evidence\\venv-py311-a0bc53f\\Scripts\\python.exe\" docs\\DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f\\verify_final_evidence.py --project-root . --collection \"docs\\DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f\\collection.log\" --junit \"docs\\DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f\\full.xml\" --deploy-manifest docs/DEPLOY_001_EVIDENCE/manifest.json --output \"docs\\DEPLOY_001_EVIDENCE_FINAL_20260924_a0bc53f\\risk-node-verification.json\"",
+      "working_directory": "repository root; command arguments explicit in saved command file",
+      "exit_code": 0,
+      "collection_nodes": 799,
+      "junit_cases": 799,
+      "multiset_match": true,
+      "risk_matrix_nodes_passed": 39,
+      "legacy_target_files": 9,
+      "legacy_target_nodes_in_full_suite": 229,
+      "sandbox_nodes_passed": 20,
+      "evidence_verifier_nodes_passed": 5,
+      "stdout_stderr": {
+        "path": "node-inventory-run.log",
+        "sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866",
+        "git_blob_sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "artifact-mutation-verification.json",
+      "bytes": 664,
+      "sha256": "143d270b5ff9ea6bfed23cf4adc0f4d375e8cab5fd3c5029e0a4fc4367ca6514",
+      "git_blob_sha256": "143d270b5ff9ea6bfed23cf4adc0f4d375e8cab5fd3c5029e0a4fc4367ca6514"
+    },
+    {
+      "path": "checkout-status.json",
+      "bytes": 1005,
+      "sha256": "1bed330807a21b9b9f03f06deab0fcd3f70da1362146182a5f2e84980df47980",
+      "git_blob_sha256": "1bed330807a21b9b9f03f06deab0fcd3f70da1362146182a5f2e84980df47980"
+    },
+    {
+      "path": "collection-command.txt",
+      "bytes": 258,
+      "sha256": "f1ec74bf5a15a53affc8cfec8bfc9a2eb0c01b07e4e4b61c53a4ac55b99ccb05",
+      "git_blob_sha256": "f1ec74bf5a15a53affc8cfec8bfc9a2eb0c01b07e4e4b61c53a4ac55b99ccb05"
+    },
+    {
+      "path": "collection-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "collection.log",
+      "bytes": 79108,
+      "sha256": "c555cd7c2e05106440b867a9d3f173e775f60fe3d1ea2941bb4f6050553b38b9",
+      "git_blob_sha256": "c555cd7c2e05106440b867a9d3f173e775f60fe3d1ea2941bb4f6050553b38b9"
+    },
+    {
+      "path": "DEVELOPMENT_FAILURES.md",
+      "bytes": 1648,
+      "sha256": "81fbe2df8f0d40e6347e87c0663093ce1515d108ea15168a3055ce7a84d4bcd7",
+      "git_blob_sha256": "81fbe2df8f0d40e6347e87c0663093ce1515d108ea15168a3055ce7a84d4bcd7"
+    },
+    {
+      "path": "engine_audit_manifest.json",
+      "bytes": 1313,
+      "sha256": "34c3021554e93b1868c9e94ed5c32915ac90263a47aa83986a9457afd5563aa3",
+      "git_blob_sha256": "34c3021554e93b1868c9e94ed5c32915ac90263a47aa83986a9457afd5563aa3"
+    },
+    {
+      "path": "engine_audit_run_manifest.json",
+      "bytes": 652,
+      "sha256": "b87a82a5e57704a687508b086fd1fde792b9e8bff9c3796b3249b66841fd5d5d",
+      "git_blob_sha256": "b87a82a5e57704a687508b086fd1fde792b9e8bff9c3796b3249b66841fd5d5d"
+    },
+    {
+      "path": "environment-scan-command.txt",
+      "bytes": 146,
+      "sha256": "5b608a3e63ed6fb37df32d02f9f4ea04e6f7ec9ab701c55b3fcebb0de3a4a2ca",
+      "git_blob_sha256": "5b608a3e63ed6fb37df32d02f9f4ea04e6f7ec9ab701c55b3fcebb0de3a4a2ca"
+    },
+    {
+      "path": "environment-scan-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "environment-scan.json",
+      "bytes": 147,
+      "sha256": "45a50fb9bf86b72c3cef92f91d0ce6903774eefc3403648871d59743bfb75032",
+      "git_blob_sha256": "45a50fb9bf86b72c3cef92f91d0ce6903774eefc3403648871d59743bfb75032"
+    },
+    {
+      "path": "environment.txt",
+      "bytes": 974,
+      "sha256": "0f2093d28f505d946c9c9627d75174749c2ac0f2dc9d0818a11c0f824dc6020b",
+      "git_blob_sha256": "0f2093d28f505d946c9c9627d75174749c2ac0f2dc9d0818a11c0f824dc6020b"
+    },
+    {
+      "path": "EXTERNAL_BLOCKERS.md",
+      "bytes": 5814,
+      "sha256": "e5c51b49cf48c6a2df279a35c6299a85efe0e152cfc9e77c94910843678815cb",
+      "git_blob_sha256": "e5c51b49cf48c6a2df279a35c6299a85efe0e152cfc9e77c94910843678815cb"
+    },
+    {
+      "path": "FINAL_ACCEPTANCE.md",
+      "bytes": 5974,
+      "sha256": "77304d6a6d470bdd237f0d80afd23fcd269cf5942d3b83291ffe1cfafd21758c",
+      "git_blob_sha256": "77304d6a6d470bdd237f0d80afd23fcd269cf5942d3b83291ffe1cfafd21758c"
+    },
+    {
+      "path": "focused-command.txt",
+      "bytes": 385,
+      "sha256": "e67452bda79911f972443f273e6ed8cf7b5933a124b3708cf2d3ed11663bfa8c",
+      "git_blob_sha256": "e67452bda79911f972443f273e6ed8cf7b5933a124b3708cf2d3ed11663bfa8c"
+    },
+    {
+      "path": "focused-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "focused.log",
+      "bytes": 101,
+      "sha256": "7bc5ea7edf62d586b65fbcc942f3e712154866d7c39b5eb2e1085ce2d3ea87b7",
+      "git_blob_sha256": "7bc5ea7edf62d586b65fbcc942f3e712154866d7c39b5eb2e1085ce2d3ea87b7"
+    },
+    {
+      "path": "full-command.txt",
+      "bytes": 346,
+      "sha256": "16497f89fd3e1875637ba4e0bf1d412a0809e819a0fb6dcd41669ace41d59940",
+      "git_blob_sha256": "16497f89fd3e1875637ba4e0bf1d412a0809e819a0fb6dcd41669ace41d59940"
+    },
+    {
+      "path": "full-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "full.log",
+      "bytes": 1466,
+      "sha256": "21f728fc0efdc1eaf7dce6ffc885036bce73a808e793dd39510ad9c252c24e27",
+      "git_blob_sha256": "21f728fc0efdc1eaf7dce6ffc885036bce73a808e793dd39510ad9c252c24e27"
+    },
+    {
+      "path": "full.xml",
+      "bytes": 110496,
+      "sha256": "7d14babb6f46ce3e4fdbba436229b92ee173f100344e2b6ef4d87bd66b310e25",
+      "git_blob_sha256": "7d14babb6f46ce3e4fdbba436229b92ee173f100344e2b6ef4d87bd66b310e25"
+    },
+    {
+      "path": "identity-structural-command.txt",
+      "bytes": 176,
+      "sha256": "09df5b102e32d2b27640a1f8e6ee8afbacba59f379af1f9a3f0825b4b92ad8d6",
+      "git_blob_sha256": "09df5b102e32d2b27640a1f8e6ee8afbacba59f379af1f9a3f0825b4b92ad8d6"
+    },
+    {
+      "path": "identity-structural-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "identity-structural.json",
+      "bytes": 1551,
+      "sha256": "050408f7df829e422899b6512c6a2d4481003ea28923380280d80351d22ee436",
+      "git_blob_sha256": "050408f7df829e422899b6512c6a2d4481003ea28923380280d80351d22ee436"
+    },
+    {
+      "path": "node-inventory-command.txt",
+      "bytes": 489,
+      "sha256": "5545629b9203aa4c4c7f6ab6978dfacf62e94e64b40d838031920d5ee60ed06e",
+      "git_blob_sha256": "5545629b9203aa4c4c7f6ab6978dfacf62e94e64b40d838031920d5ee60ed06e"
+    },
+    {
+      "path": "node-inventory-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "node-inventory-run.log",
+      "bytes": 1136,
+      "sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866",
+      "git_blob_sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866"
+    },
+    {
+      "path": "node-inventory-verification.json",
+      "bytes": 608,
+      "sha256": "acfd96ac4831f294240b7b9b4d9225d924d4c3b8becf31fe9db0f3541ce8c94c",
+      "git_blob_sha256": "acfd96ac4831f294240b7b9b4d9225d924d4c3b8becf31fe9db0f3541ce8c94c"
+    },
+    {
+      "path": "owner-fixture-and-authority.json",
+      "bytes": 887,
+      "sha256": "da7c75d532864174a1562b1913d727feab4cc26307fee7dfc8c6b457a776a931",
+      "git_blob_sha256": "da7c75d532864174a1562b1913d727feab4cc26307fee7dfc8c6b457a776a931"
+    },
+    {
+      "path": "prestage-failure-command.txt",
+      "bytes": 344,
+      "sha256": "28e25e3802e3668a1681b93b6bd04951cc9b99c03e57c4476d5db3d2f2d8a6fc",
+      "git_blob_sha256": "28e25e3802e3668a1681b93b6bd04951cc9b99c03e57c4476d5db3d2f2d8a6fc"
+    },
+    {
+      "path": "prestage-failure-exit-code.txt",
+      "bytes": 3,
+      "sha256": "f1b2f662800122bed0ff255693df89c4487fbdcf453d3524a42d4ec20c3d9c04",
+      "git_blob_sha256": "f1b2f662800122bed0ff255693df89c4487fbdcf453d3524a42d4ec20c3d9c04"
+    },
+    {
+      "path": "prestage-failure.log",
+      "bytes": 9732,
+      "sha256": "1d5c45f6c7dc8ba6bbcb2170aa7b7a96fa06731fe9ccdab5aea37db0560e3c6b",
+      "git_blob_sha256": "1d5c45f6c7dc8ba6bbcb2170aa7b7a96fa06731fe9ccdab5aea37db0560e3c6b"
+    },
+    {
+      "path": "provenance-command.txt",
+      "bytes": 352,
+      "sha256": "b486b87a67b79b703a6c53b2bd9b8f0e809767b28291ef0ee2fccdc25ca3e0a1",
+      "git_blob_sha256": "b486b87a67b79b703a6c53b2bd9b8f0e809767b28291ef0ee2fccdc25ca3e0a1"
+    },
+    {
+      "path": "provenance-exit-code.txt",
+      "bytes": 3,
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "path": "provenance.log",
+      "bytes": 1999,
+      "sha256": "705fc05ab35662d29164fe1c13ed3fa64512b917da42000cc71bd739826e7758",
+      "git_blob_sha256": "705fc05ab35662d29164fe1c13ed3fa64512b917da42000cc71bd739826e7758"
+    },
+    {
+      "path": "raw-input-manifest.sha256",
+      "bytes": 19152,
+      "sha256": "192a06d08d8b7029aa9e080a8bbd608cbe3868c6a67145ed8861dc51b331d8a4",
+      "git_blob_sha256": "192a06d08d8b7029aa9e080a8bbd608cbe3868c6a67145ed8861dc51b331d8a4"
+    },
+    {
+      "path": "risk-node-verification.json",
+      "bytes": 1136,
+      "sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866",
+      "git_blob_sha256": "955ae8e2d79892e72057bace8e73793dd0647fe169c8545f213637a0d08a7866"
+    },
+    {
+      "path": "RISK_MATRIX.md",
+      "bytes": 7204,
+      "sha256": "1e90915bf12a40a824994b89d53753f94f6d457aafc4a538a89d66dd5118abc1",
+      "git_blob_sha256": "1e90915bf12a40a824994b89d53753f94f6d457aafc4a538a89d66dd5118abc1"
+    },
+    {
+      "path": "verify_final_evidence.py",
+      "bytes": 11501,
+      "sha256": "7e3e5b5fb6c0e109f11ebb878b386033f529f241898d2d5fe7b524a02f3b8393",
+      "git_blob_sha256": "7e3e5b5fb6c0e109f11ebb878b386033f529f241898d2d5fe7b524a02f3b8393"
+    }
+  ],
+  "acceptance_status": {
+    "PASS_CODE": "YES_LOCAL_CLEAN_CHECKOUT",
+    "PASS_OS_SANDBOX": "YES_THIS_WINDOWS_HOST",
+    "INDEPENDENT_REVIEW": "PENDING",
+    "MERGED_MAIN": "NO",
+    "CI": "NOT_RUN",
+    "PASS_EXTERNAL_DEPLOYMENT_ACCEPTANCE": "BLOCKED",
+    "PASS_PROMOTION_ACCEPTANCE": "BLOCKED",
+    "DEPLOYMENT_READY": false
+  },
+  "notes": [
+    "Evidence artifacts are byte-preserved by work/backtest/.gitattributes; each file except this manifest is listed with content and Git-show SHA-256.",
+    "The engine baseline tracked manifest SHA remained unchanged after audit regeneration.",
+    "Raw inputs were copied only to the disposable clean checkout after pinned hash verification; source data and historical evidence in the engineer worktree were preserved.",
+    "The owner private-key file was never opened or used. No live broker order, signed release, upgrade, rollback, or provider promotion call was performed.",
+    "No current 113-target residual was computed; historical snapshots are not carried forward as current acceptance."
+  ]
+}

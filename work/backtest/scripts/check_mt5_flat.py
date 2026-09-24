@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -17,7 +18,7 @@ def _write_result(path: Path, payload: dict[str, object]) -> None:
 
 def load_mt5_environment(required_names: tuple[str, ...]) -> dict[str, str]:
     names = tuple(dict.fromkeys((*required_names, "XM_MT5_TERMINAL_PATH")))
-    values = {name: os.environ.get(name, "").strip() for name in names}
+    values = {name: environment_value(name).strip() for name in names}
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise RuntimeError(f"Required MT5 environment is incomplete: {', '.join(missing)}")
@@ -49,10 +50,21 @@ def evaluate_readiness(
     flat = len(orders) == 0 and len(positions) == 0
     terminal_data_path = Path(str(getattr(terminal, "data_path"))).resolve()
     if bool(config.get("portable", False)):
-        expected_data_root = Path(os.environ["XM_MT5_TERMINAL_PATH"]).resolve().parent
+        # Super1 always seals terminal_path in its signed config.  The
+        # environment fallback keeps the generic diagnostic compatible with
+        # older forward fixtures; Super1's runtime guard rejects that shape.
+        terminal_path = str(
+            config.get("terminal_path") or environment_value("XM_MT5_TERMINAL_PATH")
+        ).strip()
+        if not terminal_path:
+            raise RuntimeError("Portable MT5 readiness requires a pinned terminal path.")
+        expected_data_root = Path(terminal_path).resolve().parent
         identity_checks["windows_profile"] = terminal_data_path == expected_data_root
     else:
-        expected_data_root = (Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal").resolve()
+        app_data = PlatformPaths.current().app_data
+        if app_data is None:
+            raise RuntimeError("APPDATA is unavailable")
+        expected_data_root = (app_data / "MetaQuotes" / "Terminal").resolve()
         identity_checks["windows_profile"] = (
             os.path.commonpath(
                 (os.path.normcase(expected_data_root), os.path.normcase(terminal_data_path))
@@ -78,6 +90,89 @@ def evaluate_readiness(
     }
 
 
+def verify_symbol_transport_contract(client: object, mt5_module: object, config: dict[str, object]) -> dict[str, object]:
+    """Prove symbol geometry/calculation/order_check without calling order_send."""
+    proof: dict[str, object] = {}
+    for leg_key in ("nq", "spx"):
+        symbol = str(config["legs"][leg_key]["epic"])
+        if not mt5_module.symbol_select(symbol, True):
+            raise RuntimeError(f"{symbol}: symbol_select failed in no-send proof.")
+        info = mt5_module.symbol_info(symbol)
+        tick = mt5_module.symbol_info_tick(symbol)
+        if info is None or tick is None:
+            raise RuntimeError(f"{symbol}: symbol metadata/tick unavailable in no-send proof.")
+        values = {
+            "bid": float(getattr(tick, "bid")),
+            "ask": float(getattr(tick, "ask")),
+            "point": float(getattr(info, "point")),
+            "tick_size": float(getattr(info, "trade_tick_size")),
+            "volume_min": float(getattr(info, "volume_min")),
+            "volume_max": float(getattr(info, "volume_max")),
+            "volume_step": float(getattr(info, "volume_step")),
+            "stops_level": float(getattr(info, "trade_stops_level", 0)),
+            "freeze_level": float(getattr(info, "trade_freeze_level", 0)),
+        }
+        if any(not math.isfinite(value) for value in values.values()):
+            raise RuntimeError(f"{symbol}: non-finite symbol/tick value in no-send proof.")
+        if values["bid"] >= values["ask"] or values["point"] <= 0 or values["tick_size"] <= 0:
+            raise RuntimeError(f"{symbol}: invalid bid/ask or tick geometry in no-send proof.")
+        if values["volume_min"] <= 0 or values["volume_max"] < values["volume_min"] or values["volume_step"] <= 0:
+            raise RuntimeError(f"{symbol}: invalid volume contract in no-send proof.")
+        if values["stops_level"] < 0 or values["freeze_level"] < 0:
+            raise RuntimeError(f"{symbol}: invalid stop/freeze contract in no-send proof.")
+        if not bool(getattr(info, "visible", False)):
+            raise RuntimeError(f"{symbol}: symbol is not visible in no-send proof.")
+        order_mode = getattr(info, "order_mode", None)
+        limit_flag = getattr(mt5_module, "SYMBOL_ORDER_LIMIT", None)
+        if order_mode is None or limit_flag is None or not (int(order_mode) & int(limit_flag)):
+            raise RuntimeError(f"{symbol}: limit-order mode is not advertised.")
+        filling_mode = getattr(info, "filling_mode", None)
+        expiration_mode = getattr(info, "expiration_mode", None)
+        if filling_mode is None or expiration_mode is None or int(filling_mode) < 0 or int(expiration_mode) < 0:
+            raise RuntimeError(f"{symbol}: filling/time modes are not advertised.")
+        spread = values["ask"] - values["bid"]
+        distance = max(
+            values["stops_level"] * values["point"] + 2 * values["tick_size"],
+            4 * spread,
+            10 * values["tick_size"],
+        )
+        request = client._pending_request(
+            symbol,
+            "long",
+            values["ask"] - distance,
+            values["ask"] - 2 * distance,
+            values["ask"],
+            "SUPER1:CHECK",
+        )
+        request["expiration"] = int(datetime.now(timezone.utc).timestamp()) + 900
+        profit = mt5_module.order_calc_profit(
+            int(request["type"]), symbol, float(request["volume"]), float(request["price"]), float(request["tp"])
+        )
+        margin = mt5_module.order_calc_margin(
+            int(request["type"]), symbol, float(request["volume"]), float(request["price"])
+        )
+        account = mt5_module.account_info()
+        free_margin = float(getattr(account, "margin_free")) if account is not None else float("nan")
+        if profit is None or margin is None or not math.isfinite(float(profit)) or not math.isfinite(float(margin)):
+            raise RuntimeError(f"{symbol}: order_calc_profit/order_calc_margin was indeterminate.")
+        if not math.isfinite(free_margin) or float(margin) > free_margin * 0.25:
+            raise RuntimeError(f"{symbol}: margin requirement exceeds the 25% free-margin gate.")
+        check = mt5_module.order_check(request)
+        if check is None or int(getattr(check, "retcode", -1)) != 0:
+            raise RuntimeError(f"{symbol}: order_check failed in no-send proof.")
+        proof[leg_key] = {
+            "symbol": symbol,
+            "bid": values["bid"],
+            "ask": values["ask"],
+            "volume_min": values["volume_min"],
+            "volume_max": values["volume_max"],
+            "volume_step": values["volume_step"],
+            "order_calc_profit": float(profit),
+            "order_calc_margin": float(margin),
+            "order_check_called": True,
+            "order_send_called": False,
+        }
+    return proof
 def combined_readiness(
     base: dict[str, object],
     permission: dict[str, object],
@@ -151,6 +246,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--evidence-nonce", default="")
     parser.add_argument("--read-only-proof", action="store_true")
+    parser.add_argument(
+        "--binding-proof",
+        action="store_true",
+        help="Verify the exact broker binding and permissions without order_check or order_send.",
+    )
+    parser.add_argument("--credential-stdin", action="store_true")
     args = parser.parse_args()
     app_root = (args.root / "app").resolve()
     sys.path.insert(0, str(app_root / "scripts"))
@@ -167,7 +268,14 @@ def main() -> int:
         if Path(harness.RUNTIME_CONFIG).resolve() != requested_config:
             raise RuntimeError("Readiness profile/config mismatch.")
         config = core.runtime_config()
-        secrets = load_mt5_environment(tuple(core.REQUIRED_ENV))
+        if args.profile == "super1":
+            if not args.credential_stdin:
+                raise RuntimeError("Super1 flat diagnostic requires credential stdin.")
+            secrets = core.credentials()
+            if secrets is None:
+                raise RuntimeError("Super1 credential stdin was empty.")
+        else:
+            secrets = load_mt5_environment(tuple(core.REQUIRED_ENV))
         client = core.CapitalDemoClient(config, secrets)
         login_result = client.login()
         account = client.mt5.account_info()
@@ -177,13 +285,36 @@ def main() -> int:
         if account is None or terminal_info is None or orders is None or positions is None:
             raise RuntimeError(f"MT5 exposure query failed: {client.mt5.last_error()}")
         result = evaluate_readiness(config, client.mt5, account, terminal_info, orders, positions)
+        if args.binding_proof:
+            result["markets"] = verify_symbol_transport_contract(client, client.mt5, config)
+            result.update(
+                {
+                    "evidence_nonce": args.evidence_nonce,
+                    "profile": args.profile,
+                    "terminal_path": str(Path(str(config["terminal_path"])).resolve()),
+                    "login": login_result,
+                    "permission": {
+                        "state": "BINDING_PROOF",
+                        "checks": result["permission_checks"],
+                    },
+                    "order_transport_preflight": {
+                        "state": "DISABLED_FOR_BINDING_PROOF",
+                        "order_send_called": False,
+                    },
+                    "transport_preflight_deferred": True,
+                    "evidence_root": "",
+                }
+            )
+            _write_result(args.output, result)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["ready"] else 2
         if args.read_only_proof:
             result = evaluate_read_only_readiness(result, terminal_info)
             result.update(
                 {
                     "evidence_nonce": args.evidence_nonce,
                     "profile": args.profile,
-                    "terminal_path": str(Path(secrets["XM_MT5_TERMINAL_PATH"]).resolve()),
+                    "terminal_path": str(Path(str(config["terminal_path"])).resolve()),
                     "login": login_result,
                     "permission": {
                         "state": "READ_ONLY_PROOF",
@@ -216,7 +347,7 @@ def main() -> int:
             {
                 "evidence_nonce": args.evidence_nonce,
                 "profile": args.profile,
-                "terminal_path": str(Path(secrets["XM_MT5_TERMINAL_PATH"]).resolve()),
+                "terminal_path": str(Path(str(config["terminal_path"])).resolve()),
                 "login": login_result,
                 "permission": permission,
                 "markets": markets,
@@ -256,3 +387,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import PlatformPaths, environment_value

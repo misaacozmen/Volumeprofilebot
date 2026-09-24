@@ -1,0 +1,13 @@
+{
+  "schema": "deploy-001-artifact-mutation-v1",
+  "status": "PASS",
+  "tested_code_commit": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+  "evidence_base_commit": "0821a072a177d938a9ed075935aad9c95eb278a2",
+  "verifier": "verify_final_evidence.py::verify_artifact_bindings",
+  "scope": "Every path listed in manifest.json artifacts; corrupt one file at a time in a disposable copy, require rejection, restore, then verify the copy again.",
+  "artifact_count": 39,
+  "corruptions_rejected": 39,
+  "restoration_revalidations": 39,
+  "original_package_modified": false,
+  "mutation_workspace": "Temporary directory outside repository; removed after successful run"
+}

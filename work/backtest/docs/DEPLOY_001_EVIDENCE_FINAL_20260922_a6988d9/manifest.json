@@ -1,0 +1,112 @@
+{
+  "schema": "deploy-001-evidence-v2",
+  "tested_commit": "93debdd0cd79506fd077e6bf36ee87febc09ceb6",
+  "tested_tree": "f4c95932744c3c7c0a1cbcc0f626de139c96981e",
+  "branch": "codex/risk-hardening-1-11",
+  "production_test_paths": [
+    "work/backtest/scripts/backtest_sandbox_worker.py",
+    "work/backtest/scripts/run_super1_xm_mt5_forward.py",
+    "work/backtest/tests/test_backtest_sandbox.py",
+    "work/backtest/tests/test_live_architecture_boundary.py",
+    "work/backtest/live_forward/super1_xm_mt5_demo_config_v4.json",
+    "work/backtest/tests/test_deploy_001_evidence_manifest.py",
+    "work/backtest/tests/test_deploy_001_release_contract.py"
+  ],
+  "environment": {
+    "python": "3.11.9",
+    "pytest": "9.1.1",
+    "powershell_harness": "Windows PowerShell 5.1",
+    "git_core_autocrlf": "repository attributes enforced"
+  },
+  "fixture": {
+    "root": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922",
+    "link": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922/output/escape-symlink.txt",
+    "target": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922/outside/outside.txt",
+    "link_type": "SymbolicLink",
+    "target_exists": true,
+    "owner_prepared": true
+  },
+  "runtime": {
+    "worker": "scripts/backtest_sandbox_worker.py",
+    "runtime_manifest_schema": "windows-sandbox-runtime-v1",
+    "attestation_required_fields": [
+      "launcher_sha256",
+      "worker_sha256",
+      "runtime_manifest_sha256",
+      "test_results_sha256",
+      "job_limits",
+      "acl_roots"
+    ],
+    "validated_by": [
+      "tests/test_backtest_sandbox.py::test_real_cli_backtest_publishes_nonempty_attested_artifacts",
+      "tests/test_backtest_sandbox.py::test_runtime_packaging_excludes_host_startup_and_base_site_packages",
+      "tests/test_backtest_sandbox.py::test_real_appcontainer_rejects_symlink_escape"
+    ]
+  },
+  "runs": [
+    {
+      "suite": "collection",
+      "command": ".venv311\\Scripts\\python.exe -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922",
+      "exit_code": 0,
+      "collected": 779,
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "stdout_stderr": {
+        "path": "collection.log",
+        "sha256": "5a65308dd617447873dd94d9a9c4133b67cbef78cf2ac67460ec84a736caa9e3",
+        "git_blob_sha256": "5a65308dd617447873dd94d9a9c4133b67cbef78cf2ac67460ec84a736caa9e3"
+      }
+    },
+    {
+      "suite": "full",
+      "command": ".venv311\\Scripts\\python.exe -m pytest -q -p no:cacheprovider tests --symlink-fixture-root C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922 --junitxml=outputs/risk-hardening-final-20260922-a6988d9/full.xml",
+      "exit_code": 0,
+      "collected": 779,
+      "passed": 779,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "junit": {
+        "path": "full.xml",
+        "sha256": "5f2b3a76e2591d71d72b9f2b9a642f5e9d137a3b8917114eca8175bfe4cb4aef",
+        "git_blob_sha256": "5f2b3a76e2591d71d72b9f2b9a642f5e9d137a3b8917114eca8175bfe4cb4aef"
+      },
+      "stdout_stderr": {
+        "path": "full.log",
+        "sha256": "b94e3dd8fb5986c38ebee05f7419c949b6b80500c55bb99accd8a97a5ba2ca81",
+        "git_blob_sha256": "b94e3dd8fb5986c38ebee05f7419c949b6b80500c55bb99accd8a97a5ba2ca81"
+      }
+    },
+    {
+      "suite": "sandbox",
+      "command": ".venv311\\Scripts\\python.exe -m pytest -q -p no:cacheprovider tests/test_backtest_sandbox.py --symlink-fixture-root C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922 --junitxml=outputs/risk-hardening-final-20260922-a6988d9/sandbox.junit.xml",
+      "exit_code": 0,
+      "collected": 20,
+      "passed": 20,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "junit": {
+        "path": "sandbox.junit.xml",
+        "sha256": "c868df5642ce52c49f97a1408a2bac3f5057d1b95d631c6d3c48b225fdabb3f1",
+        "git_blob_sha256": "c868df5642ce52c49f97a1408a2bac3f5057d1b95d631c6d3c48b225fdabb3f1"
+      },
+      "stdout_stderr": {
+        "path": "sandbox.log",
+        "sha256": "ecd7898f53f6d6db2b0c3e91fd5970693d279bbdf928ece73740d444539af965",
+        "git_blob_sha256": "ecd7898f53f6d6db2b0c3e91fd5970693d279bbdf928ece73740d444539af965"
+      }
+    }
+  ],
+  "notes": [
+    "This package is separate from previous evidence and was generated after the owner-created symlink existed.",
+    "The package binds the current code-tested commit and the current 779-test acceptance artifacts.",
+    "No signing, deployment, broker order, push, merge, CI or promotion operation was performed.",
+    "The full suite contains the DEPLOY-001 target set and evidence verifier; the sandbox run binds all 20 sandbox nodes explicitly."
+  ]
+}

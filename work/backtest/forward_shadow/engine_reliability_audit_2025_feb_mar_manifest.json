@@ -1,0 +1,16 @@
+{
+  "code_hash": "e8503eb08cfbdb4bd1f90c85a4b3d3b22c2f7543f308b19b3cf4fa040632b51d",
+  "config_hash": "18e1ebbe33ef494b81e97c4e3759e22d71797f9c312aa973b322688256a89cf4",
+  "data_hashes": {
+    "nq": "af7498a273be551d6c772e904eb783b4969b90790dd7acf502ce854cf2284296",
+    "spx": "cd10c073c52e3d3c3b0fd1d3862e8971cbd34f8c8885980fe8d949d0033fa06d"
+  },
+  "engine": "manual_state_canonical_v1",
+  "evaluated_sessions": 30,
+  "feeds": [
+    "DUKASCOPY"
+  ],
+  "first_eligible_decision_time": "2025-02-03T10:30:00-05:00",
+  "result_hash": "64d6226a7fcbe9a10102d388f7f611f6346d191286f71aea5e7f006b38b09d6c",
+  "timezone": "America/New_York"
+}

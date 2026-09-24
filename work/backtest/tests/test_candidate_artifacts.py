@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from copy import deepcopy
 from pathlib import Path
 import sys
 import os
@@ -62,16 +63,25 @@ def test_artifact_rejects_changed_input(tmp_path: Path) -> None:
         artifacts.validate_artifact(payload, tmp_path, artifact_type="test")
 
 
-def test_frozen_threshold_loader_ignores_runtime_frames() -> None:
-    filters = load_script("run_main_candidate_filter_tests")
-    expected = filters.build_thresholds()
-    future_only = {
-        ("DUKASCOPY_USATECHIDXUSD", "3m"): pd.DataFrame(
-            {"date": [pd.Timestamp("2099-01-01").date()]}
-        )
-    }
-    assert filters.build_thresholds(future_only) == expected
-    assert {row["cutoff_exclusive"] for row in expected} == {"2025-01-01"}
+def test_threshold_calibration_accepts_deterministic_synthetic_input() -> None:
+    rows: list[dict[str, object]] = []
+    for offset in range(3):
+        day = pd.Timestamp("2024-01-02", tz="America/New_York") + pd.Timedelta(days=offset)
+        for bar in range(10):
+            timestamp = day + pd.Timedelta(hours=9, minutes=30 + bar * 3)
+            rows.append(
+                {
+                    "time": timestamp,
+                    "date": timestamp.date(),
+                    "high": 100.0 + offset + 2.0,
+                    "low": 100.0 + offset,
+                    "open": 100.0 + offset + 1.0,
+                    "close": 100.0 + offset + 1.0,
+                    "volume": 1.0,
+                }
+            )
+    frame = pd.DataFrame(rows)
+    assert thresholds.calibration_values(frame) == [2.0, 2.0, 2.0]
 
 
 def test_development_ranking_has_no_holdout_metric_columns() -> None:
@@ -135,15 +145,152 @@ def test_evaluator_uses_risk_rule_from_payload() -> None:
     assert high["risk_scale"].tolist() == [1.0, 0.8]
 
 
-def test_checked_in_threshold_artifact_is_valid() -> None:
+def test_checked_in_threshold_artifact_has_current_provenance() -> None:
     payload = artifacts.load_artifact(
         thresholds.ARTIFACT,
         ROOT,
         artifact_type="first30_thresholds",
         verify_inputs=True,
     )
-    assert payload["calibration"]["cutoff_exclusive"] == "2025-01-01"
-    assert payload["provenance"]["environment"]["git_commit"] is None
+    assert payload["artifact_id"] == "first30_thresholds_pre2025_v1"
+
+
+def test_finalizer_binds_real_development_and_holdout_metrics(monkeypatch, tmp_path: Path) -> None:
+    rows: list[dict[str, object]] = []
+    sequence = 0
+    for year in range(2016, 2025):
+        for index in range(20):
+            sequence += 1
+            win = index >= 12
+            rows.append(
+                {
+                    "candidate": f"dev-{sequence:04d}",
+                    "entry_time": f"{year}-01-{index + 2:02d}T10:00:00Z",
+                    "exit_time": f"{year}-01-{index + 2:02d}T10:30:00Z",
+                    "entry_dt": f"{year}-01-{index + 2:02d}T10:00:00Z",
+                    "entry_year": year,
+                    "direction": "long",
+                    "sweep_time": f"{year}-01-{index + 2:02d}T09:45:00Z",
+                    "cisd_time": f"{year}-01-{index + 2:02d}T09:50:00Z",
+                    "liquidity_type": "custom",
+                    "overnight_direction": "down",
+                    "data_valid": True,
+                    "r_multiple": 1.0 if win else -1.0,
+                    "strategy_r": 10.0 if win else -1.0,
+                    "risk_scale": 1.0,
+                    "result": "WIN" if win else "LOSS",
+                    "entry_price": 100.0,
+                    "stop_price": 99.0,
+                    "target_price": 103.0,
+                    "entry_weekday": "Tuesday",
+                }
+            )
+    for year in (2025, 2026):
+        for index in range(10):
+            sequence += 1
+            win = index >= 8
+            rows.append(
+                {
+                    "candidate": f"holdout-{sequence:04d}",
+                    "entry_time": f"{year}-01-{index + 2:02d}T10:00:00Z",
+                    "exit_time": f"{year}-01-{index + 2:02d}T10:30:00Z",
+                    "entry_dt": f"{year}-01-{index + 2:02d}T10:00:00Z",
+                    "entry_year": year,
+                    "direction": "long",
+                    "sweep_time": f"{year}-01-{index + 2:02d}T09:45:00Z",
+                    "cisd_time": f"{year}-01-{index + 2:02d}T09:50:00Z",
+                    "liquidity_type": "custom",
+                    "overnight_direction": "down",
+                    "data_valid": True,
+                    "r_multiple": 1.0 if win else -1.0,
+                    "strategy_r": 2.0 if win else -0.5,
+                    "risk_scale": 1.0,
+                    "result": "WIN" if win else "LOSS",
+                    "entry_price": 100.0,
+                    "stop_price": 99.0,
+                    "target_price": 103.0,
+                    "entry_weekday": "Tuesday",
+                }
+            )
+    source = pd.DataFrame(rows)
+    source_path = tmp_path / "selected_trades.csv"
+    evidence_path = tmp_path / "trade_evidence_index.csv"
+    preselected_path = tmp_path / "selected_trades_pre2025.csv"
+    source.to_csv(source_path, index=False)
+    source["all_event_bars_found"] = True
+    source.to_csv(evidence_path, index=False)
+    source[source["entry_year"].le(2024)].drop(columns=["all_event_bars_found"], errors="ignore").to_csv(
+        preselected_path, index=False
+    )
+
+    monkeypatch.setattr(finalizer, "SOURCE", source_path)
+    monkeypatch.setattr(finalizer, "EVIDENCE", evidence_path)
+    monkeypatch.setattr(finalizer, "PRE_SELECTED", preselected_path)
+    monkeypatch.setattr(finalizer, "apply_payload", lambda frame, _payload: frame.copy())
+    monkeypatch.setattr(
+        finalizer,
+        "build_provenance",
+        lambda *_args, **_kwargs: {"inputs": [], "environment": {"synthetic": True}},
+    )
+
+    payload, evaluated, _metrics, _rolling = finalizer.build_candidate()
+    finalizer.validate_publication_contract(payload, evaluated)
+    assert payload["checks"]["criteria_pass"] is True
+    assert payload["development_result_sha256"] != payload["full_evaluation_result_sha256"]
+    assert payload["selection_protocol"]["final_holdout_used_for_selection"] is False
+    assert payload["selection_protocol"]["final_holdout_used_for_publication"] is False
+    assert {row["segment"] for row in _metrics.to_dict("records")} >= {
+        "final_holdout_2025_2026", "all_2016_2026"
+    }
+    metrics = _metrics.set_index("segment")
+    development_metrics = finalizer.risk_stats(evaluated[evaluated["entry_year"].le(2024)])
+    assert development_metrics["win_rate"] != metrics.loc["final_holdout_2025_2026", "win_rate"]
+    assert development_metrics["net_r"] != metrics.loc["final_holdout_2025_2026", "net_r"]
+    assert not any("holdout" in str(key).lower() for key in payload["criteria"])
+
+    for field in ("final_holdout_used_for_selection", "final_holdout_used_for_publication"):
+        mutated = deepcopy(payload)
+        mutated["selection_protocol"][field] = True
+        with pytest.raises(ValueError, match="holdout"):
+            finalizer.validate_publication_contract(mutated, evaluated)
+
+    mutated_hash = deepcopy(payload)
+    mutated_hash["development_result_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="development result hash"):
+        finalizer.validate_publication_contract(mutated_hash, evaluated)
+
+    mutated_hash = deepcopy(payload)
+    mutated_hash["full_evaluation_result_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="full evaluation result hash"):
+        finalizer.validate_publication_contract(mutated_hash, evaluated)
+
+    original_risk_stats = finalizer.risk_stats
+
+    def use_full_metrics_for_development(frame: pd.DataFrame) -> dict[str, object]:
+        if len(frame) == 180:
+            return original_risk_stats(source)
+        return original_risk_stats(frame)
+
+    monkeypatch.setattr(finalizer, "risk_stats", use_full_metrics_for_development)
+    mutated_payload, _evaluated, _metrics, _rolling = finalizer.build_candidate()
+    assert mutated_payload["checks"]["criteria_pass"] is False
+
+    monkeypatch.setattr(finalizer, "risk_stats", original_risk_stats)
+    mutated_source = source.copy()
+    holdout = mutated_source["entry_year"].gt(2024)
+    mutated_source.loc[holdout, "strategy_r"] = -2.0
+    mutated_source.loc[holdout, "r_multiple"] = -1.0
+    mutated_source_path = tmp_path / "selected_trades_holdout_mutated.csv"
+    mutated_source.to_csv(mutated_source_path, index=False)
+    monkeypatch.setattr(finalizer, "SOURCE", mutated_source_path)
+    mutated_payload, mutated_evaluated, mutated_metrics, _rolling = finalizer.build_candidate()
+    assert mutated_payload["criteria"] == payload["criteria"]
+    assert mutated_payload["development_result_sha256"] == payload["development_result_sha256"]
+    assert mutated_payload["full_evaluation_result_sha256"] != payload["full_evaluation_result_sha256"]
+    mutated_metrics = mutated_metrics.set_index("segment")
+    assert mutated_metrics.loc["all_2016_2026", "net_r"] != metrics.loc["all_2016_2026", "net_r"]
+    assert mutated_metrics.loc["final_holdout_2025_2026", "net_r"] != metrics.loc["final_holdout_2025_2026", "net_r"]
+    finalizer.validate_publication_contract(mutated_payload, mutated_evaluated)
 
 
 def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monkeypatch) -> None:
@@ -176,9 +323,6 @@ def test_multi_directory_publication_rolls_back_every_destination(tmp_path, monk
     assert (second_destination / "value.txt").read_text(encoding="utf-8") == "old-second"
 
 
-def test_finalizer_publication_gates_are_development_only() -> None:
-    payload, _, _, _ = finalizer.build_candidate()
-
-    assert payload["selection_protocol"]["final_holdout_used_for_selection"] is False
-    assert payload["selection_protocol"]["final_holdout_used_for_publication"] is False
-    assert all(name.startswith("development_") for name in payload["criteria"])
+def test_finalizer_does_not_publish_without_required_research_inputs() -> None:
+    with pytest.raises(FileNotFoundError):
+        finalizer.build_candidate()

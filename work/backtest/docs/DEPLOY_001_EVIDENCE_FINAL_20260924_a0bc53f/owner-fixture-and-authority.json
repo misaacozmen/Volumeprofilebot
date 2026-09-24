@@ -1,0 +1,17 @@
+{
+  "schema": "deploy-001-owner-fixture-v1",
+  "fixture_root": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922",
+  "symlink": "output/escape-symlink.txt",
+  "symlink_type": "SymbolicLink",
+  "actual_target": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922/outside/outside.txt",
+  "expected_target": "C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922/outside/outside.txt",
+  "target_exists": true,
+  "fixture_recreated_or_modified": false,
+  "fixture_permissions_changed": false,
+  "full_suite_real_appcontainer_symlink_test": "PASS; symlink/outside target denied and attestation asserted",
+  "permitted_input_output_checks": "PASS in sandbox suite",
+  "administrator_session": false,
+  "dpapi_private_key_path_present": true,
+  "dpapi_private_key_opened_or_used": false,
+  "deployment_or_mt5_order_write_performed": false
+}

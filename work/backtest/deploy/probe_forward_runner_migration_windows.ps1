@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$TargetRunnerIdentity,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedMt5Login,
-    [string]$ExpectedMt5Server = "XMGlobal-MT5 7",
+    [Parameter(Mandatory = $true)][string]$ExpectedMt5Server,
     [string]$TerminalPath = "C:\Program Files\XM MT5\terminal64.exe",
     [string]$PythonPath = "C:\ForwardShadow\venv311\Scripts\python.exe",
     [Parameter(Mandatory = $true)]

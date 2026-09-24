@@ -7,12 +7,12 @@
   "signal_source": {
     "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",
     "config_path": "forward_shadow/frozen_config.json",
-    "config_sha256": "fc1dbaf5afff4a8963e6d9c537839e477f50bda3881d0002b43c2588403dd9a7",
+    "config_sha256": "414ef22ff9eed0a6511f98a5c14fea3fbd54d69af96621aff7fbc9143717ee91",
     "generator_path": "scripts/run_capital_forward.py",
-    "generator_sha256": "80d634a39add23ff882416bcbc0433a8e4d4f633bde8d5a2934ada583cf4df5a",
+    "generator_sha256": "b673c2c9327bcd966bad4d7a0ed2d6ab682fdcfc20407399e553bfc1e30e31f4",
     "payload_adapter_path": "scripts/run_forward_shadow.py",
     "payload_adapter_sha256": "5105421aa378770af357ec57f0ec8782e227ae56091690afd82ce578f8b609f4",
-    "engine_source_sha256": "a7456f84c7d07c09a728d0c8c83f8b7e491ed61bbce124c06bcf412beb31530f"
+    "engine_source_sha256": "05d6d45c165299c9dbde71edbbe3dd27d837a8502d96ecd85789406b8370adac"
   },
   "overlay_candidate": {
     "path": "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
@@ -21,11 +21,11 @@
     "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY",
     "defines_base_signals": false,
     "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
-    "runtime_sha256": "fb3bf82152ea07487cf8c032947aeb4bd4034c4439b2f5e08c68cec02117a6a6"
+    "runtime_sha256": "f8bb0c8b47de3b420b82d947860874aca4c39a3fb3bb8a603a1af623e7aab78e"
   },
   "demo_order_transport": {
     "path": "scripts/run_xm_mt5_forward.py",
-    "sha256": "1f1e58582b52eaab2ad0b53e0a26571b8329c9350a4dea89e82a8c6eda6235ba",
+    "sha256": "93baa8a1e83608ee1d3da7d60071a2a1edeb0642aa2d170749a520ce466fb5e7",
     "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN"
   },
   "rth_session_calendar": {

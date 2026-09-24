@@ -1,0 +1,1 @@
+& "C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\evidence\venv-py311-a0bc53f\Scripts\python.exe" scripts/prepare_risk_provenance.py --source-root "C:\Users\ISAAC\Documents\otobacktestprojesi-risk-integration\work\backtest" --engine-audit-source-root "C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\evidence\engine-audit-source"

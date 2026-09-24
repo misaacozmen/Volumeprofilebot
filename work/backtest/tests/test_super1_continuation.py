@@ -19,13 +19,20 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import plan_super1_campaign_continuation as continuation_plan  # noqa: E402
 from plan_super1_campaign_continuation import (  # noqa: E402
     PARENT_BASELINE,
+    RUNTIME,
     super1_harness_hash,
     super1_harness_paths,
 )
-import plan_super1_campaign_continuation as continuation_plan  # noqa: E402
+
+# The real runtime config is an external operator input. Keep continuation
+# hashing deterministic in clean checkouts with the tracked synthetic fixture.
+RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
+continuation_plan.RUNTIME = RUNTIME
 from v08_helpers import checkpoint_if_enabled, record_if_enabled
+import run_capital_forward as capital_runtime  # noqa: E402
 from run_capital_forward import BarStore  # noqa: E402
 from run_xm_mt5_forward import XmMt5DemoOrderClient  # noqa: E402
 from super1_continuation import (  # noqa: E402
@@ -47,13 +54,6 @@ from super1_continuation import (  # noqa: E402
     _jsonl_file,
     write_exclusive_json,
 )
-
-FIXTURE_RUNTIME = ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json"
-
-
-@pytest.fixture(autouse=True)
-def configure_continuation_runtime(monkeypatch):
-    monkeypatch.setattr(continuation_plan, "RUNTIME", FIXTURE_RUNTIME)
 
 
 def _private_key() -> rsa.RSAPrivateKey:
@@ -98,7 +98,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
                 "symbols": {"nq": "NQ", "spx": "SPX"},
                 "timeframes": {"nq": "3m", "spx": "5m", "htf": "15m"},
                 "execution": "MT5_DEMO_ORDERS",
-                "account_login": 20202002,
+                "account_login": 740000001,
                 "server": "test-account-server",
             },
             sort_keys=True,
@@ -189,7 +189,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
             },
         },
         "broker_identity_digest": hashlib.sha256(
-            b"20202002|test-account-server"
+            b"740000001|test-account-server"
         ).hexdigest(),
         "state_schema_versions": {name: 1 for name in STATE_ARTIFACTS},
         "allowed_change_list": [
@@ -226,7 +226,7 @@ def _make_signed_transition(root: Path) -> tuple[dict, bytes, rsa.RSAPrivateKey]
             "frozen_candidate": "c" * 64,
             "strategy_risk": "d" * 64,
         },
-        broker_identity="20202002|test-account-server",
+        broker_identity="740000001|test-account-server",
         source_snapshot_manifest_sha256=file_hash(manifest),
         state_schema_versions={name: 1 for name in STATE_ARTIFACTS},
         release_root_signature=release_spec,
@@ -515,7 +515,7 @@ def _create_real_state(root: Path) -> None:
             "symbols": {"nq": "NQ", "spx": "SPX"},
             "timeframes": {"nq": "3m", "spx": "5m", "htf": "15m"},
             "execution": "MT5_DEMO_ORDERS",
-            "account_login": 20202002,
+            "account_login": 740000001,
             "server": "test-account-server",
             "magic_number": 260805101,
             "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
@@ -541,7 +541,7 @@ def _create_real_state(root: Path) -> None:
     store.close()
     broker_history = {
         "schema_version": 1,
-        "account_login": 20202002,
+        "account_login": 740000001,
         "server": "test-account-server",
         "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
         "observed_at": "2026-08-31T14:00:00+00:00",
@@ -568,7 +568,7 @@ def _create_real_state(root: Path) -> None:
     (root / "orders" / "positions.json").write_text(
         json.dumps({
             "schema_version": 1,
-            "account_login": 20202002,
+            "account_login": 740000001,
             "server": "test-account-server",
             "campaign_root": "TEST_SUPER1_CAMPAIGN_ROOT",
             "observed_at": "2026-08-31T14:00:00+00:00",
@@ -746,9 +746,9 @@ def test_uncheckpointed_wal_last_commit_is_in_backup_and_wal_loss_is_specific(tm
         writer.close()
 
 
-def test_super1_harness_scope_is_ordered_and_not_capital_scope(request, monkeypatch, tmp_path) -> None:
+def test_super1_harness_scope_is_ordered_and_not_capital_scope(request, monkeypatch) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    runtime = json.loads(FIXTURE_RUNTIME.read_text(encoding="utf-8"))
+    runtime = json.loads(RUNTIME.read_text(encoding="utf-8"))
     expected = [
         "run_super1_xm_mt5_forward.py",
         "run_xm_mt5_forward.py",
@@ -760,11 +760,12 @@ def test_super1_harness_scope_is_ordered_and_not_capital_scope(request, monkeypa
     ]
     assert [path.name for path in super1_harness_paths(runtime)] == expected
     assert super1_harness_hash(runtime) != ""
-    capital = __import__("run_capital_forward")
-    capital_runtime = tmp_path / "capital_demo_config.json"
-    capital_runtime.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(capital, "RUNTIME_CONFIG", capital_runtime)
-    assert super1_harness_hash(runtime) != capital.harness_hash()
+    monkeypatch.setattr(
+        capital_runtime,
+        "RUNTIME_CONFIG",
+        ROOT / "tests" / "fixtures" / "capital_demo_config.json",
+    )
+    assert super1_harness_hash(runtime) != capital_runtime.harness_hash()
     record_if_enabled(request, evidence_token)
 
 

@@ -1,0 +1,1 @@
+& "C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\evidence\venv-py311-a0bc53f\Scripts\python.exe" -m pytest -q -p no:cacheprovider tests --symlink-fixture-root 'C:/Users/ISAAC/AppData/Local/Temp/otobt-owner-fixture-final-20260922' "--junitxml=C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\evidence\final-a0bc53f\full.xml"

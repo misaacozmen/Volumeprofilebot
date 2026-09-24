@@ -1,0 +1,1 @@
+& "C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\evidence\venv-py311-a0bc53f\Scripts\python.exe" scripts/scan_public_broker_identity.py --root . --structural-only

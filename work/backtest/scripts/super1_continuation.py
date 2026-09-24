@@ -989,16 +989,24 @@ def validate_real_snapshot_state(source_root: Path, snapshot_root: Path) -> dict
         for table in required_tables:
             if table in tables and not tables[table].get("rows"):
                 result.append(f"{label}.order_store.{table}.empty")
-        outbox_rows = tables.get("order_event_outbox", {}).get("rows", [])
+        outbox_table = tables.get("order_event_outbox", {})
+        outbox_columns = list(outbox_table.get("columns", []))
+        outbox_rows = outbox_table.get("rows", [])
+        try:
+            outbox_order_id_index = outbox_columns.index("order_id")
+            outbox_event_json_index = outbox_columns.index("event_json")
+        except ValueError:
+            outbox_order_id_index = 1
+            outbox_event_json_index = 2
         sequences: list[int] = []
         for row in outbox_rows:
             try:
                 sequence = int(row[0])
-                event = json.loads(str(row[2]))
+                event = json.loads(str(row[outbox_event_json_index]))
             except (IndexError, TypeError, ValueError, json.JSONDecodeError):
                 result.append(f"{label}.outbox.row")
                 continue
-            if not isinstance(event, dict) or str(event.get("order_id")) != str(row[1]):
+            if not isinstance(event, dict) or str(event.get("order_id")) != str(row[outbox_order_id_index]):
                 result.append(f"{label}.outbox.binding")
             sequences.append(sequence)
         if sequences != sorted(set(sequences)):

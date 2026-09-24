@@ -14,8 +14,17 @@ import run_super1_xm_mt5_forward as super1  # noqa: E402
 from validate_super1_rth_calendar import EXTRACTION_PATHS  # noqa: E402
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--symlink-fixture-root",
+        action="store",
+        default=None,
+        help="pre-prepared item-11 symlink fixture root; verification never creates or mutates it",
+    )
+
+
 @pytest.fixture
-def synthetic_calendar(tmp_path: Path, monkeypatch):
+def synthetic_calendar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     source_calendar = ROOT / "live_forward/calendars/us_equity_rth_2026.json"
     root = tmp_path / "calendar-fixture"
     root.mkdir()

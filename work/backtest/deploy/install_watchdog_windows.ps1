@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$HealthPath,
     [Parameter(Mandatory = $true)]
-    [string]$ProcessPattern
+    [string]$ProcessPattern,
+    [switch]$ManualStart
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +30,6 @@ $arguments = @(
     "-StatusPath `"$status`""
 ) -join " "
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
-$trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 999 `
@@ -38,11 +38,22 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew
 
-Register-ScheduledTask `
-    -TaskName $WatchdogTaskName `
-    -Action $action `
-    -Trigger $trigger `
-    -Principal $principal `
-    -Settings $settings `
-    -Force | Out-Null
-Start-ScheduledTask -TaskName $WatchdogTaskName
+if ($ManualStart) {
+    Register-ScheduledTask `
+        -TaskName $WatchdogTaskName `
+        -Action $action `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+}
+else {
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    Register-ScheduledTask `
+        -TaskName $WatchdogTaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+    Start-ScheduledTask -TaskName $WatchdogTaskName
+}

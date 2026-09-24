@@ -79,27 +79,32 @@ def test_runtime_launchers_use_writable_state_not_read_only_app() -> None:
     forward = text("run_forward_shadow_windows.ps1")
     super1 = text("run_super1_windows.ps1")
     assert '--output-root (Join-Path $Root "state")' in forward
-    assert '--output-root (Join-Path $Root "state")' in super1
-    assert 'XM_MT5_READ_ONLY_PASSWORD = $null' in super1
+    assert '"--output-root", (Join-Path $Root "state")' in super1
+    assert 'XM_MT5_READ_ONLY_PASSWORD' not in super1
 
 
 def test_installers_limit_restart_and_task_privilege() -> None:
-    for name in ("install_forward_shadow_windows.ps1", "install_super1_windows.ps1"):
-        source = text(name)
-        assert "-RestartCount 3" in source
-        assert "-RestartCount 999" not in source
-        assert "-RunLevel Highest" not in source
+    forward = text("install_forward_shadow_windows.ps1")
+    assert "-RestartCount 3" in forward
+    assert "-RestartCount 999" not in forward
+    assert "-RunLevel Highest" not in forward
+    super1 = text("install_super1_windows.ps1")
+    assert "finalize_super1_fresh_windows.ps1" in super1
+    assert "-RestartCount 999" not in super1
+    assert "-RunLevel Highest" not in super1
     for name in ("repair_super1_task_s4u_windows.ps1", "recover_super1_isolated_user.ps1"):
         source = text(name)
-        assert "-RestartCount 3" in source
         assert "-RestartCount 999" not in source
+        assert "-RunLevel Highest" not in source
+    assert "-RestartCount 0" in text("repair_super1_task_s4u_windows.ps1")
+    assert "-RestartCount 0" in text("recover_super1_isolated_user.ps1")
 
 
 def test_super1_repair_does_not_reset_password_behind_dpapi_blob() -> None:
     source = text("repair_super1_task_s4u_windows.ps1")
     assert "Set-LocalUser" not in source
     assert "New-LocalUser" not in source
-    assert "-LogonType S4U" in source
+    assert "-LogonType Password" in source
 
 
 def test_release_builder_keeps_private_key_outside_workspace() -> None:
@@ -110,6 +115,8 @@ def test_release_builder_keeps_private_key_outside_workspace() -> None:
     assert "requirements-linux.lock" in source
     assert "Release staging is incomplete" in source
     assert "Release archive is incomplete" in source
+    assert "super1_xm_mt5_demo_config_v4.json" in source
+    assert "byte-identical to V4" in source
     assert 'Where-Object { $_.Extension -in @(".pyc", ".pyo") }' in source
     assert '-Include "*.pyc","*.pyo"' not in source
     for required_runtime in (
@@ -444,10 +451,10 @@ def test_super1_fixed_launcher_uses_protected_probe_and_terminal_pins() -> None:
     assert "GetCurrentProcess().MainModule.FileName" in launcher
     assert "Microsoft.PowerShell.Security\\Get-AuthenticodeSignature" not in launcher
     assert "PowerShellHostLock" in launcher
-    assert '"state":"CRITICAL_STOP"' in launcher
+    assert 'state = "CRITICAL_STOP"' in launcher
     assert "exited unexpectedly with persistent code" in launcher
-    assert '& $Python -I -E -B $FlatDiagnostic' in launcher
-    assert '& $Python -I -E -B $Runner' in launcher
+    assert '"-I", "-E", "-B", $FlatDiagnostic' in launcher
+    assert '"-I", "-E", "-B", $Runner' in launcher
     assert 'kind -notin @("flat", "rollover_init")' in launcher
     assert "Set-ScheduledTask" not in helper
     assert "New-ScheduledTaskAction" not in helper
@@ -457,14 +464,15 @@ def test_super1_task_contract_freezes_password_task_and_canonicalizes_watchdog()
     helper = text("super1_secure_task.ps1")
 
     assert "function Assert-Super1SecureTaskBindings" in helper
-    assert '[string]$mainActions[0].Execute -cne "powershell.exe"' in helper
+    assert "Super1SecurePowerShellExe" in helper
     assert '[string]$main.Principal.LogonType -cne "Password"' in helper
     assert '[string]$main.Principal.RunLevel -cne "Limited"' in helper
-    assert "[int]$main.Settings.RestartCount -ne 999" in helper
+    assert "[int]$main.Settings.RestartCount -ne 0" in helper
     assert '[string]$watchdog.Principal.LogonType -cne "ServiceAccount"' in helper
     assert '[string]$watchdog.Principal.RunLevel -cne "Highest"' in helper
-    assert "[int]$watchdog.Settings.RestartCount -ne 3" in helper
-    assert 'CimClassName -cne "MSFT_TaskBootTrigger"' in helper
+    assert "[int]$main.Settings.RestartCount -ne 0" in helper
+    assert "[int]$watchdog.Settings.RestartCount -ne 0" in helper
+    assert "Assert-Super1SecureNoTriggers" in helper
     assert "function Get-Super1SecureMarketScheduleState" in helper
 
 
@@ -569,9 +577,8 @@ def test_super1_upgrade_pins_and_hardens_python_terminal_and_config() -> None:
     assert '$script:LauncherPhase = "SECURE_HELPER_GATE"' in launcher
     assert "Get-AuthenticodeSignature" not in launcher
     assert 'state\\launcher_failure.json' in launcher
-    assert launcher.index('$failureJson = [ordered]@{') < launcher.index('$fatalJson = (')
-    assert 'catch [Security.Cryptography.CryptographicException]' in launcher
-    assert '$script:LauncherPhase = "BROKER_SAVED_SESSION"' in launcher
+    assert launcher.index('$failureJson = [ordered]@{') < launcher.index('$fatalJson = [ordered]@{')
+    assert '$script:LauncherPhase = "BROKER_CREDENTIAL_GATE"' in launcher
     assert 'launcher_phase=$launcherPhase' in text("check_super1_flat_windows.ps1")
 
 
@@ -612,7 +619,10 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert 'git -C $RepoRoot rev-parse HEAD' in source
     assert '$pyParts[0] -ne "3.11" -or $pyParts[1] -ne "CPython"' in source
     assert "Release build requires CPython 3.11" in source
-    assert '$pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"' in source
+    assert '$pytestCollectCmd = "$Python -m pytest --collect-only -q -p no:cacheprovider tests' in source
+    assert '$pytestCmd = "$Python -m pytest -q -p no:cacheprovider tests' in source
+    assert source.count("--symlink-fixture-root '$SymlinkFixtureRoot'") == 2
+    assert "$SourceRoot --junitxml=<full-suite>" not in source
     assert "Release build aborted: pytest test suite failed" in source
     assert "Assert-JunitMatchesInventory" in source
     assert "Get-CollectionNodeIds" in source

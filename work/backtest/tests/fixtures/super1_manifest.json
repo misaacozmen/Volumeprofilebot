@@ -6,7 +6,7 @@
   "candidate_artifact_sha256": "6c93d21ff0abbd001bfe078b228a3eea9f9f8e24950e1c9c248353e240bb44d7",
   "config_sha256": "e4148ab8955cf4f8c7cef796f2287a8eac7125c223c1c2e09da20e6f2d626087",
   "signal_contract_path": "tests/fixtures/super1_signal_contract.json",
-  "signal_contract_sha256": "a1b55895badca9f1b1ae4daf35050b144da796f19b630d75bc7891fc83f62a11",
+  "signal_contract_sha256": "9429dc90087283ef79cae4761264336122654e515745205001ed2b8c44becf94",
   "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
   "overlay_candidate_research_dataset_sha256": "0a9d447e2da4814f4b06329dd3a370f496d20b442d2acb56e82e7597abfa0319",
   "overlay_candidate_research_result_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

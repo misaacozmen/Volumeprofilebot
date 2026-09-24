@@ -1,0 +1,44 @@
+{
+  "demo_order_transport": {
+    "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN",
+    "path": "scripts/run_xm_mt5_forward.py",
+    "sha256": "43069952a94de4a22bf613e5f0bac22811ea3917a32df4f936718c46588ff63a"
+  },
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "execution_scope": "XM_MT5_DEMO_ONLY",
+  "name": "SUPER1_CANONICAL_OVERLAY_CURRENT_SOURCE_CHAIN_V4",
+  "overlay_candidate": {
+    "artifact_sha256": "8c9992ad2b625fead934c8f95d10ed84ddc4f2ee9b3ed1bccfe5d567ad66840d",
+    "defines_base_signals": false,
+    "file_sha256": "8264969be2df21d62df2067a6ce68d5a8abb70ff13eb19373f6b07b7b97f9608",
+    "path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
+    "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
+    "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
+  },
+  "rth_session_calendar": {
+    "calendar_id": "US_EQUITY_RTH_2022_2026_V3",
+    "path": "live_forward/calendars/us_equity_rth_2022_2026_v3.json",
+    "sha256": "9b35b2d611157135653c301d57244ef42d7cda644886a9532e6d741bf22447f3"
+  },
+  "safety": {
+    "candidate_research_results_apply_to_deployed_pipeline": false,
+    "demo_order_execution_enabled": true,
+    "deployed_pipeline_historical_parity_proven": false,
+    "fresh_forward_required": true,
+    "independent_super1_signal_producer_present": false,
+    "real_money_execution_allowed": false,
+    "real_money_live_enabled": false
+  },
+  "schema_version": 4,
+  "signal_source": {
+    "config_path": "forward_shadow/frozen_config.json",
+    "config_sha256": "8236dc41be3448f2781e34a9e9397ce29d87afb609fb1fdd31c6ee0b5e25418b",
+    "engine_source_sha256": "e8503eb08cfbdb4bd1f90c85a4b3d3b22c2f7543f308b19b3cf4fa040632b51d",
+    "generator_path": "scripts/run_capital_forward.py",
+    "generator_sha256": "b9e7fc638a0bf32d63c56df81d515e7feaa01c7318fed5da202e23c92e147929",
+    "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",
+    "payload_adapter_path": "scripts/run_forward_shadow.py",
+    "payload_adapter_sha256": "5105421aa378770af357ec57f0ec8782e227ae56091690afd82ce578f8b609f4"
+  },
+  "status": "UNSIGNED_VALIDATION_ONLY"
+}

@@ -8,12 +8,123 @@ import zipfile
 from functools import lru_cache
 from pathlib import Path
 
+import pytest
+
 from powershell_contract import facts, powershell_ast, powershell_harness
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 CONTRACT_PATH = DEPLOY / "release_integrity_contract.json"
+
+
+def test_release_builder_requires_and_forwards_owner_symlink_fixture(
+    tmp_path: Path,
+) -> None:
+    builder_path = DEPLOY / "build_signed_windows_release.ps1"
+    parsed = powershell_ast(builder_path)
+    assert parsed["errors"] == []
+    param_block = next(item for item in parsed["facts"] if item["kind"] == "param_block")
+    fixture_parameter = next(
+        item for item in param_block["param_details"]
+        if item["name"].casefold() == "symlinkfixtureroot"
+    )
+    assert fixture_parameter["mandatory"] is True
+
+    pytest_commands = [
+        item for item in facts(builder_path, "command")
+        if "-m pytest" in item["text"] and "--symlink-fixture-root" in item["text"]
+    ]
+    assert len(pytest_commands) == 2
+    for command in pytest_commands:
+        assert "tests" in command["text"]
+        assert "-p no:cacheprovider" in command["text"]
+        assert "--symlink-fixture-root" in command["text"]
+        assert "$SymlinkFixtureRoot" in command["text"]
+
+    top_level = [item for item in facts(builder_path, "command") if item["scope"] == "top-level"]
+    fixture_gate = next(
+        item for item in top_level
+        if "Assert-OwnerSymlinkFixture" in item["text"]
+    )
+    private_key_gate = next(
+        item for item in top_level
+        if item["name"].casefold() == "test-path"
+        and "$PrivateKeyPath" in item["text"]
+    )
+    assert fixture_gate["start"] < private_key_gate["start"]
+
+
+def test_release_builder_collection_parser_preserves_whitespace_parameter_ids() -> None:
+    builder_path = DEPLOY / "build_signed_windows_release.ps1"
+    function = next(
+        item["extent_text"] for item in facts(builder_path, "function")
+        if item["name"] == "Get-CollectionNodeIds"
+    )
+    node_ids = [
+        "tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[   ]",
+        "tests/test_broker_identity_env.py::test_invalid_account_login_is_rejected_before_connection[None]",
+    ]
+    literals = ",".join("'" + node_id + "'" for node_id in node_ids)
+    script = (
+        function
+        + f"\n$ids = Get-CollectionNodeIds -Output @({literals})"
+        + "\nConvertTo-Json -InputObject @($ids) -Compress"
+    )
+    result = powershell_harness(script)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == node_ids
+
+
+def test_release_builder_fixture_guard_accepts_owner_link_and_rejects_invalid_root(
+    tmp_path: Path,
+    pytestconfig: pytest.Config,
+) -> None:
+    builder_path = DEPLOY / "build_signed_windows_release.ps1"
+    function = next(
+        item["extent_text"] for item in facts(builder_path, "function")
+        if item["name"] == "Assert-OwnerSymlinkFixture"
+    )
+    owner_root = pytestconfig.getoption("--symlink-fixture-root")
+    assert owner_root, "release-builder fixture test requires --symlink-fixture-root"
+    accepted = powershell_harness(
+        function + "\nAssert-OwnerSymlinkFixture -Root $args[0] | Out-Null; 'PASS'",
+        str(owner_root),
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert "PASS" in accepted.stdout
+
+    wrong_root = tmp_path / "wrong-fixture"
+    (wrong_root / "input").mkdir(parents=True)
+    (wrong_root / "output").mkdir()
+    (wrong_root / "outside").mkdir()
+    (wrong_root / "input" / "allowed.txt").write_text("allowed\n", encoding="utf-8")
+    (wrong_root / "outside" / "outside.txt").write_text("outside\n", encoding="utf-8")
+    (wrong_root / "output" / "escape-symlink.txt").write_text("not a symlink\n", encoding="utf-8")
+    rejected = powershell_harness(
+        function + "\nAssert-OwnerSymlinkFixture -Root $args[0] | Out-Null; 'UNEXPECTED_PASS'",
+        str(wrong_root),
+    )
+    assert rejected.returncode != 0
+    assert "LINK_FIXTURE_REQUIRED" in rejected.stderr
+
+
+def test_release_builder_rejects_bad_fixture_before_key_or_release_work(tmp_path: Path) -> None:
+    builder = DEPLOY / "build_signed_windows_release.ps1"
+    invalid_root = tmp_path / "invalid-owner-fixture"
+    invalid_root.mkdir()
+    result = powershell_harness(
+        '& $args[0] -Profile super1 -OutputArchive $args[1] '
+        '-SymlinkFixtureRoot $args[2] -PrivateKeyPath $args[3]',
+        str(builder),
+        str(tmp_path / "never-created.zip"),
+        str(invalid_root),
+        str(tmp_path / "missing-key.dpapi"),
+    )
+    assert result.returncode != 0
+    assert "LINK_FIXTURE_ROOT_INVALID" in result.stderr
+    assert "DPAPI release signing key is missing" not in result.stderr
+    assert not (tmp_path / "never-created.zip").exists()
 
 
 def contract() -> dict[str, object]:
@@ -40,6 +151,7 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",
         "docs/DEPLOY_001_EVIDENCE/** -text",
+        "docs/DEPLOY_001_EVIDENCE_FINAL_20260922_*/** -text",
     ]
 
 
@@ -931,7 +1043,10 @@ if ($primaryError.Exception.Message -notlike "*INJECTED_SUPER1_PREFLIGHT_FAILURE
     assert "SUPER1_PASS" in result.stdout
 
 
-def test_builder_checks_contract_before_signing_key_resolution(tmp_path: Path) -> None:
+def test_builder_checks_contract_before_signing_key_resolution(
+    tmp_path: Path,
+    pytestconfig: pytest.Config,
+) -> None:
     powershell = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     result = subprocess.run(
         [
@@ -946,6 +1061,8 @@ def test_builder_checks_contract_before_signing_key_resolution(tmp_path: Path) -
             "forward-shadow",
             "-OutputArchive",
             str(tmp_path / "contract-check.zip"),
+            "-SymlinkFixtureRoot",
+            str(pytestconfig.getoption("--symlink-fixture-root")),
             "-PrivateKeyPath",
             str(tmp_path / "missing-key.dpapi"),
         ],

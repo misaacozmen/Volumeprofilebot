@@ -1,0 +1,135 @@
+{
+  "account_login": null,
+  "account_mode": "DEMO_ORDER",
+  "authorized_operator_sid": "S-1-5-19",
+  "base_risk_percent": 1.0,
+  "campaign_id": "SUPER1_UNSIGNED_CANDIDATE_V3",
+  "candidate_artifact_sha256": "54eb93875651730a34f3add23b001159e1a0183f3543220fe2138db554c1d642",
+  "candidate_file_sha256": "9b58fa2ba74c01d3b997586ec896282758a85682d579659baa31d486ea54bf66",
+  "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v3.json",
+  "closed_bar_delay_seconds": 8,
+  "daily_manual_start_required": true,
+  "demo_order_execution_enabled": true,
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "deviation_points": 20,
+  "environment": "XM_MT5_DEMO_ORDER",
+  "execution": "MT5_DEMO_ORDERS",
+  "expected_company": "XM Global Limited",
+  "expected_server": "XMGlobal-MT5 2",
+  "feed": "XM_MT5",
+  "history_days": 10,
+  "htf": "15m",
+  "isolation_required": true,
+  "legs": {
+    "nq": {
+      "epic": "US100Cash",
+      "instrument_registry_path": "live_forward/instrument_registry_v3.json",
+      "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+      "symbol": "XM_MT5_US100CASH_SUPER1",
+      "timeframe": "3m"
+    },
+    "spx": {
+      "epic": "US500Cash",
+      "instrument_registry_path": "live_forward/instrument_registry_v3.json",
+      "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+      "symbol": "XM_MT5_US500CASH_SUPER1",
+      "timeframe": "5m"
+    }
+  },
+  "live_order_approval_required": true,
+  "live_risk_policy": {
+    "daily_loss_cap_r": -1.0,
+    "entry_cooldown_seconds": 300,
+    "instrument_registry_sha256": "1ff8a837074e7b22482074919f7e1f20b0a1ef2161bcd617026ae1d92c905fc6",
+    "max_open_positions_by_instrument": 1,
+    "max_position_volume_by_instrument": {
+      "XM_MT5_US100CASH_SUPER1": 100.0,
+      "XM_MT5_US500CASH_SUPER1": 100.0
+    },
+    "max_total_open_positions": 2,
+    "max_total_trades_per_day": 3,
+    "max_trades_per_day_by_instrument": {
+      "XM_MT5_US100CASH_SUPER1": 1,
+      "XM_MT5_US500CASH_SUPER1": 2
+    }
+  },
+  "magic_number": 260805101,
+  "manual_required": false,
+  "market_schedule_ny": {
+    "daily_breaks": [
+      [
+        "20:00",
+        "21:00"
+      ]
+    ],
+    "evidence": "discover_super1_xm_account.py",
+    "planned_closures": [],
+    "timezone": "America/New_York",
+    "weekly_close_friday": "20:00",
+    "weekly_open_sunday": "21:00"
+  },
+  "order_comment_prefix": "SUPER1",
+  "pair_cap_r": -1.0,
+  "poll_seconds": 30,
+  "portable": false,
+  "real_money_execution_allowed": false,
+  "real_money_live_enabled": false,
+  "risk_limits": {
+    "daily_loss_cap_r": -1.0,
+    "max_concentration_percent": 100.0,
+    "max_leverage": 5.0,
+    "max_margin_fraction": 0.25,
+    "max_pair_exposure_percent": 100.0,
+    "max_total_stop_risk_percent": 2.2
+  },
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1,
+    "terminal_history_days": 365
+  },
+  "rth_session_calendar": {
+    "calendar_id": "US_EQUITY_RTH_2022_2026_V3",
+    "path": "live_forward/calendars/us_equity_rth_2022_2026_v3.json",
+    "sha256": "9b35b2d611157135653c301d57244ef42d7cda644886a9532e6d741bf22447f3"
+  },
+  "schema_version": 3,
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "signal_contract_path": "research_candidates/super1/super1_signal_contract_v3.json",
+  "signal_contract_sha256": "c7f16f4e604b56dd63e69d5c6ac195deaca4699ec05b8820cc163531c1d93bb4",
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "strategy_health_baseline": {
+    "candidate_hash": "3a63e5913e18f19b21d1b4ddb0e39be224d791f8b8d04f012c7c94df63b84233",
+    "closed_trades": 100,
+    "drawdown_p95": 1.0,
+    "drawdown_p99": 2.0,
+    "locked": true,
+    "rolling_net_r_p05": 0.0,
+    "seed": 7,
+    "valid_sessions": 100,
+    "years": [
+      2022,
+      2023,
+      2024
+    ]
+  },
+  "target": "LOCAL_WINDOWS_PC",
+  "terminal_path": "C:\\Super1\\mt5\\terminal64.exe",
+  "timezone": "America/New_York",
+  "unattended_execution_allowed": false
+}

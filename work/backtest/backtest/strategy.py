@@ -111,10 +111,13 @@ class PendingOrderResolution(NamedTuple):
 CLOSED_RESULTS = {"win", "loss", "loss_same_bar", "breakeven", "reduced_loss"}
 
 
-def run_backtest(frame: pd.DataFrame, config: SymbolConfig) -> BacktestResult:
+def run_backtest(frame: pd.DataFrame, config: SymbolConfig, *, eligible_decision_dates: set[object] | None = None) -> BacktestResult:
     frame = frame.sort_values("time").reset_index(drop=True)
     expected_minutes = parse_timeframe_minutes(config.timeframe) or 5.0
     gap_events = find_gap_events(frame, expected_minutes=expected_minutes)
+    if eligible_decision_dates is not None:
+        eligible_decision_dates = {pd.Timestamp(value).date() for value in eligible_decision_dates}
+        gap_events = [event for event in gap_events if pd.Timestamp(event.skip_date).date() in eligible_decision_dates]
     skipped_dates = skip_dates_from_gaps(gap_events)
     trades: list[Trade] = []
     lifecycles: list[SetupLifecycle] = []
@@ -122,6 +125,8 @@ def run_backtest(frame: pd.DataFrame, config: SymbolConfig) -> BacktestResult:
 
     dates = sorted(frame["date"].unique())
     for trade_date in dates:
+        if eligible_decision_dates is not None and pd.Timestamp(trade_date).date() not in eligible_decision_dates:
+            continue
         if trade_date in skipped_dates:
             continue
         if not allowed_trade_date(trade_date, config.allowed_weekdays):

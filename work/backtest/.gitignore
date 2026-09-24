@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv311/
+*.egg-info/
 outputs/reports/*.csv
 data/processed/*
 !data/processed/.gitkeep

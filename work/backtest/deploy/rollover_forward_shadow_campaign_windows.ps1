@@ -4,7 +4,7 @@ param([string]$Root = "C:\ForwardShadow")
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "broker_identity_env.ps1")
-$ExpectedLogin = [long](Get-BrokerIdentityLogin)
+$ExpectedLogin = Get-BrokerIdentityLogin
 
 if (
     [string]$PSVersionTable.PSEdition -cne "Desktop" -or

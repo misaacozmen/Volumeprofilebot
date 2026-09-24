@@ -1,0 +1,82 @@
+{
+  "artifact_id": "super1_unsigned_candidate_v4",
+  "artifact_sha256": "8c9992ad2b625fead934c8f95d10ed84ddc4f2ee9b3ed1bccfe5d567ad66840d",
+  "artifact_type": "strategy_candidate",
+  "checks": {
+    "candidate_chain_current_source_bound": true,
+    "fresh_forward_not_performed": true,
+    "live_execution_disabled": true,
+    "performance_evidence_not_reused": true
+  },
+  "criteria": {
+    "fresh_forward_required": true,
+    "historical_performance_claim": false
+  },
+  "development_result_sha256": null,
+  "fresh_forward_required": true,
+  "full_evaluation_result_sha256": null,
+  "live_enabled": false,
+  "name": "SUPER1_UNSIGNED_CURRENT_SOURCE_CHAIN_V4",
+  "proven": false,
+  "provenance": {
+    "environment": {
+      "dependencies": {
+        "pandas": "3.0.3",
+        "pytest": "9.1.1"
+      },
+      "git_commit": null,
+      "python_implementation": "CPython",
+      "python_version": "3.14.5"
+    },
+    "inputs": [
+      {
+        "bytes": 1230092,
+        "path": "data/raw/spx/CAPITALCOM_SPX500, 5_c1e05.csv",
+        "role": "research_dataset",
+        "sha256": "22ae16f0fdc4909419a28b5ce1e7303eea3f5f62034c00e3d7b49bbac2374ef7"
+      },
+      {
+        "bytes": 11112,
+        "path": "scripts/candidate_artifact.py",
+        "role": "artifact_code",
+        "sha256": "bcb0336999566f3d6e7d1c1208af83e77872ad0c2c28b88c878c757e539de60f"
+      },
+      {
+        "bytes": 10871,
+        "path": "backtest/engine_pipeline.py",
+        "role": "engine_source",
+        "sha256": "3fdea6c32b3755fcc50451a40bc5ee2a0fda65d20bd5fb4eae528231b9f4e4e1"
+      }
+    ]
+  },
+  "risk_rule": {
+    "lookback": 10,
+    "negative_scale": 0.75,
+    "nonnegative_scale": 1.1
+  },
+  "schema_version": 2,
+  "selection_protocol": {
+    "development_period": "NOT_PERFORMED",
+    "final_holdout_period": "NOT_USED",
+    "final_holdout_used_for_publication": false,
+    "final_holdout_used_for_selection": false
+  },
+  "setup_rules": [
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "direction": "short",
+        "entry_weekday": "Monday"
+      }
+    },
+    {
+      "action": "BLOCK",
+      "conditions": {
+        "liquidity_type": "vah_val_proximity",
+        "overnight_direction": "up"
+      }
+    }
+  ],
+  "status": "UNSIGNED_VALIDATION_ONLY",
+  "unsigned": true
+}
