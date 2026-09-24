@@ -1,0 +1,63 @@
+Processing c:\users\isaac\documents\otobacktestprojesi-risk-clean\work\backtest
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting pandas==3.0.3 (from otobacktest==0.1.0)
+  Using cached pandas-3.0.3-cp311-cp311-win_amd64.whl.metadata (19 kB)
+Collecting numpy>=1.26.0 (from otobacktest==0.1.0)
+  Using cached numpy-2.4.6-cp311-cp311-win_amd64.whl.metadata (6.6 kB)
+Collecting MetaTrader5==5.0.6090 (from otobacktest==0.1.0)
+  Using cached metatrader5-5.0.6090-cp311-cp311-win_amd64.whl.metadata (2.5 kB)
+Collecting cryptography==50.0.1 (from otobacktest==0.1.0)
+  Using cached cryptography-50.0.1-cp311-abi3-win_amd64.whl.metadata (4.3 kB)
+Collecting cffi>=2.0.0 (from cryptography==50.0.1->otobacktest==0.1.0)
+  Using cached cffi-2.1.1-cp311-cp311-win_amd64.whl.metadata (2.6 kB)
+Collecting python-dateutil>=2.8.2 (from pandas==3.0.3->otobacktest==0.1.0)
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting tzdata (from pandas==3.0.3->otobacktest==0.1.0)
+  Using cached tzdata-2026.4-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting pytest==9.1.1 (from otobacktest==0.1.0)
+  Using cached pytest-9.1.1-py3-none-any.whl.metadata (7.6 kB)
+Collecting colorama>=0.4 (from pytest==9.1.1->otobacktest==0.1.0)
+  Using cached colorama-0.4.6-py2.py3-none-any.whl.metadata (17 kB)
+Collecting iniconfig>=1.0.1 (from pytest==9.1.1->otobacktest==0.1.0)
+  Using cached iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting packaging>=22 (from pytest==9.1.1->otobacktest==0.1.0)
+  Using cached packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==9.1.1->otobacktest==0.1.0)
+  Using cached pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Collecting pygments>=2.7.2 (from pytest==9.1.1->otobacktest==0.1.0)
+  Using cached pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting pycparser (from cffi>=2.0.0->cryptography==50.0.1->otobacktest==0.1.0)
+  Using cached pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas==3.0.3->otobacktest==0.1.0)
+  Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Using cached cryptography-50.0.1-cp311-abi3-win_amd64.whl (3.8 MB)
+Using cached metatrader5-5.0.6090-cp311-cp311-win_amd64.whl (47 kB)
+Using cached pandas-3.0.3-cp311-cp311-win_amd64.whl (9.9 MB)
+Using cached pytest-9.1.1-py3-none-any.whl (386 kB)
+Using cached numpy-2.4.6-cp311-cp311-win_amd64.whl (12.6 MB)
+Using cached cffi-2.1.1-cp311-cp311-win_amd64.whl (185 kB)
+Using cached colorama-0.4.6-py2.py3-none-any.whl (25 kB)
+Using cached iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Using cached packaging-26.3-py3-none-any.whl (129 kB)
+Using cached pluggy-1.6.0-py3-none-any.whl (20 kB)
+Using cached pygments-2.21.0-py3-none-any.whl (1.3 MB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached tzdata-2026.4-py2.py3-none-any.whl (347 kB)
+Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+Using cached pycparser-3.0-py3-none-any.whl (48 kB)
+Building wheels for collected packages: otobacktest
+  Building wheel for otobacktest (pyproject.toml): started
+  Building wheel for otobacktest (pyproject.toml): finished with status 'done'
+  Created wheel for otobacktest: filename=otobacktest-0.1.0-py3-none-any.whl size=142921 sha256=ce16c06cf965bf60f73349bedc166225337fbe8a96afa783e180399e99249203
+  Stored in directory: C:\Users\ISAAC\AppData\Local\Temp\pip-ephem-wheel-cache-l6xy6u4c\wheels\8d\2c\f0\72a23c7bc3c330e1518129174b86ca7c29046e66c21a5bc92d
+Successfully built otobacktest
+Installing collected packages: tzdata, six, pygments, pycparser, pluggy, packaging, numpy, iniconfig, colorama, python-dateutil, pytest, MetaTrader5, cffi, pandas, cryptography, otobacktest
+Successfully installed MetaTrader5-5.0.6090 cffi-2.1.1 colorama-0.4.6 cryptography-50.0.1 iniconfig-2.3.0 numpy-2.4.6 otobacktest-0.1.0 packaging-26.3 pandas-3.0.3 pluggy-1.6.0 pycparser-3.0 pygments-2.21.0 pytest-9.1.1 python-dateutil-2.9.0.post0 six-1.17.0 tzdata-2026.4
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: C:\Users\ISAAC\Documents\risk-clean-delivery-20260924\venv\Scripts\python.exe -m pip install --upgrade pip

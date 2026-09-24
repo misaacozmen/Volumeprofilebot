@@ -1,0 +1,64 @@
+..F.......................                                               [100%]
+================================== FAILURES ===================================
+__ test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets __
+
+tmp_path = WindowsPath('C:/Users/ISAAC/AppData/Local/Temp/pytest-of-ISAAC/pytest-4311/test_release_builder_inventory0')
+
+    def test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets(tmp_path: Path) -> None:
+        builder_path = DEPLOY / "build_signed_windows_release.ps1"
+        functions = "\n".join(
+            item["extent_text"] for item in facts(builder_path, "function")
+            if item["name"] in {
+                "Get-CollectionNodeIds", "Get-JunitNodeIds",
+                "Write-NodeIdInventory", "Assert-JunitMatchesInventory",
+            }
+        )
+        for root in ("tests", "artifact_tests"):
+            nodes = [f"{root}/test_example.py::test_case[  spaced  ]", f"{root}/test_example.py::test_second"]
+            cases = [
+                f'<testcase classname="{root}.test_example" name="test_case[  spaced  ]"/>',
+                f'<testcase classname="{root}.test_example" name="test_second"/>',
+            ]
+            scenarios = {
+                "valid": (nodes, cases, True),
+                "valid-duplicates": (nodes + nodes[:1], cases + cases[:1], True),
+                "missing-inventory": (nodes[:1], cases, False),
+                "empty-inventory": ([], cases, False),
+                "duplicate-replaces-node": (nodes[:1] * 2, cases, False),
+                "extra-inventory": (nodes + [f"{root}/test_example.py::test_extra"], cases, False),
+                "missing-junit": (nodes, cases[:1], False),
+                "empty-junit": (nodes, [], False),
+                "wrong-root": ([node.replace(root + "/", "other/", 1) for node in nodes], cases, False),
+            }
+            for bad in ("failure", "error", "skipped"):
+                scenarios[bad] = (nodes, [cases[0].replace("/>", f"><{bad}/></testcase>"), cases[1]], False)
+            for name, (inventory, junit_cases, accepted) in scenarios.items():
+                literals = ",".join("'" + node + "'" for node in inventory + ["2 tests collected"])
+                junit = "<testsuites><testsuite>" + "".join(junit_cases) + "</testsuite></testsuites>"
+                result = powershell_harness(
+                    functions
+                    + f"\n$ids = @(Get-CollectionNodeIds -Output @({literals}))"
+                    + "\nWrite-NodeIdInventory -NodeIds $ids -Path $args[0] | Out-Null"
+                    + f"\n[xml]$junit = '{junit}'"
+                    + "\nAssert-JunitMatchesInventory -InventoryPath $args[0] -Junit $junit -SuiteName 'Harness' | Out-Null"
+                    + "\n'PASS'",
+                    str(tmp_path / f"{root}-{name}.txt"),
+                )
+>               assert (result.returncode == 0) is accepted, (root, name, result.stdout, result.stderr)
+E               AssertionError: ('tests', 'valid', '', "Write-NodeIdInventory : The term 'Get-FileHash' is not recognized as the name of a cmdlet, fun...ventory], CommandNotFoundException
+E                     + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory
+E                  
+E                 ")
+E               assert (1 == 0) is True
+E                +  where 1 = CompletedProcess(args=['C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', '-NoProfile', '-NonInteractive', '...ventory], CommandNotFoundException\n    + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory\n \n").returncode
+
+tests\test_deploy_001_release_contract.py:121: AssertionError
+============================== warnings summary ===============================
+tests/test_deploy_001_release_contract.py::test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries
+  C:\Program Files\Python311\Lib\zipfile.py:1566: UserWarning: Duplicate name: 'deploy/release_integrity.ps1'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_deploy_001_release_contract.py::test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets
+1 failed, 25 passed, 1 warning in 56.54s

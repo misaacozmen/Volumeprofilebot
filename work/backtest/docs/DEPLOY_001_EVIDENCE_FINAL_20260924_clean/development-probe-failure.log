@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "C:\Users\ISAAC\Documents\risk-clean-delivery-20260924\postbootstrap_probe.py", line 54, in <module>
+    response = sandbox.run_sandbox({"action": "cli", "output_root": str(output), "argv": ["--output-dir", str(output)]})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ISAAC\Documents\risk-clean-delivery-20260924\checkout\work\backtest\backtest\sandbox.py", line 454, in run_sandbox
+    stdout, attestation = _windows_launcher_result(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ISAAC\Documents\risk-clean-delivery-20260924\checkout\work\backtest\backtest\sandbox.py", line 385, in _windows_launcher_result
+    raise SandboxError(f"sandbox worker failed ({envelope.get('exit_code')}): {detail}")
+backtest.sandbox.SandboxError: sandbox worker failed (1): andbox_worker.py", line 189, in main
+    import ctypes
+  File "C:\Users\ISAAC\AppData\Local\Temp\.otobt-appcontainer-zni9pe_9\runtime\python\Lib\ctypes\__init__.py", line 473, in <module>
+    GetLastError = windll.kernel32.GetLastError
+                   ^^^^^^^^^^^^^^^
+  File "C:\Users\ISAAC\AppData\Local\Temp\.otobt-appcontainer-zni9pe_9\runtime\python\Lib\ctypes\__init__.py", line 446, in __getattr__
+    dll = self._dlltype(name)
+          ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ISAAC\AppData\Local\Temp\.otobt-appcontainer-zni9pe_9\runtime\python\Lib\ctypes\__init__.py", line 376, in __init__
+    self._handle = _dlopen(self._name, mode)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ISAAC\AppData\Local\Temp\.otobt-appcontainer-zni9pe_9\runtime\scripts\backtest_sandbox_worker.py", line 41, in deny_hook
+    raise PermissionError("native loading is forbidden after the trusted bootstrap")
+PermissionError: native loading is forbidden after the trusted bootstrap
+
