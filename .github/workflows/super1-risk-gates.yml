@@ -37,6 +37,9 @@ jobs:
       SUPER1_SYMLINK_FIXTURE_ROOT: ${{ inputs.symlink_fixture_root || vars.SUPER1_SYMLINK_FIXTURE_ROOT }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Evidence and immutable helper pins resolve ancestor commits.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
