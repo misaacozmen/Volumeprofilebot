@@ -676,6 +676,10 @@ def test_inert_super1_installer_verifies_signed_release_without_activating_runti
     assert 'status = "PLAN_ONLY_NO_CHANGES"' in source
     assert 'status = "INERT_APP_INSTALLED"' in source
     assert "deployment_ready = $false" in source
+    lock_install = source.index("-m pip install --disable-pip-version-check --no-index --require-hashes -r \"requirements-windows.lock\"")
+    staging_push = source.rindex('Push-Location -LiteralPath $appStagingRoot', 0, lock_install)
+    staging_pop = source.index("Pop-Location", lock_install)
+    assert staging_push < lock_install < staging_pop
     assert "INERT_INSTALL_FAILED_WITH_FILES_PRESERVED" in source
     for forbidden in ("Register-ScheduledTask", "schtasks.exe", "Start-ScheduledTask", "Start-Process"):
         assert forbidden not in source

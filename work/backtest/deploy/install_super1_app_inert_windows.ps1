@@ -179,10 +179,10 @@ try {
     & $BootstrapPython -I -E -B -m venv $venvRoot
     if ($LASTEXITCODE -ne 0) { throw "Inert app venv creation failed." }
     $venvPython = Join-Path $venvRoot "Scripts\python.exe"
-    & $venvPython -I -E -B -m pip install --disable-pip-version-check --no-index --require-hashes -r (Join-Path $appStagingRoot "requirements-windows.lock")
-    if ($LASTEXITCODE -ne 0) { throw "Locked offline venv dependency install failed." }
     Push-Location -LiteralPath $appStagingRoot
     try {
+        & $venvPython -I -E -B -m pip install --disable-pip-version-check --no-index --require-hashes -r "requirements-windows.lock"
+        if ($LASTEXITCODE -ne 0) { throw "Locked offline venv dependency install failed." }
         & $venvPython -I -E -B -m pip install --disable-pip-version-check --no-index --no-deps --no-build-isolation "."
         if ($LASTEXITCODE -ne 0) { throw "Inert Super1 application install failed." }
     }
