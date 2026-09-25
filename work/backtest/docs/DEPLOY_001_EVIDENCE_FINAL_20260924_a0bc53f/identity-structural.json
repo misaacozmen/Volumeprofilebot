@@ -1,0 +1,44 @@
+{
+  "all_ref_tips": [
+    {
+      "ref": "HEAD",
+      "sha": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/deploy-001-release-contract",
+      "sha": "d1c0b07cdbf5729136cc436746f78ddcc00544ec"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/main-broker-identity-forward-fix",
+      "sha": "5ae500047b2067103539b0c72ad8f8f58024cbf2"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/super1-clean-review-20260919",
+      "sha": "d995f99753aef8a84b79000beff35ec7d169fa86"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/workstream-status-release-audit",
+      "sha": "7815f9c20280d3029387b2480d0bbcd87bdb60c5"
+    },
+    {
+      "ref": "refs/remotes/origin/main",
+      "sha": "c1c769aec68b84c9c13f9add198ab130241c69ad"
+    }
+  ],
+  "candidate_commit_sha": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+  "candidate_ref": "HEAD",
+  "candidate_tree_match_count": 0,
+  "candidate_tree_matches": [],
+  "candidate_tree_oid": "9d6e58445ece28f863165326075ac610f6e52c10",
+  "candidate_tree_structural_violation_count": 0,
+  "finished_at_utc": "2026-09-24T18:52:15.399982Z",
+  "origin_unchanged": true,
+  "private_denylist_sha256": null,
+  "scan_scope": "candidate_structure",
+  "scanner_source_sha256": "22c7cd1d94467f4ea9b4137b74c86ad1ba10ef3e86f8ccc0d1c021a6e760e87e",
+  "schema_version": 4,
+  "source_head": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+  "source_unchanged": true,
+  "started_at_utc": "2026-09-24T18:52:13.018798Z",
+  "status": "PASS"
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "clean-delivery-evidence-v1",
+  "tested_commit": "e12985fb54c6ca6b1deaf94b64f086a2d993e2fc",
+  "tested_tree": "f42984cdbb9a271bcc8cd4d3ad8349e333a5cecc",
+  "evidence_repo_path": "work/backtest/docs/DEPLOY_001_EVIDENCE_FINAL_20260925_ci_e12985",
+  "branch": "codex/risk-clean-delivery-20260924",
+  "runs": [
+    {
+      "name": "github-risk-ci-collection",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "--collect-only",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests",
+        "--symlink-fixture-root",
+        "$env:SYMLINK_FIXTURE_ROOT"
+      ],
+      "cwd": "work/backtest",
+      "tested_commit": "e12985fb54c6ca6b1deaf94b64f086a2d993e2fc",
+      "started_at": "2026-09-25T13:33:07Z",
+      "finished_at": "2026-09-25T13:33:11Z",
+      "exit_code": 0,
+      "run_id": 36139521424,
+      "run_attempt": 2,
+      "job_id": 108090203700,
+      "stdout": "collection.log"
+    },
+    {
+      "name": "github-risk-ci-full-suite",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests",
+        "--junitxml=outputs/risk-hardening-py311.junit.xml",
+        "--symlink-fixture-root",
+        "$env:SYMLINK_FIXTURE_ROOT"
+      ],
+      "cwd": "work/backtest",
+      "tested_commit": "e12985fb54c6ca6b1deaf94b64f086a2d993e2fc",
+      "started_at": "2026-09-25T13:33:11Z",
+      "finished_at": "2026-09-25T13:40:58Z",
+      "exit_code": 0,
+      "run_id": 36139521424,
+      "run_attempt": 2,
+      "job_id": 108090203700,
+      "stdout": "full.log"
+    }
+  ],
+  "full_suite": {
+    "passed": 803,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "deselected": 0
+  },
+  "node_sha256_sorted_lf": "512be60b66c55fc3b36efe609a127f132045a65b281a9d0bb804310edbb622e2",
+  "artifacts": [
+    {
+      "path": "collection.log",
+      "bytes": 78724,
+      "sha256": "bc30636ee4533bb696ace259d36b8b1b46f32eba1a0c815765ab99bb40d015be",
+      "git_blob_sha256": "bc30636ee4533bb696ace259d36b8b1b46f32eba1a0c815765ab99bb40d015be",
+      "git_blob_sha1": "6b8472830e492f19efd99c9c9bf801070f70b94b"
+    },
+    {
+      "path": "full.log",
+      "bytes": 1350,
+      "sha256": "cf52573957a317faf15722e0703c4c12d047303043d367bbcc86a92a9ebb635b",
+      "git_blob_sha256": "cf52573957a317faf15722e0703c4c12d047303043d367bbcc86a92a9ebb635b",
+      "git_blob_sha1": "42420d3726e3862d5528ed397c15bcea52dc5557"
+    },
+    {
+      "path": "full.xml",
+      "bytes": 111075,
+      "sha256": "6d23550ffcb3eff6f1652974832059ba2ca6e1f92a0395e4f337f233dbd533c1",
+      "git_blob_sha256": "6d23550ffcb3eff6f1652974832059ba2ca6e1f92a0395e4f337f233dbd533c1",
+      "git_blob_sha1": "0fa9eb6cb548ea36f513ebe7b68123b6323b284a"
+    },
+    {
+      "path": "identity-summary.json",
+      "bytes": 642,
+      "sha256": "3fa7bf6a37fa2d940a71dd94d812bc893b6d32e33dab4f7e3465a28f3b70642c",
+      "git_blob_sha256": "3fa7bf6a37fa2d940a71dd94d812bc893b6d32e33dab4f7e3465a28f3b70642c",
+      "git_blob_sha1": "7288cd932e20c7162d93bbb26c6536efb382b2e3"
+    },
+    {
+      "path": "risk-ci-run.json",
+      "bytes": 2236,
+      "sha256": "9386160e34350da1914f6ed76098f67c15922d4aec16f02ced5a53541b24bf87",
+      "git_blob_sha256": "9386160e34350da1914f6ed76098f67c15922d4aec16f02ced5a53541b24bf87",
+      "git_blob_sha1": "76b46206ebfccac85f52698a807f076d812bd579"
+    }
+  ]
+}

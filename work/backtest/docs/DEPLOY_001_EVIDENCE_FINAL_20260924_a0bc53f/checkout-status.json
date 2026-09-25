@@ -1,0 +1,22 @@
+{
+  "schema": "deploy-001-checkout-status-v1",
+  "code_tested_commit": "a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2",
+  "code_tested_tree": "9d6e58445ece28f863165326075ac610f6e52c10",
+  "clean_review_checkout": {
+    "tracked_changes_after_provenance": 0,
+    "untracked_hash_pinned_raw_inputs": 144,
+    "untracked_other_files": 0,
+    "raw_split": {"nq_3m": 72, "spx_5m": 72},
+    "generated_audit_outputs": "ignored; outside committed source"
+  },
+  "engineer_worktree_at_code_ref_before_evidence_packaging": {
+    "tracked_changes": 0,
+    "untracked_hash_pinned_raw_inputs": 144,
+    "untracked_other_files": 1,
+    "preserved_other_file": "work/backtest/docs/DEPLOY_001_EVIDENCE/full-n1.junit.xml",
+    "preserved_other_file_sha256": "8b126d33b571574b01d9b105066efd839f148a3a63ff0f0dd4cb36a25c0b688d"
+  },
+  "pinned_raw_input_manifest_sha256": "192a06d08d8b7029aa9e080a8bbd608cbe3868c6a67145ed8861dc51b331d8a4",
+  "raw_inputs_modified": false,
+  "private_identity_values_or_key_material_read": false
+}

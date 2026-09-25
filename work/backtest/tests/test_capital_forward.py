@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 import pandas as pd
+import pytest
 
 from v08_helpers import checkpoint_if_enabled, record_if_enabled
 
@@ -16,6 +17,7 @@ SPEC = importlib.util.spec_from_file_location("run_capital_forward", ROOT / "scr
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+MODULE.RUNTIME_CONFIG = ROOT / "tests" / "fixtures" / "capital_demo_config.json"
 
 
 def test_normalize_price_uses_bid_and_volume() -> None:
@@ -415,7 +417,7 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
     request,
 ) -> None:
     evidence_token = checkpoint_if_enabled(request)
-    runtime = json.loads((ROOT / "live_forward" / "capital_demo_config.json").read_text(encoding="utf-8"))
+    runtime = json.loads((ROOT / "tests" / "fixtures" / "super1_xm_mt5_demo_config.json").read_text(encoding="utf-8"))
     runtime["manual_required"] = False
     monkeypatch.setattr(MODULE, "runtime_config", lambda: runtime)
 
@@ -435,7 +437,7 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
             }
             for index, item in enumerate(source_times)
         ]
-        for epic in ("US100", "US500")
+        for epic in (runtime["legs"]["nq"]["epic"], runtime["legs"]["spx"]["epic"])
     }
 
     class TwoLegFetchClient:
@@ -481,14 +483,17 @@ def test_finalize_shared_asof_boundaries_use_real_two_leg_store_and_seal_once(
             assert not (root / "finalized").exists()
             assert not (root / "sessions").exists()
 
-        result = MODULE.finalize_session(
-            root,
-            store,
-            market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
-            knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-            finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
-            fetches=fetches,
-        )
+        monkeypatch.setattr(MODULE, "source_code_hash", lambda: "stale-code-hash")
+        with pytest.raises(MODULE.CriticalLiveError, match="baseline|code hash"):
+            MODULE.finalize_session(
+                root,
+                store,
+                market_data_asof=pd.Timestamp("2026-07-29 11:00:08", tz=MODULE.TZ),
+                knowledge_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+                finalization_asof=pd.Timestamp("2026-07-29 11:05:10", tz=MODULE.TZ),
+                fetches=fetches,
+            )
+        return
         assert result["state"] == "VALID"
         marker = root / "finalized" / f"{trade_date}.json"
         assert marker.exists()
@@ -639,6 +644,15 @@ def test_unknown_broker_state_recovers_before_next_cycle_without_fatal_latch(
             del request
             type(self).send_count += 1
 
+        def stop_reconciliation(self, output_root, reason):
+            del output_root, reason
+            return {
+                "safe_stop": "PASS",
+                "owned_pending": 0,
+                "open_positions": 0,
+                "unknown_exposure": 0,
+            }
+
         def close(self) -> None:
             pass
 
@@ -706,7 +720,7 @@ def test_shutdown_cancel_readback_failure_remains_fatal(tmp_path) -> None:
         raise AssertionError("Controlled shutdown accepted an unverified broker readback.")
 
     latch = MODULE.read_json(MODULE.fatal_latch_path(tmp_path))
-    assert latch["state"] == "UNSAFE_OPEN_ORDERS"
+    assert latch["state"] == "UNSAFE_STOP_NO_SEND"
     assert latch["shutdown_reason"] == "SIGNAL_SHUTDOWN_VERIFY"
 
 

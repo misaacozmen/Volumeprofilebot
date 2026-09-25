@@ -1,0 +1,28 @@
+{
+  "candidate_artifact_sha256": "8c9992ad2b625fead934c8f95d10ed84ddc4f2ee9b3ed1bccfe5d567ad66840d",
+  "candidate_file_sha256": "8264969be2df21d62df2067a6ce68d5a8abb70ff13eb19373f6b07b7b97f9608",
+  "candidate_path": "research_candidates/super1/super1_unsigned_candidate_v4.json",
+  "config_sha256": "dc9163b5a4a4a8b7739708226ebc3608ba702b64ad8e2cda0be34f28ddcec9c6",
+  "deployed_pipeline_historical_parity_proven": false,
+  "deployed_pipeline_result_sha256": null,
+  "deployment": {
+    "campaign_days": 30,
+    "daily_manual_start_required": true,
+    "demo_order_execution_enabled": true,
+    "existing_campaign_must_remain_untouched": true,
+    "isolation_required": true,
+    "real_money_execution_allowed": false,
+    "real_money_live_enabled": false,
+    "target": "LOCAL_WINDOWS_PC",
+    "unattended_execution_allowed": false
+  },
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "fresh_forward_required": true,
+  "name": "Super1 V4",
+  "overlay_candidate_research_dataset_sha256": "22ae16f0fdc4909419a28b5ce1e7303eea3f5f62034c00e3d7b49bbac2374ef7",
+  "overlay_candidate_research_result_sha256": null,
+  "proven": false,
+  "signal_contract_path": "research_candidates/super1/super1_signal_contract_v4.json",
+  "signal_contract_sha256": "d14f017a2ddbeaec3adf0d5d1b490e516ad21bedd552da4f7d1a1c233d22f718",
+  "status": "UNSIGNED_VALIDATION_ONLY"
+}

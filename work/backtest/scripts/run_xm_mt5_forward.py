@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
+from uuid import uuid4
 from contextlib import contextmanager
 from typing import Any
 
@@ -18,6 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import run_capital_forward as core
+from backtest.numeric_contracts import validate_trade_geometry
+from backtest.live.settings import SettingsError, environment_snapshot, load_settings
+from backtest.live.execution import Mt5WritePort
+from backtest.live.retry import AllowedTransportError, CircuitBreaker, CircuitOpenError, NonRetryableReadError, RetryError, RetryPolicy
+from super1_runtime_guard import order_mutex
 
 
 RUNTIME_CONFIG = ROOT / "live_forward" / "xm_mt5_demo_config.json"
@@ -56,6 +62,27 @@ CANCEL_CONTROL_STATES = {
     "CANCEL_REJECTED",
 }
 
+TERMINAL_INTENT_STATES = frozenset(
+    {
+        "CHECK_REJECTED",
+        "NOT_EXECUTABLE",
+        "WINDOW_EXPIRED",
+        "WINDOW_NOT_OPEN",
+        "PREFIX_REQUIRED",
+        "SEND_REJECTED",
+        "CLOSED_SL",
+        "CLOSED_TP",
+        "FILLED",
+        "REJECTED",
+        "CANCELLED",
+        "EXPIRED",
+        "UNKNOWN_NO_SEND",
+        "BROKER_REQUEST_MISMATCH_NO_SEND",
+        "FILTER_BLOCKED",
+        "FILTER_EXPIRED_NO_SEND",
+    }
+)
+
 
 ORDER_SCHEMA: dict[str, tuple[str, ...]] = {
     "order_intents": (
@@ -67,7 +94,7 @@ ORDER_SCHEMA: dict[str, tuple[str, ...]] = {
         "created_at",
         "updated_at",
     ),
-    "order_event_outbox": ("sequence", "order_id", "event_json", "delivered_at"),
+    "order_event_outbox": ("sequence", "event_id", "order_id", "event_json", "delivered_at"),
     "broker_execution_states": (
         "order_id",
         "account_login",
@@ -99,31 +126,86 @@ ORDER_SCHEMA: dict[str, tuple[str, ...]] = {
         "created_at",
         "updated_at",
     ),
+    "staged_proposals": (
+        "proposal_id", "proposal_hash", "proposal_json", "campaign_id", "account_key",
+        "release_id", "candidate_hash", "approval_type", "state", "created_at_utc", "updated_at_utc",
+    ),
+    "approvals": (
+        "approval_id", "state", "lease_id", "lease_nonce", "operator_sid", "campaign_id",
+        "account_key", "proposal_id", "proposal_hash", "approval_type", "issued_at_utc",
+        "expires_at_utc", "release_id", "candidate_hash", "reason", "wire_request_hash",
+    ),
+    "audit_chain_events": (
+        "schema_version", "sequence", "event_id", "occurred_at_utc", "campaign_id", "account_key",
+        "entity_type", "entity_id", "event_type", "payload_canonical_json", "previous_hash", "event_hash",
+    ),
+    "audit_anchor_outbox": (
+        "event_id", "sequence", "event_hash", "state", "queued_at_utc",
+        "attempted_at_utc", "acked_at_utc", "last_error",
+    ),
+    "health_checkpoints": (
+        "checkpoint_id", "trade_date", "state", "report_json", "created_at_utc",
+    ),
+    "position_risk_records": (
+        "position_id", "order_id", "candidate_hash", "starting_risk_cash", "created_at_utc",
+    ),
 }
 
 
 class XmMt5ReadOnlyClient:
     """Read-only market-data adapter. This class intentionally has no order method."""
 
-    def __init__(self, config: dict[str, Any], secrets: dict[str, str]):
-        try:
-            import MetaTrader5 as mt5
-        except ImportError as exc:
-            raise XmMt5Error("MetaTrader5 Python package is not installed.") from exc
+    def __init__(self, config: dict[str, Any], secrets: dict[str, str], *, mt5_module: Any | None = None):
+        if mt5_module is None:
+            try:
+                import MetaTrader5 as mt5
+            except ImportError as exc:
+                raise XmMt5Error("MetaTrader5 Python package is not installed.") from exc
+        else:
+            mt5 = mt5_module
         self.mt5 = mt5
         self.login_id = int(config["account_login"])
-        self.server = secrets["XM_MT5_SERVER"]
-        self.password = (
-            secrets.get("XM_MT5_READ_ONLY_PASSWORD", "").strip()
-            or os.environ.get("XM_MT5_READ_ONLY_PASSWORD", "").strip()
-        )
-        self.terminal_path = (
-            os.environ.get("XM_MT5_TERMINAL_PATH", "").strip()
-            or str(config.get("terminal_path") or "").strip()
-        )
+        try:
+            settings = load_settings(config, environment={**environment_snapshot(), **secrets}, enforce_required=False)
+        except SettingsError as exc:
+            raise XmMt5Error(str(exc)) from exc
+        self.server = settings.server
+        self.password = settings.read_only_password or settings.password
+        self.terminal_path = settings.terminal_path
         self.portable = bool(config.get("portable", False))
         self.closed_bar_delay_seconds = int(config.get("closed_bar_delay_seconds", 0))
         self.connected = False
+        self._read_breaker = CircuitBreaker()
+        self._read_retry_policy = RetryPolicy(breaker=self._read_breaker)
+        self._bound_output_root: Path | None = None
+
+    def bind_output_root(self, output_root: Path) -> None:
+        self._bound_output_root = Path(output_root).resolve()
+
+    def _retry_mt5_read(self, operation: str, *args: object, **kwargs: object) -> Any:
+        def read_once() -> Any:
+            try:
+                value = getattr(self.mt5, operation)(*args, **kwargs)
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                raise AllowedTransportError(f"MT5 {operation} transport failure") from exc
+            except (PermissionError, ValueError, TypeError) as exc:
+                raise NonRetryableReadError(f"MT5 {operation} contract/auth failure") from exc
+            if value is None:
+                raise AllowedTransportError(f"MT5 {operation} returned no state")
+            return value
+
+        policy = getattr(self, "_read_retry_policy", None)
+        if not isinstance(policy, RetryPolicy):
+            policy = RetryPolicy(breaker=getattr(self, "_read_breaker", None))
+            self._read_retry_policy = policy
+        try:
+            return policy.read(read_once)
+        except (CircuitOpenError, RetryError) as exc:
+            bound_output_root = getattr(self, "_bound_output_root", None)
+            if bound_output_root is not None:
+                core.write_no_send_sentinel(bound_output_root, "BROKER_READ_CIRCUIT_OPEN", operation=operation)
+                core.write_fatal_latch(bound_output_root, "BROKER_READ_CIRCUIT_OPEN", str(exc), operation=operation)
+            raise BrokerStateUnknownError(f"MT5 {operation} read is unknown; no-send/HALT is active") from exc
 
     def _safe_last_error(self) -> str:
         detail = str(self.mt5.last_error())
@@ -142,41 +224,37 @@ class XmMt5ReadOnlyClient:
         )
 
     def login(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "login": self.login_id,
-            "server": self.server,
-            "timeout": 60_000,
-        }
-        if self.password:
-            kwargs["password"] = self.password
-        if getattr(self, "portable", False):
-            kwargs["portable"] = True
-        ok = (
-            self.mt5.initialize(self.terminal_path, **kwargs)
-            if self.terminal_path
-            else self.mt5.initialize(**kwargs)
-        )
-        if not ok:
-            primary_error = self._safe_last_error()
-            self.mt5.shutdown()
-            if not self._initialize_terminal_only():
-                fallback_error = self._safe_last_error()
-                self.mt5.shutdown()
-                raise XmMt5Error(
-                    "MT5 initialize failed; "
-                    f"primary={primary_error}; terminal_only={fallback_error}"
-                )
-            login_kwargs: dict[str, Any] = {
-                "server": self.server,
-                "timeout": 60_000,
-            }
+        def connect_once() -> Any:
+            kwargs: dict[str, Any] = {"login": self.login_id, "server": self.server, "timeout": 60_000}
             if self.password:
-                login_kwargs["password"] = self.password
-            if not self.mt5.login(self.login_id, **login_kwargs):
-                login_error = self._safe_last_error()
+                kwargs["password"] = self.password
+            if getattr(self, "portable", False):
+                kwargs["portable"] = True
+            try:
+                ok = self.mt5.initialize(self.terminal_path, **kwargs) if self.terminal_path else self.mt5.initialize(**kwargs)
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                raise AllowedTransportError("MT5 initialize transport failure") from exc
+            if not ok:
                 self.mt5.shutdown()
-                raise XmMt5Error(f"MT5 explicit login failed: {login_error}")
-        account = self.mt5.account_info()
+                if not self._initialize_terminal_only():
+                    self.mt5.shutdown()
+                    raise AllowedTransportError("MT5 initialize did not establish a session")
+                login_kwargs: dict[str, Any] = {"server": self.server, "timeout": 60_000}
+                if self.password:
+                    login_kwargs["password"] = self.password
+                if not self.mt5.login(self.login_id, **login_kwargs):
+                    self.mt5.shutdown()
+                    raise AllowedTransportError("MT5 explicit login did not establish a session")
+            return self._retry_mt5_read("account_info")
+
+        try:
+            policy = getattr(self, "_read_retry_policy", None)
+            if not isinstance(policy, RetryPolicy):
+                policy = RetryPolicy(breaker=getattr(self, "_read_breaker", None))
+                self._read_retry_policy = policy
+            account = policy.read(connect_once)
+        except RetryError as exc:
+            raise XmMt5Error("MT5 connection retry deadline exhausted; broker detail=***") from exc
         if account is None or int(account.login) != self.login_id:
             self.mt5.shutdown()
             raise XmMt5Error("MT5 connected to an unexpected account.")
@@ -201,7 +279,8 @@ class XmMt5ReadOnlyClient:
         end: pd.Timestamp,
     ) -> tuple[pd.Timestamp, list[dict[str, Any]]]:
         self._ensure_connected()
-        rates = self.mt5.copy_rates_range(
+        rates = self._retry_mt5_read(
+            "copy_rates_range",
             symbol,
             self.mt5.TIMEFRAME_M1,
             start.tz_convert("UTC").to_pydatetime(),
@@ -258,7 +337,8 @@ class XmMt5ReadOnlyClient:
                         fill_price = float(closed_rates[next_time]["open"])
                 if fill_price is None:
                     continue
-                ticks = self.mt5.copy_ticks_range(
+                ticks = self._retry_mt5_read(
+                    "copy_ticks_range",
                     symbol,
                     group[0].to_pydatetime(),
                     (
@@ -302,9 +382,7 @@ class XmMt5ReadOnlyClient:
         self._ensure_connected()
         if not self.mt5.symbol_select(symbol, True):
             raise XmMt5Error(f"{symbol}: symbol_select failed: {self.mt5.last_error()}")
-        info = self.mt5.symbol_info(symbol)
-        if info is None:
-            raise XmMt5Error(f"{symbol}: symbol_info failed: {self.mt5.last_error()}")
+        info = self._retry_mt5_read("symbol_info", symbol)
         upper = f"{info.name} {info.description}".upper()
         if "US100" in symbol.upper() and not any(name in upper for name in ("NASDAQ", "US100")):
             raise core.CriticalLiveError(f"{symbol}: not an NQ/NASDAQ selector.")
@@ -327,8 +405,8 @@ class XmMt5ReadOnlyClient:
 
 
 class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
-    def __init__(self, config: dict[str, Any], secrets: dict[str, str]):
-        super().__init__(config, secrets)
+    def __init__(self, config: dict[str, Any], secrets: dict[str, str], *, mt5_module: Any | None = None):
+        super().__init__(config, secrets, mt5_module=mt5_module)
         self.config = config
         self.magic = int(config["magic_number"])
         self.demo_verified = False
@@ -336,8 +414,8 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         self.terminal = None
 
     def _refresh_demo_identity(self) -> None:
-        account = self.mt5.account_info()
-        terminal = self.mt5.terminal_info()
+        account = self._retry_mt5_read("account_info")
+        terminal = self._retry_mt5_read("terminal_info")
         if account is None or terminal is None:
             self.demo_verified = False
             self.close()
@@ -503,7 +581,22 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     for table, columns in ORDER_SCHEMA.items()
                 )
                 if journal_mode == "wal" and complete:
-                    return {"state": "READY", "journal_mode": journal_mode, "wrote": False}
+                    legacy_rows = connection.execute(
+                        "SELECT event_id, event_json FROM order_event_outbox"
+                    ).fetchall()
+                    needs_event_migration = False
+                    for event_id, event_json in legacy_rows:
+                        try:
+                            payload = json.loads(str(event_json))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        if isinstance(payload, dict) and (
+                            not event_id or str(payload.get("event_id") or "") != str(event_id)
+                        ):
+                            needs_event_migration = True
+                            break
+                    if not needs_event_migration:
+                        return {"state": "READY", "journal_mode": journal_mode, "wrote": False}
 
                 enabled = connection.execute("PRAGMA journal_mode=WAL").fetchone()
                 if enabled is None or str(enabled[0]).lower() != "wal":
@@ -526,6 +619,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     """
                     CREATE TABLE IF NOT EXISTS order_event_outbox (
                         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_id TEXT,
                         order_id TEXT NOT NULL,
                         event_json TEXT NOT NULL,
                         delivered_at TEXT
@@ -572,6 +666,99 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     )
                     """
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS staged_proposals (
+                        proposal_id TEXT PRIMARY KEY,
+                        proposal_hash TEXT NOT NULL,
+                        proposal_json TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        account_key TEXT NOT NULL,
+                        release_id TEXT NOT NULL,
+                        candidate_hash TEXT NOT NULL,
+                        approval_type TEXT NOT NULL DEFAULT 'limit',
+                        state TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        updated_at_utc TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS approvals (
+                        approval_id TEXT PRIMARY KEY,
+                        state TEXT NOT NULL,
+                        lease_id TEXT NOT NULL,
+                        lease_nonce TEXT NOT NULL,
+                        operator_sid TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        account_key TEXT NOT NULL,
+                        proposal_id TEXT NOT NULL UNIQUE,
+                        proposal_hash TEXT NOT NULL,
+                        approval_type TEXT NOT NULL,
+                        issued_at_utc TEXT NOT NULL,
+                        expires_at_utc TEXT NOT NULL,
+                        release_id TEXT NOT NULL,
+                        candidate_hash TEXT NOT NULL,
+                        reason TEXT NOT NULL DEFAULT '',
+                        wire_request_hash TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_chain_events (
+                        schema_version INTEGER NOT NULL,
+                        sequence INTEGER PRIMARY KEY,
+                        event_id TEXT NOT NULL UNIQUE,
+                        occurred_at_utc TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        account_key TEXT NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        payload_canonical_json TEXT NOT NULL,
+                        previous_hash TEXT NOT NULL,
+                        event_hash TEXT NOT NULL UNIQUE
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_anchor_outbox (
+                        event_id TEXT PRIMARY KEY,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        event_hash TEXT NOT NULL UNIQUE,
+                        state TEXT NOT NULL,
+                        queued_at_utc TEXT NOT NULL,
+                        attempted_at_utc TEXT,
+                        acked_at_utc TEXT,
+                        last_error TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS health_checkpoints (
+                        checkpoint_id TEXT PRIMARY KEY,
+                        trade_date TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        report_json TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS position_risk_records (
+                        position_id TEXT PRIMARY KEY,
+                        order_id TEXT NOT NULL,
+                        candidate_hash TEXT NOT NULL,
+                        starting_risk_cash REAL NOT NULL,
+                        created_at_utc TEXT NOT NULL
+                    )
+                    """
+                )
                 # Preserve legacy rows while completing a partially-created table.
                 definitions = {
                     "order_intents": {
@@ -585,6 +772,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     },
                     "order_event_outbox": {
                         "sequence": "INTEGER",
+                        "event_id": "TEXT",
                         "order_id": "TEXT",
                         "event_json": "TEXT",
                         "delivered_at": "TEXT",
@@ -620,6 +808,75 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                         "created_at": "TEXT",
                         "updated_at": "TEXT",
                     },
+                    "staged_proposals": {
+                        "proposal_id": "TEXT",
+                        "proposal_hash": "TEXT",
+                        "proposal_json": "TEXT",
+                        "campaign_id": "TEXT",
+                        "account_key": "TEXT",
+                        "release_id": "TEXT",
+                        "candidate_hash": "TEXT",
+                        "approval_type": "TEXT",
+                        "state": "TEXT",
+                        "created_at_utc": "TEXT",
+                        "updated_at_utc": "TEXT",
+                    },
+                    "approvals": {
+                        "approval_id": "TEXT",
+                        "state": "TEXT",
+                        "lease_id": "TEXT",
+                        "lease_nonce": "TEXT",
+                        "operator_sid": "TEXT",
+                        "campaign_id": "TEXT",
+                        "account_key": "TEXT",
+                        "proposal_id": "TEXT",
+                        "proposal_hash": "TEXT",
+                        "approval_type": "TEXT",
+                        "issued_at_utc": "TEXT",
+                        "expires_at_utc": "TEXT",
+                        "release_id": "TEXT",
+                        "candidate_hash": "TEXT",
+                        "reason": "TEXT",
+                        "wire_request_hash": "TEXT",
+                    },
+                    "audit_chain_events": {
+                        "schema_version": "INTEGER",
+                        "sequence": "INTEGER",
+                        "event_id": "TEXT",
+                        "occurred_at_utc": "TEXT",
+                        "campaign_id": "TEXT",
+                        "account_key": "TEXT",
+                        "entity_type": "TEXT",
+                        "entity_id": "TEXT",
+                        "event_type": "TEXT",
+                        "payload_canonical_json": "TEXT",
+                        "previous_hash": "TEXT",
+                        "event_hash": "TEXT",
+                    },
+                    "audit_anchor_outbox": {
+                        "event_id": "TEXT",
+                        "sequence": "INTEGER",
+                        "event_hash": "TEXT",
+                        "state": "TEXT",
+                        "queued_at_utc": "TEXT",
+                        "attempted_at_utc": "TEXT",
+                        "acked_at_utc": "TEXT",
+                        "last_error": "TEXT",
+                    },
+                    "position_risk_records": {
+                        "position_id": "TEXT",
+                        "order_id": "TEXT",
+                        "candidate_hash": "TEXT",
+                        "starting_risk_cash": "REAL",
+                        "created_at_utc": "TEXT",
+                    },
+                    "health_checkpoints": {
+                        "checkpoint_id": "TEXT",
+                        "trade_date": "TEXT",
+                        "state": "TEXT",
+                        "report_json": "TEXT",
+                        "created_at_utc": "TEXT",
+                    },
                 }
                 snapshot = self._order_schema_snapshot(connection)
                 for table, table_definitions in definitions.items():
@@ -628,6 +885,44 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                             connection.execute(
                                 f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'
                             )
+                # Legacy rows did not carry a stable id.  Sequence is part of
+                # the migration input so identical payloads cannot collide.
+                legacy_rows = connection.execute(
+                    "SELECT sequence, event_id, event_json FROM order_event_outbox"
+                ).fetchall()
+                for sequence, event_id, event_json in legacy_rows:
+                    if event_id and str(event_id).strip():
+                        try:
+                            payload = json.loads(str(event_json))
+                            if isinstance(payload, dict) and str(payload.get("event_id") or "") != str(event_id):
+                                if "event_id" not in payload or not payload.get("event_id"):
+                                    payload["event_id"] = str(event_id)
+                                    connection.execute(
+                                        "UPDATE order_event_outbox SET event_json = ? WHERE sequence = ?",
+                                        (core.canonical_json(payload), int(sequence)),
+                                    )
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            pass
+                        continue
+                    legacy_id = sha256(
+                        f"{int(sequence)}\0{str(event_json)}".encode("utf-8")
+                    ).hexdigest()
+                    migrated_json = str(event_json)
+                    try:
+                        payload = json.loads(str(event_json))
+                        if isinstance(payload, dict):
+                            payload["event_id"] = legacy_id
+                            migrated_json = core.canonical_json(payload)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                    connection.execute(
+                        "UPDATE order_event_outbox SET event_id = ?, event_json = ? WHERE sequence = ?",
+                        (legacy_id, migrated_json, int(sequence)),
+                    )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_order_event_outbox_event_id "
+                    "ON order_event_outbox(event_id)"
+                )
                 connection.commit()
 
                 verified_journal = connection.execute("PRAGMA journal_mode").fetchone()
@@ -649,12 +944,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
 
     def _mt5_collection(self, operation: str, *args: object, **kwargs: object) -> tuple[Any, ...]:
         self._ensure_demo()
-        result = getattr(self.mt5, operation)(*args, **kwargs)
-        if result is None:
-            raise BrokerStateUnknownError(
-                f"MT5 {operation} failed; broker state is unknown and order transmission is blocked: "
-                f"{self.mt5.last_error()}"
-            )
+        result = self._retry_mt5_read(operation, *args, **kwargs)
         return tuple(result)
 
     def _order_send_checked(
@@ -662,14 +952,20 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         request: dict[str, object],
         *,
         require_open_permission: bool = True,
-        permission_checked: bool = False,
     ) -> Any:
         if require_open_permission:
-            if not permission_checked:
-                self._require_order_permission()
+            self._require_order_permission()
         else:
             self._ensure_demo()
-        return self.mt5.order_send(request)
+        adapter = getattr(self, "_write_adapter", None)
+        if adapter is None:
+            raise core.CriticalLiveError("raw broker writes are disabled; a durable write adapter is required")
+        return adapter.send(request)
+
+    def _persist_unknown_send(self, output_root: Path, order_id: str, reason: str, **details: object) -> None:
+        """Latch an unresolved post-send broker state before any next candidate."""
+        core.write_no_send_sentinel(output_root, reason, order_id=order_id, **details)
+        core.write_fatal_latch(output_root, "BROKER_STATE_UNKNOWN", reason, order_id=order_id, **details)
 
     def _order_connection(self, output_root: Path) -> sqlite3.Connection:
         path = self._order_db(output_root)
@@ -690,25 +986,101 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return self._order_connection(output_root)
 
     def _drain_order_outbox(self, output_root: Path) -> None:
-        connection = self._ready_order_connection(output_root)
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT sequence, event_json FROM order_event_outbox "
-                "WHERE delivered_at IS NULL ORDER BY sequence"
-            ).fetchall()
-            for sequence, event_json in rows:
-                core.append_jsonl(self._order_log(output_root), json.loads(str(event_json)))
-                connection.execute(
-                    "UPDATE order_event_outbox SET delivered_at = ? WHERE sequence = ?",
-                    (core.utc_now().isoformat(), int(sequence)),
-                )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with order_mutex():
+            connection = self._ready_order_connection(output_root)
+            temporary: Path | None = None
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                rows = connection.execute(
+                    "SELECT sequence, event_id, event_json FROM order_event_outbox ORDER BY sequence"
+                ).fetchall()
+                log_path = self._order_log(output_root)
+                records: list[dict[str, Any]] = []
+                event_ids: list[str] = []
+                for sequence, event_id, event_json in rows:
+                    payload = json.loads(str(event_json))
+                    if not isinstance(payload, dict):
+                        raise core.CriticalLiveError(
+                            f"Order outbox payload is not a JSON object at sequence {sequence}."
+                        )
+                    if str(payload.get("event_id")) != str(event_id):
+                        raise core.CriticalLiveError(
+                            f"Order outbox event_id mismatch at sequence {sequence}."
+                        )
+                    records.append(payload)
+                    event_ids.append(str(event_id))
+                if len(event_ids) != len(set(event_ids)):
+                    raise core.CriticalLiveError("Order outbox contains duplicate event_id values.")
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = log_path.with_name(f"{log_path.name}.{uuid4().hex}.tmp")
+                with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                    for record in records:
+                        handle.write(core.canonical_json(record) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                self._replace_projection(temporary, log_path)
+                projected_ids = [
+                    str(json.loads(line)["event_id"])
+                    for line in log_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                if projected_ids != event_ids:
+                    raise core.CriticalLiveError("Order JSONL projection verification failed.")
+                if event_ids:
+                    placeholders = ",".join("?" for _ in event_ids)
+                    connection.execute(
+                        f"UPDATE order_event_outbox SET delivered_at = ? "
+                        f"WHERE sequence IN (SELECT sequence FROM order_event_outbox "
+                        f"WHERE event_id IN ({placeholders}))",
+                        (core.utc_now().isoformat(), *event_ids),
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                if temporary is not None and temporary.exists():
+                    temporary.unlink()
+                connection.close()
+
+    @staticmethod
+    def _replace_projection(temporary: Path, target: Path) -> None:
+        # os.replace is atomic on the supported local filesystems. The
+        # temporary file is fsynced before this point; the SQLite commit is
+        # deliberately held until the projection has been verified.
+        os.replace(temporary, target)
+
+    @staticmethod
+    def _insert_outbox(
+        connection: sqlite3.Connection,
+        order_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        """Insert one immutable event with a UUID generated exactly once."""
+        comparable = dict(payload)
+        comparable.pop("event_id", None)
+        comparable_json = core.canonical_json(comparable)
+        for existing_id, existing_json in connection.execute(
+            "SELECT event_id, event_json FROM order_event_outbox WHERE order_id = ?",
+            (order_id,),
+        ).fetchall():
+            try:
+                existing_payload = json.loads(str(existing_json))
+                if isinstance(existing_payload, dict):
+                    existing_payload.pop("event_id", None)
+                    if core.canonical_json(existing_payload) == comparable_json:
+                        return str(existing_id)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        event_id = str(uuid4())
+        stored_payload = {**comparable, "event_id": event_id}
+        canonical = core.canonical_json(stored_payload)
+        connection.execute(
+            "INSERT INTO order_event_outbox "
+            "(event_id, order_id, event_json) VALUES (?, ?, ?)",
+            (event_id, order_id, canonical),
+        )
+        return event_id
 
     def _intent_state(self, output_root: Path, order_id: str) -> dict[str, Any] | None:
         connection = self._ready_order_connection(output_root)
@@ -743,19 +1115,18 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         order_id: str,
         request: dict[str, object],
         event: dict[str, object],
-    ) -> None:
+    ) -> dict[str, object]:
         now = core.utc_now().isoformat()
+        canonical_request = core.canonical_json(request)
         connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status, request_json FROM order_intents WHERE order_id = ?",
+                "SELECT status, request_json, broker_ticket FROM order_intents WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
-            if row is None or str(row[0]) != "PRE_SEND_DEFERRED":
-                raise core.CriticalLiveError(
-                    f"{order_id}: PRE_SEND_DEFERRED intent could not be atomically resumed."
-                )
+            if row is None:
+                raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
             stored = None
             if row[1] is not None:
                 stored = json.loads(str(row[1]))
@@ -763,23 +1134,52 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 raise core.CriticalLiveError(
                     f"{order_id}: reevaluated request differs from the registered request."
                 )
-            connection.execute(
-                "UPDATE order_intents SET request_json = COALESCE(request_json, ?), updated_at = ? "
+            status = str(row[0])
+            if status != "PRE_SEND_DEFERRED":
+                connection.commit()
+                return {
+                    "resumed": False,
+                    "status": status,
+                    "broker_ticket": row[2],
+                }
+            updated = connection.execute(
+                "UPDATE order_intents SET status = 'INTENT', request_json = ?, updated_at = ? "
                 "WHERE order_id = ? AND status = 'PRE_SEND_DEFERRED'",
-                (core.canonical_json(request), now, order_id),
-            )
-            payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+                (canonical_request, now, order_id),
+            ).rowcount
+            if updated != 1:
+                current = connection.execute(
+                    "SELECT status, broker_ticket FROM order_intents WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                if current is None:
+                    raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
+                if str(current[0]) == "PRE_SEND_DEFERRED":
+                    raise core.CriticalLiveError(
+                        f"{order_id}: PRE_SEND_DEFERRED CAS update did not affect exactly one row."
+                    )
+                connection.commit()
+                return {
+                    "resumed": False,
+                    "status": str(current[0]),
+                    "broker_ticket": current[1],
+                }
+            if not self._outbox_event_exists(connection, order_id, "INTENT_REEVALUATED"):
+                payload = {"recorded_at": now, "magic": self.magic, **event}
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
+            result = {
+                "resumed": True,
+                "status": "INTENT",
+                "broker_ticket": None,
+            }
         except Exception:
             connection.rollback()
             raise
         finally:
             connection.close()
         self._drain_order_outbox(output_root)
+        return result
 
     @staticmethod
     def _outbox_event_exists(
@@ -795,6 +1195,51 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
         return False
+
+    def _reject_terminal_transition(
+        self,
+        output_root: Path,
+        connection: sqlite3.Connection,
+        order_id: str,
+        current_status: str,
+        target_status: str,
+        event: dict[str, object],
+        now: str,
+    ) -> None:
+        details = {
+            "order_id": order_id,
+            "from_state": current_status,
+            "to_state": target_status,
+        }
+        core.write_no_send_sentinel(
+            output_root,
+            "ILLEGAL_ORDER_TRANSITION",
+            reason_code="ILLEGAL_ORDER_TRANSITION",
+            **details,
+        )
+        core.write_fatal_latch(
+            output_root,
+            "ILLEGAL_ORDER_TRANSITION",
+            f"{order_id}: terminal state {current_status} cannot transition to {target_status}",
+            reason="ILLEGAL_ORDER_TRANSITION",
+            **details,
+        )
+        payload = {
+            "recorded_at": now,
+            "magic": self.magic,
+            "event": "ILLEGAL_ORDER_TRANSITION",
+            **details,
+            "reason": "ILLEGAL_ORDER_TRANSITION",
+            "requested_event": event,
+        }
+        self._insert_outbox(connection, order_id, payload)
+        audit = getattr(self, "_insert_canonical_audit", None)
+        if callable(audit):
+            audit(connection, order_id, "ILLEGAL_ORDER_TRANSITION", payload)
+        connection.commit()
+        raise core.CriticalLiveError(
+            f"{order_id}: illegal terminal order transition {current_status} -> {target_status}"
+        )
 
     def _record_intent_event(
         self,
@@ -829,10 +1274,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             event_name = str(event.get("event") or "")
             if not self._outbox_event_exists(connection, order_id, event_name):
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
                 recorded = True
             else:
                 recorded = False
@@ -922,10 +1364,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 }
             if not self._outbox_event_exists(connection, order_id, "SEND_ARMED"):
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
             return {"armed": True, "status": "SEND_ARMED", "order_id": order_id}
         except Exception:
@@ -1006,6 +1445,62 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             connection.commit()
         finally:
             connection.close()
+
+    def _record_health_checkpoint(self, output_root: Path, report: Mapping[str, Any]) -> None:
+        """Persist health as canonical order-DB state; JSON is only a projection."""
+        connection = self._ready_order_connection(output_root)
+        audit_required = callable(getattr(self, "_insert_canonical_audit", None))
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS health_checkpoints (
+                    checkpoint_id TEXT PRIMARY KEY,
+                    trade_date TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                )
+                """
+            )
+            payload = core.canonical_json(report)
+            checkpoint_id = sha256(payload.encode("utf-8")).hexdigest()
+            connection.execute(
+                "INSERT OR REPLACE INTO health_checkpoints(checkpoint_id,trade_date,state,report_json,created_at_utc) VALUES(?,?,?,?,?)",
+                (checkpoint_id, str(report.get("date") or ""), str(report.get("state") or ""), payload, core.utc_now().isoformat()),
+            )
+            audit = getattr(self, "_insert_canonical_audit", None)
+            if callable(audit):
+                audit_payload = {
+                    "event": "HEALTH_CHECKPOINT",
+                    "checkpoint_id": checkpoint_id,
+                    "report_hash": checkpoint_id,
+                    "trade_date": str(report.get("date") or ""),
+                    "state": str(report.get("state") or ""),
+                    "campaign_id": str(getattr(self, "config", {}).get("campaign_id") or ""),
+                    "account_key": str(getattr(self, "config", {}).get("account_login") or ""),
+                }
+                audit(connection, f"HEALTH:{checkpoint_id}", "HEALTH_CHECKPOINT", audit_payload)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        if audit_required:
+            try:
+                self._deliver_audit_anchors(output_root)
+            except Exception as exc:
+                core.write_no_send_sentinel(
+                    output_root,
+                    "AUDIT_ANCHOR_UNACKED",
+                    error=str(exc),
+                )
+                core.write_fatal_latch(
+                    output_root,
+                    "AUDIT_ANCHOR_UNACKED",
+                    str(exc),
+                )
+                raise
         self._append_order_event(
             output_root,
             {
@@ -1038,10 +1533,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             ).rowcount
             if inserted:
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             row = connection.execute(
                 "SELECT status, broker_ticket FROM order_intents WHERE order_id = ?",
                 (order_id,),
@@ -1072,6 +1564,20 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
+            current_row = connection.execute(
+                "SELECT status FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if current_row is None:
+                raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
+            current_status = str(current_row[0])
+            if current_status == status:
+                connection.commit()
+                return
+            if current_status in TERMINAL_INTENT_STATES:
+                self._reject_terminal_transition(
+                    output_root, connection, order_id, current_status, status, event, now
+                )
             updated = connection.execute(
                 "UPDATE order_intents SET status = ?, broker_ticket = COALESCE(?, broker_ticket), "
                 "updated_at = ? WHERE order_id = ?",
@@ -1080,10 +1586,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             if updated != 1:
                 raise core.CriticalLiveError(f"{order_id}: idempotency intent is missing.")
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1106,6 +1609,24 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         connection = self._ready_order_connection(output_root)
         try:
             connection.execute("BEGIN IMMEDIATE")
+            current_row = connection.execute(
+                "SELECT status FROM order_intents WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if (
+                current_row is not None
+                and str(current_row[0]) != status
+                and str(current_row[0]) in TERMINAL_INTENT_STATES
+            ):
+                self._reject_terminal_transition(
+                    output_root,
+                    connection,
+                    order_id,
+                    str(current_row[0]),
+                    status,
+                    event,
+                    now,
+                )
             connection.execute(
                 "INSERT OR IGNORE INTO order_intents "
                 "(order_id, status, comment, request_json, broker_ticket, created_at, updated_at) "
@@ -1132,10 +1653,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 ),
             )
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1145,20 +1663,38 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         self._drain_order_outbox(output_root)
 
     def _append_order_event(self, output_root: Path, event: dict[str, object]) -> None:
-        core.append_jsonl(
-            self._order_log(output_root),
-            {"recorded_at": core.utc_now().isoformat(), "magic": self.magic, **event},
+        payload = {"recorded_at": core.utc_now().isoformat(), "magic": self.magic, **event}
+        order_key = str(
+            payload.get("order_id")
+            or f"EVENT:{payload.get('event', '')}:{payload.get('broker_ticket', payload.get('ticket', ''))}:{payload.get('known_time', payload['recorded_at'])}"
         )
+        connection = self._ready_order_connection(output_root)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._insert_outbox(connection, order_key, payload)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._drain_order_outbox(output_root)
 
     def _events(self, output_root: Path) -> list[dict[str, Any]]:
-        path = self._order_log(output_root)
-        if not path.exists():
-            return []
-        return [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        connection = self._ready_order_connection(output_root)
+        try:
+            rows = connection.execute(
+                "SELECT event_json FROM order_event_outbox ORDER BY sequence"
+            ).fetchall()
+            events = []
+            for (event_json,) in rows:
+                payload = json.loads(str(event_json))
+                if not isinstance(payload, dict):
+                    raise core.CriticalLiveError("Order outbox payload is not a JSON object.")
+                events.append(payload)
+            return events
+        finally:
+            connection.close()
 
     @staticmethod
     def _events_for_trade_date(events: list[dict[str, Any]], trade_date: str) -> list[dict[str, Any]]:
@@ -1373,7 +1909,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             ]
             return "BROKER_REQUEST_MISMATCH_NO_SEND", details
 
-        info = self.mt5.symbol_info(str(request.get("symbol") or ""))
+        info = self._retry_mt5_read("symbol_info", str(request.get("symbol") or ""))
         volume_step = float(getattr(info, "volume_step", 0.0) or 0.0) if info is not None else 0.0
         volume_tolerance = max(volume_step * 1e-6, 1e-8)
         if current_orders:
@@ -1719,7 +2255,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                         else None
                     ),
                 )
-            if str(status) in {"SEND_UNKNOWN", "SEND_PARTIAL"} and state in {
+            if str(status) in {"SEND_ARMED", "SEND_UNKNOWN", "SEND_PARTIAL"} and state in {
                 "PENDING_CONFIRMED",
                 "PARTIAL_FILL",
                 "OPEN_PROTECTED",
@@ -1914,10 +2450,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     ),
                 )
             payload = {"recorded_at": now, "magic": self.magic, **event}
-            connection.execute(
-                "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                (bound_order_id, core.canonical_json(payload)),
-            )
+            self._insert_outbox(connection, bound_order_id, payload)
             connection.commit()
             return {
                 "order_id": bound_order_id,
@@ -2296,9 +2829,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return str(row[0]), json.loads(str(row[1]))
 
     def _minimum_volume(self, symbol: str) -> float:
-        info = self.mt5.symbol_info(symbol)
-        if info is None:
-            raise core.CriticalLiveError(f"{symbol}: symbol_info unavailable for order sizing.")
+        info = self._retry_mt5_read("symbol_info", symbol)
         step = float(info.volume_step)
         minimum = float(info.volume_min)
         steps = math.ceil((minimum - 1e-12) / step)
@@ -2308,7 +2839,14 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
     def _derived_entry(decision: dict[str, Any], reward_r: float) -> float:
         stop = float(decision["stop_price"])
         target = float(decision["target_price"])
-        return (target + reward_r * stop) / (1.0 + reward_r)
+        if not math.isfinite(reward_r) or reward_r <= 0:
+            raise CandidateNotExecutableError("INVALID_REWARD_R", "reward_r must be finite and positive")
+        entry = (target + reward_r * stop) / (1.0 + reward_r)
+        try:
+            validate_trade_geometry(str(decision.get("direction") or ""), entry, stop, target)
+        except ValueError as exc:
+            raise CandidateNotExecutableError("INVALID_TRADE_GEOMETRY", str(exc)) from exc
+        return entry
 
     def _trade_window_expiration(self, symbol: str) -> object:
         leg_keys = [
@@ -2341,8 +2879,8 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         self._require_order_permission()
         if not self.mt5.symbol_select(symbol, True):
             raise core.CriticalLiveError(f"{symbol}: symbol_select failed before order.")
-        info = self.mt5.symbol_info(symbol)
-        tick = self.mt5.symbol_info_tick(symbol)
+        info = self._retry_mt5_read("symbol_info", symbol)
+        tick = self._retry_mt5_read("symbol_info_tick", symbol)
         if info is None or tick is None:
             raise core.CriticalLiveError(f"{symbol}: live symbol/tick unavailable before order.")
         digits = int(info.digits)
@@ -2426,6 +2964,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         return (None,)
 
     def preflight_order_transport(self, output_root: Path, now: pd.Timestamp) -> dict[str, object]:
+        self.bind_output_root(output_root)
         local = now.tz_convert(core.TZ)
         if local.weekday() >= 5:
             return {"state": "NON_TRADING_DAY", "reason": "WEEKEND"}
@@ -2441,10 +2980,8 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             symbol = str(self.config["legs"][leg_key]["epic"])
             if not self.mt5.symbol_select(symbol, True):
                 raise core.CriticalLiveError(f"{symbol}: symbol_select failed for order preflight.")
-            info = self.mt5.symbol_info(symbol)
-            tick = self.mt5.symbol_info_tick(symbol)
-            if info is None or tick is None:
-                raise core.CriticalLiveError(f"{symbol}: live symbol/tick unavailable for order preflight.")
+            info = self._retry_mt5_read("symbol_info", symbol)
+            tick = self._retry_mt5_read("symbol_info_tick", symbol)
             point = float(getattr(info, "point", 0.0) or 10 ** (-int(info.digits)))
             tick_size = float(getattr(info, "trade_tick_size", 0.0) or point)
             stops = float(getattr(info, "trade_stops_level", 0) or 0) * point
@@ -2486,7 +3023,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                                 "direction": direction,
                                 "reason_code": exc.code,
                             }
-                        result = self.mt5.order_check(request)
+                        result = self._retry_mt5_read("order_check", request)
                         if result is None or int(result.retcode) != 0:
                             retcode = None if result is None else int(result.retcode)
                             if retcode is None or retcode in {
@@ -2671,6 +3208,18 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 event,
             )
 
+    def _final_send_gate(
+        self,
+        output_root: Path,
+        order_id: str,
+        request: dict[str, object],
+        decision: dict[str, Any],
+        symbol: str,
+        final_context: dict[str, Any],
+    ) -> None:
+        """Strategy extension point immediately before SEND_ARMED."""
+        del output_root, order_id, request, decision, symbol, final_context
+
     def _place_candidate(
         self,
         output_root: Path,
@@ -2682,9 +3231,11 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         prefix_raw: bytes | None = None,
         send_now: pd.Timestamp | None = None,
     ) -> dict[str, object]:
+        self.bind_output_root(output_root)
         order_id = str(decision["order_id"])
         leg_key = str(decision["leg_key"])
         comment = self._comment(leg_key, order_id)
+        core.assert_no_send_sentinel_clear(output_root)
 
         def guard_now() -> pd.Timestamp:
             # send_now is an explicit controlled-clock injection for tests;
@@ -2782,7 +3333,40 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                 )
                 return {"state": "IDEMPOTENT_ALREADY_SUBMITTED", "order_id": order_id}
             if events:
-                if broker:
+                if intent is None:
+                    # Re-read the CAS row without invoking the overridable
+                    # observation hook again; this second read is what makes
+                    # the parallel-send race deterministic.
+                    fresh_connection = self._ready_order_connection(output_root)
+                    try:
+                        fresh_row = fresh_connection.execute(
+                            "SELECT status, comment, broker_ticket FROM order_intents WHERE order_id = ?",
+                            (order_id,),
+                        ).fetchone()
+                    finally:
+                        fresh_connection.close()
+                    fresh_intent = None if fresh_row is None else {
+                        "status": str(fresh_row[0]),
+                        "comment": str(fresh_row[1]),
+                        "broker_ticket": fresh_row[2],
+                    }
+                    if fresh_intent is not None:
+                        intent = fresh_intent
+                        fresh_status = str(fresh_intent["status"])
+                        if fresh_status == "INTENT":
+                            retryable_intent = True
+                        elif fresh_status == "CHECK_RETRYABLE":
+                            retryable_check = True
+                        elif fresh_status == "PRE_SEND_DEFERRED":
+                            retryable_pre_send = True
+                        else:
+                            return {
+                                "state": f"IDEMPOTENT_{fresh_status}_NO_SEND",
+                                "order_id": order_id,
+                            }
+                if retryable_intent or retryable_check or retryable_pre_send:
+                    pass
+                elif broker:
                     ticket = int(getattr(broker[0][1], "ticket", 0) or 0)
                     self._adopt_order_intent(
                         output_root,
@@ -2798,9 +3382,10 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                         broker_ticket=ticket or None,
                     )
                     return {"state": "IDEMPOTENT_LINKED_EXISTING", "order_id": order_id}
-                raise core.CriticalLiveError(
-                    f"{order_id}: uncertain prior order intent; refusing duplicate."
-                )
+                else:
+                    raise core.CriticalLiveError(
+                        f"{order_id}: uncertain prior order intent; refusing duplicate."
+                    )
             if broker:
                 raise core.CriticalLiveError(
                     f"{order_id}: broker object exists without idempotency ledger."
@@ -2925,7 +3510,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "data_cutoff": initial_context.get("fresh_cutoff"),
         }
         if retryable_pre_send:
-            self._resume_pre_send_intent(
+            resumed = self._resume_pre_send_intent(
                 output_root,
                 order_id,
                 request,
@@ -2938,6 +3523,21 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     "fresh_cutoff": initial_context.get("fresh_cutoff"),
                 },
             )
+            if not resumed["resumed"]:
+                status = str(resumed.get("status") or "UNKNOWN")
+                if status == "SUBMITTED":
+                    state = "IDEMPOTENT_ALREADY_SUBMITTED"
+                elif status == "LINKED_EXISTING":
+                    state = "IDEMPOTENT_LINKED_EXISTING"
+                elif status == "SEND_ARMED":
+                    state = "IDEMPOTENT_SEND_ARMED_RECONCILE_REQUIRED"
+                else:
+                    state = f"IDEMPOTENT_{status}_NO_SEND"
+                return {
+                    "state": state,
+                    "order_id": order_id,
+                    "broker_ticket": resumed.get("broker_ticket"),
+                }
         if not retryable_check and not retryable_pre_send and not retryable_intent:
             claimed = self._claim_order_intent(
                 output_root,
@@ -2954,7 +3554,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     }
         check_error: str | None = None
         try:
-            check = self.mt5.order_check(request)
+            check = self._retry_mt5_read("order_check", request)
         except Exception as exc:
             check = None
             check_error = str(exc)
@@ -3138,6 +3738,14 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             request=request,
             allowed_statuses={"INTENT", "CHECK_RETRYABLE", "PRE_SEND_DEFERRED"},
         )
+        self._final_send_gate(
+            output_root,
+            order_id,
+            request,
+            decision,
+            symbol,
+            final_context,
+        )
         armed = self._arm_send(
             output_root,
             order_id,
@@ -3167,8 +3775,17 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
         # drain the outbox, write files, read the broker, or recalculate time here.
         send_context = final_context
         try:
-            result = self.mt5.order_send(request)
+            result = self._order_send_checked(request)
+        except core.CriticalLiveError:
+            raise
         except Exception as exc:
+            if getattr(self, "_strict_reconciliation", False):
+                self._persist_unknown_send(
+                    output_root,
+                    order_id,
+                    "BROKER_STATE_UNKNOWN_AFTER_SEND",
+                    error=str(exc),
+                )
             self._transition_order_intent(
                 output_root,
                 order_id,
@@ -3209,8 +3826,94 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             int(getattr(self.mt5, "TRADE_RETCODE_MARKET_CLOSED", 10018)),
             int(getattr(self.mt5, "TRADE_RETCODE_INVALID_FILL", 10030)),
         }
-        if retcode in accepted:
+        if retcode in accepted or (
+            retcode == partial_code and getattr(self, "_strict_reconciliation", False)
+        ):
             broker_ticket = int(getattr(result, "order", 0) or 0) or None
+            broker_deal = int(getattr(result, "deal", 0) or 0) or None
+            if getattr(self, "_strict_reconciliation", False):
+                if broker_ticket is None:
+                    reason = "Accepted MT5 result has no valid order ticket for exact readback."
+                    self._persist_unknown_send(output_root, order_id, reason, retcode=retcode, deal=broker_deal)
+                    self._transition_order_intent(
+                        output_root,
+                        order_id,
+                        "SEND_UNKNOWN",
+                        {
+                            "event": "SEND_UNKNOWN",
+                            "order_id": order_id,
+                            "comment": comment,
+                            "retcode": retcode,
+                            "deal": broker_deal,
+                            "reason": reason,
+                            "broker_execution_state": "UNKNOWN_NO_SEND",
+                        },
+                    )
+                    return {"state": "SEND_UNKNOWN_NO_SEND", "order_id": order_id, "retcode": retcode}
+                try:
+                    readback_state, readback = self._broker_execution_chain(
+                        order_id,
+                        comment,
+                        request,
+                        broker_ticket,
+                        pd.Timestamp(str(send_context["observed_at"])),
+                    )
+                except Exception as exc:
+                    readback_state, readback = "UNKNOWN_NO_SEND", {"reason": str(exc)}
+                if readback_state in {"UNKNOWN_NO_SEND", "BROKER_REQUEST_MISMATCH_NO_SEND"}:
+                    reason = str(readback.get("reason") or "Accepted MT5 result lacks exact broker readback.")
+                    self._persist_unknown_send(
+                        output_root,
+                        order_id,
+                        "BROKER_STATE_UNKNOWN_AFTER_SEND",
+                        retcode=retcode,
+                        broker_ticket=broker_ticket,
+                        readback=readback,
+                    )
+                    self._transition_order_intent(
+                        output_root,
+                        order_id,
+                        "SEND_UNKNOWN",
+                        {
+                            "event": "SEND_UNKNOWN",
+                            "order_id": order_id,
+                            "comment": comment,
+                            "retcode": retcode,
+                            "ticket": broker_ticket,
+                            "reason": reason,
+                            "broker_execution_state": "UNKNOWN_NO_SEND",
+                            "readback": readback,
+                        },
+                        broker_ticket=broker_ticket,
+                    )
+                    return {"state": "SEND_UNKNOWN_NO_SEND", "order_id": order_id, "ticket": broker_ticket, "retcode": retcode}
+                strict_status = (
+                    "SEND_PARTIAL"
+                    if retcode == partial_code and readback_state == "PARTIAL_FILL"
+                    else "SUBMITTED"
+                )
+                strict_event = "SEND_PARTIAL" if strict_status == "SEND_PARTIAL" else "SUBMITTED"
+                self._transition_order_intent(
+                    output_root,
+                    order_id,
+                    strict_status,
+                    {
+                        "event": strict_event,
+                        "order_id": order_id,
+                        "comment": comment,
+                        "ticket": broker_ticket,
+                        "deal": broker_deal,
+                        "retcode": retcode,
+                        "result_class": "PARTIAL" if retcode == partial_code else "CONFIRMED",
+                        "send_started_at": send_started_at.isoformat(),
+                        "response_at": core.utc_now().isoformat(),
+                        "broker_execution_state": readback_state,
+                        "readback": readback,
+                        "send_guard": send_context,
+                    },
+                    broker_ticket=broker_ticket,
+                )
+                return {"state": readback_state, "order_id": order_id, "ticket": broker_ticket}
             self._transition_order_intent(
                 output_root,
                 order_id,
@@ -3311,10 +4014,7 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
                     )
             if updated or inserted:
                 payload = {"recorded_at": now, "magic": self.magic, **event}
-                connection.execute(
-                    "INSERT INTO order_event_outbox (order_id, event_json) VALUES (?, ?)",
-                    (order_id, core.canonical_json(payload)),
-                )
+                self._insert_outbox(connection, order_id, payload)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -3900,88 +4600,26 @@ class XmMt5DemoOrderClient(XmMt5ReadOnlyClient):
             "prefix": prefix,
             "final": final,
         }
+        self._record_health_checkpoint(output_root, report)
         path = output_root / "daily_health" / f"{trade_date}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(report, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         temp.replace(path)
-        core.append_jsonl(output_root / "daily_health" / f"{trade_date}.jsonl", report)
+        daily_log = output_root / "daily_health" / f"{trade_date}.jsonl"
+        daily_temp = daily_log.with_name(f"{daily_log.name}.{uuid4().hex}.tmp")
+        previous = daily_log.read_text(encoding="utf-8") if daily_log.exists() else ""
+        daily_temp.write_text(previous + core.canonical_json(report) + "\n", encoding="utf-8")
+        with daily_temp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        self._replace_projection(daily_temp, daily_log)
         return {"state": "WRITTEN", "path": str(path)}
 
     def smoke_order(self, output_root: Path, lock: dict[str, Any]) -> dict[str, object]:
-        self._require_order_permission()
-        exposure_before = self._smoke_exposure()
-        if any(exposure_before.values()):
-            raise core.CriticalLiveError(
-                f"Smoke requires a flat dedicated demo account: {exposure_before}"
-            )
-        symbol = str(self.config["legs"]["nq"]["epic"])
-        if not self.mt5.symbol_select(symbol, True):
-            raise core.CriticalLiveError(f"{symbol}: symbol_select failed for smoke order.")
-        info = self.mt5.symbol_info(symbol)
-        tick = self.mt5.symbol_info_tick(symbol)
-        if info is None or tick is None:
-            raise core.CriticalLiveError(f"{symbol}: no live tick for smoke order.")
-        stamp = core.utc_now().strftime("%y%m%d%H%M%S")
-        comment = f"{self.config['order_comment_prefix']}:SMOKE:{stamp}"[:31]
-        entry = float(tick.bid) * 0.5
-        request = self._pending_request(
-            symbol,
-            "long",
-            entry,
-            entry * 0.9,
-            entry * 1.1,
-            comment,
+        self.bind_output_root(output_root)
+        raise core.CriticalLiveError(
+            "SMOKE is available only through the Super1 production order coordinator."
         )
-        check = self.mt5.order_check(request)
-        if check is None or int(check.retcode) != 0:
-            raise core.CriticalLiveError("MT5 smoke order_check failed.")
-        sent = self._order_send_checked(request)
-        accepted = {
-            int(getattr(self.mt5, "TRADE_RETCODE_PLACED", 10008)),
-            int(getattr(self.mt5, "TRADE_RETCODE_DONE", 10009)),
-        }
-        if sent is None or int(sent.retcode) not in accepted:
-            raise core.CriticalLiveError("MT5 smoke pending order was rejected.")
-        self._append_order_event(
-            output_root,
-            {
-                "event": "SMOKE_SUBMITTED",
-                "comment": comment,
-                "ticket": int(sent.order),
-                "symbol": symbol,
-                "volume": request["volume"],
-                "price": request["price"],
-                "runtime_hash": lock["runtime_config_hash"],
-            },
-        )
-        current = next(
-            (
-                item
-                for item in self._mt5_collection("orders_get", ticket=int(sent.order))
-                if int(item.ticket) == int(sent.order)
-            ),
-            None,
-        )
-        if current is None:
-            raise core.CriticalLiveError("Smoke pending order was not observable after submission.")
-        cancelled = self._remove_order(output_root, current, "SMOKE_TEST")
-        exposure_after = self._smoke_exposure()
-        if any(exposure_after.values()):
-            raise core.CriticalLiveError(
-                f"Smoke did not return the dedicated demo account to flat: {exposure_after}"
-            )
-        return {
-            "state": "PASS",
-            "demo_verified": True,
-            "symbol": symbol,
-            "minimum_volume": request["volume"],
-            "submitted_ticket": int(sent.order),
-            "cancelled": cancelled,
-            "open_orders_after": exposure_after["open_orders"],
-            "open_positions_after": exposure_after["open_positions"],
-            "unknown_exposure_after": exposure_after["unknown_exposure"],
-        }
 
 
 def configure_core() -> None:
@@ -4003,6 +4641,10 @@ def configure_core() -> None:
 
 def main() -> None:
     configure_core()
+    if core.runtime_config().get("execution") == "MT5_DEMO_ORDERS":
+        raise core.CriticalLiveError(
+            "base XM runner is read-only; broker writes require the canonical Super1 Mt5WritePort coordinator"
+        )
     core.main()
 
 

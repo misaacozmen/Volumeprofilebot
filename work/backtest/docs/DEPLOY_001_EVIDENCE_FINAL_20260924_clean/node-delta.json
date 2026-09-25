@@ -1,0 +1,11 @@
+{
+  "baseline_count": 799,
+  "current_count": 803,
+  "removed": [],
+  "added": [
+    "tests/test_clean_delivery_evidence.py::test_clean_evidence_binds_real_git_bytes_and_rejects_mutation",
+    "tests/test_clean_delivery_evidence.py::test_clean_evidence_rejects_config_change_after_tested_commit",
+    "tests/test_clean_delivery_evidence.py::test_clean_evidence_rejects_unlisted_files_and_unsafe_paths",
+    "tests/test_deploy_001_release_contract.py::test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets"
+  ]
+}

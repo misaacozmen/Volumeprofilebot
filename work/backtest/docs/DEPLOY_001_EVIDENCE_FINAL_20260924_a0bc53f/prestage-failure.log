@@ -1,0 +1,164 @@
+......................................................F...               [100%]
+================================== FAILURES ===================================
+__________ test_checked_in_threshold_artifact_has_current_provenance __________
+
+provenance = {'environment': {'dependencies': {'pandas': '3.0.3'}, 'git_commit': 'bebba4ea53faf3dc57696cdb1924cb684e660839', 'pytho...03-01.csv', 'role': 'market_data', 'sha256': '727482171b5908892ad66aa56298b2973f144f50d23eb41af454a21babb209e5'}, ...]}
+root = WindowsPath('C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest')
+verify_inputs = True
+
+    def validate_provenance(provenance: Any, root: Path, *, verify_inputs: bool) -> None:
+        if not isinstance(provenance, dict):
+            raise ArtifactValidationError("Missing provenance object")
+        environment = provenance.get("environment")
+        if not isinstance(environment, dict):
+            raise ArtifactValidationError("Missing provenance.environment")
+        required_environment = {
+            "python_version",
+            "python_implementation",
+            "dependencies",
+            "git_commit",
+        }
+        missing_environment = required_environment - set(environment)
+        if missing_environment:
+            raise ArtifactValidationError(
+                f"Missing provenance environment fields: {sorted(missing_environment)}"
+            )
+        if environment["git_commit"] is not None and not isinstance(environment["git_commit"], str):
+            raise ArtifactValidationError("provenance.environment.git_commit must be a string or null")
+        records = provenance.get("inputs")
+        if not isinstance(records, list) or not records:
+            raise ArtifactValidationError("provenance.inputs must be a non-empty list")
+        seen: set[str] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                raise ArtifactValidationError("Invalid provenance input record")
+            path_value = record.get("path")
+            if not isinstance(path_value, str) or not path_value or Path(path_value).is_absolute():
+                raise ArtifactValidationError("Provenance paths must be non-empty repository-relative paths")
+            normalized = Path(path_value).as_posix()
+            if normalized != path_value or ".." in Path(path_value).parts:
+                raise ArtifactValidationError(f"Non-canonical provenance path: {path_value}")
+            if path_value in seen:
+                raise ArtifactValidationError(f"Duplicate provenance path: {path_value}")
+            seen.add(path_value)
+            digest = record.get("sha256")
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ArtifactValidationError(f"Invalid SHA-256 for {path_value}")
+            if not isinstance(record.get("bytes"), int) or record["bytes"] < 0:
+                raise ArtifactValidationError(f"Invalid byte count for {path_value}")
+            if not isinstance(record.get("role"), str) or not record["role"]:
+                raise ArtifactValidationError(f"Missing role for {path_value}")
+            if verify_inputs:
+                absolute = (root / path_value).resolve()
+                try:
+                    absolute.relative_to(root.resolve())
+                except ValueError as exc:
+                    raise ArtifactValidationError(f"Provenance path escapes repository: {path_value}") from exc
+                try:
+>                   content = absolute.read_bytes()
+                              ^^^^^^^^^^^^^^^^^^^^^
+
+scripts\candidate_artifact.py:160: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python311\Lib\pathlib.py:1050: in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest/data/raw/nq/DUKASCOPY_USATECHIDXUSD, 3m_2016-01-01_2016-02-01.csv')
+mode = 'rb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\ISAAC\\Documents\\risk-hardening-closeout-20260924\\clean-final-a0bc53f\\work\\backtest\\data\\raw\\nq\\DUKASCOPY_USATECHIDXUSD, 3m_2016-01-01_2016-02-01.csv'
+
+C:\Program Files\Python311\Lib\pathlib.py:1044: FileNotFoundError
+
+The above exception was the direct cause of the following exception:
+
+    def test_checked_in_threshold_artifact_has_current_provenance() -> None:
+>       payload = artifacts.load_artifact(
+            thresholds.ARTIFACT,
+            ROOT,
+            artifact_type="first30_thresholds",
+            verify_inputs=True,
+        )
+
+tests\test_candidate_artifacts.py:149: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\candidate_artifact.py:202: in load_artifact
+    return validate_artifact(
+scripts\candidate_artifact.py:187: in validate_artifact
+    validate_provenance(payload.get("provenance"), root, verify_inputs=verify_inputs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+provenance = {'environment': {'dependencies': {'pandas': '3.0.3'}, 'git_commit': 'bebba4ea53faf3dc57696cdb1924cb684e660839', 'pytho...03-01.csv', 'role': 'market_data', 'sha256': '727482171b5908892ad66aa56298b2973f144f50d23eb41af454a21babb209e5'}, ...]}
+root = WindowsPath('C:/Users/ISAAC/Documents/risk-hardening-closeout-20260924/clean-final-a0bc53f/work/backtest')
+verify_inputs = True
+
+    def validate_provenance(provenance: Any, root: Path, *, verify_inputs: bool) -> None:
+        if not isinstance(provenance, dict):
+            raise ArtifactValidationError("Missing provenance object")
+        environment = provenance.get("environment")
+        if not isinstance(environment, dict):
+            raise ArtifactValidationError("Missing provenance.environment")
+        required_environment = {
+            "python_version",
+            "python_implementation",
+            "dependencies",
+            "git_commit",
+        }
+        missing_environment = required_environment - set(environment)
+        if missing_environment:
+            raise ArtifactValidationError(
+                f"Missing provenance environment fields: {sorted(missing_environment)}"
+            )
+        if environment["git_commit"] is not None and not isinstance(environment["git_commit"], str):
+            raise ArtifactValidationError("provenance.environment.git_commit must be a string or null")
+        records = provenance.get("inputs")
+        if not isinstance(records, list) or not records:
+            raise ArtifactValidationError("provenance.inputs must be a non-empty list")
+        seen: set[str] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                raise ArtifactValidationError("Invalid provenance input record")
+            path_value = record.get("path")
+            if not isinstance(path_value, str) or not path_value or Path(path_value).is_absolute():
+                raise ArtifactValidationError("Provenance paths must be non-empty repository-relative paths")
+            normalized = Path(path_value).as_posix()
+            if normalized != path_value or ".." in Path(path_value).parts:
+                raise ArtifactValidationError(f"Non-canonical provenance path: {path_value}")
+            if path_value in seen:
+                raise ArtifactValidationError(f"Duplicate provenance path: {path_value}")
+            seen.add(path_value)
+            digest = record.get("sha256")
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ArtifactValidationError(f"Invalid SHA-256 for {path_value}")
+            if not isinstance(record.get("bytes"), int) or record["bytes"] < 0:
+                raise ArtifactValidationError(f"Invalid byte count for {path_value}")
+            if not isinstance(record.get("role"), str) or not record["role"]:
+                raise ArtifactValidationError(f"Missing role for {path_value}")
+            if verify_inputs:
+                absolute = (root / path_value).resolve()
+                try:
+                    absolute.relative_to(root.resolve())
+                except ValueError as exc:
+                    raise ArtifactValidationError(f"Provenance path escapes repository: {path_value}") from exc
+                try:
+                    content = absolute.read_bytes()
+                except OSError as exc:
+>                   raise ArtifactValidationError(f"Missing provenance input: {path_value}") from exc
+E                   candidate_artifact.ArtifactValidationError: Missing provenance input: data/raw/nq/DUKASCOPY_USATECHIDXUSD, 3m_2016-01-01_2016-02-01.csv
+
+scripts\candidate_artifact.py:162: ArtifactValidationError
+=========================== short test summary info ===========================
+FAILED tests/test_candidate_artifacts.py::test_checked_in_threshold_artifact_has_current_provenance
+1 failed, 57 passed in 6.16s

@@ -1,0 +1,26 @@
+{
+  "input_count": 2,
+  "schema": "engine-audit-inputs-v1",
+  "source_manifest_sha256": "34c3021554e93b1868c9e94ed5c32915ac90263a47aa83986a9457afd5563aa3",
+  "source_observed_at_utc": "2026-09-24T17:29:39Z",
+  "source_provenance_note": "Workspace-local Dukascopy-format exports; original provider download receipt and retrieval timestamp were not present. Source attribution follows the export filenames/format; observation time is not asserted as retrieval time.",
+  "source_provider": "Dukascopy",
+  "source_url": "https://www.dukascopy.com/api/data/get/historical-data-export",
+  "stage_root": "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\otobt-engine-audit-uv_oclpn",
+  "staged_input_sha256": {
+    "nq/DUKASCOPY_USATECHIDXUSD, 3m_2025-01-25_2025-04-05.csv": "d1fd03c368200f08db2664806a36442f16123c0f48cbb5766b472f4eb1426672",
+    "spx/DUKASCOPY_USA500IDXUSD, 5m_2025-01-25_2025-04-05.csv": "a44e99109d1571f14af1640db58a014923290514271c3aacc804e4c551a8efd6"
+  },
+  "status": "PASS",
+  "window": {
+    "end_exclusive": "2025-04-04T00:00:00-04:00",
+    "start_inclusive": "2025-01-25T00:00:00-05:00",
+    "timezone": "America/New_York"
+  }
+}
+ core_tests_passed  deterministic_rerun  prefix_violation_count  prefix_checks  invalid_data_days_blocked  canonical_decisions  filled_pre_pair_cap  filled_post_pair_cap  pair_cap_suppressed  intrabar_ambiguities_labeled  forward_shadow_ready
+              True                 True                       0             48                          3                   57                    3                     3                    0                             0                  True
+Wrote: C:\Users\ISAAC\Documents\risk-clean-delivery-20260924\checkout\work\backtest\outputs\reports\engine_reliability_audit_2025_feb_mar
+verified raw inputs: 144
+threshold artifact: 2bffd175490af718f66dc79cb0b037e059ceea6b13a694f78d5bc673f36b4d0d
+baseline manifest: 266835384775e3924fee2a1c72ca66d54bdf8ad4ec87f9caec3bcfed2f2506c5

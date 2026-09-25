@@ -1,0 +1,18 @@
+{
+  "collection_junit_multiset_match": true,
+  "collection_log_sha256": "c555cd7c2e05106440b867a9d3f173e775f60fe3d1ea2941bb4f6050553b38b9",
+  "collection_node_sha256_sorted_lf": "44cc0ce7d40e55a802bb1ffc19078033513a8293cdc4d0d6756b1f73d86b36f5",
+  "collection_nodes": 799,
+  "collection_unique_nodes": 799,
+  "deselected": 0,
+  "errors": 0,
+  "failures": 0,
+  "junit_cases": 799,
+  "junit_sha256": "7d14babb6f46ce3e4fdbba436229b92ee173f100344e2b6ef4d87bd66b310e25",
+  "junit_unique_cases": 799,
+  "mismatches": {
+    "extra_in_junit": [],
+    "missing_from_junit": []
+  },
+  "skipped": 0
+}

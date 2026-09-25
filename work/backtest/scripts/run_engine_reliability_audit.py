@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import argparse
 import json
 from pathlib import Path
 import subprocess
@@ -16,22 +17,43 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import run_engine_path_comparison_2025_feb_mar as comparison
 import run_main_candidate_filter_tests as filters
+from backtest.data_loader import load_ohlcv
 from backtest.engine_pipeline import EngineLeg, run_canonical_pair_pipeline
 from backtest.manual_state import ManualStateConfig, build_independent_htf_frame
 from backtest.state_audit import pipeline_records, prefix_invariance_violations
 
 
 REPORT_DIR = ROOT / "outputs" / "reports" / "engine_reliability_audit_2025_feb_mar"
+BASELINE_MANIFEST = ROOT / "forward_shadow" / "engine_reliability_audit_2025_feb_mar_manifest.json"
+
+
+def load_audit_data(market_data_root: Path) -> dict[tuple[str, str], pd.DataFrame]:
+    loaded: dict[tuple[str, str], pd.DataFrame] = {}
+    for symbol, timeframe in comparison.SYMBOLS.values():
+        key = (symbol, timeframe)
+        paths = filters.base_report.filter_paths(market_data_root, symbol, timeframe)
+        if not paths:
+            raise RuntimeError(f"ENGINE_AUDIT_INPUTS_MISSING: no market data for {symbol} {timeframe}")
+        loaded[key] = load_ohlcv(paths).frame
+    return loaded
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Feb–Mar 2025 engine reliability audit.")
+    parser.add_argument("--market-data-root", type=Path, required=True)
+    args = parser.parse_args()
+    if not args.market_data_root.exists():
+        raise RuntimeError("ENGINE_AUDIT_INPUTS_MISSING: market-data root does not exist")
+    market_data_root = args.market_data_root.resolve(strict=True)
+    if not market_data_root.is_dir():
+        raise RuntimeError("ENGINE_AUDIT_INPUTS_MISSING: market-data root is not a directory")
     started = time.perf_counter()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     for path in REPORT_DIR.iterdir():
         if path.is_file():
             path.unlink()
 
-    loaded = filters.load_data()
+    loaded = load_audit_data(market_data_root)
     configs = comparison.build_active_configs(loaded)
     dates = [item.date() for item in pd.bdate_range(comparison.START_DATE, comparison.END_DATE)]
     legs = [
@@ -51,10 +73,9 @@ def main() -> None:
     first.decisions.to_csv(REPORT_DIR / "canonical_decisions.csv", index=False)
     first.filled_after_pair_cap.to_csv(REPORT_DIR / "filled_after_causal_pair_cap.csv", index=False)
     first.suppressed_by_pair_cap.to_csv(REPORT_DIR / "suppressed_by_causal_pair_cap.csv", index=False)
-    (REPORT_DIR / "run_manifest.json").write_text(
-        json.dumps(first.manifest, indent=2, sort_keys=True, default=str),
-        encoding="utf-8",
-    )
+    manifest_text = json.dumps(first.manifest, indent=2, sort_keys=True, default=str) + "\n"
+    (REPORT_DIR / "run_manifest.json").write_text(manifest_text, encoding="utf-8")
+    BASELINE_MANIFEST.write_bytes(manifest_text.encode("utf-8"))
 
     data_rows: list[dict[str, object]] = []
     pipeline_rows: list[dict[str, object]] = []

@@ -2,7 +2,7 @@
 
 Sabit sözleşme: XM `US100Cash` 3m, `US500Cash` 5m, bağımsız HTF 15m,
 `America/New_York`, yalnız kapanmış mumlar. Emirler yalnız `trade_mode=DEMO`,
-`XMGlobal-MT5 7`, `XM Global Limited` ve sabit hesap kimliği birlikte doğrulanırsa gönderilir.
+İmzalı `super1_xm_mt5_demo_config.json` içindeki `expected_server`, `XM Global Limited` ve sabit hesap kimliği birlikte doğrulanırsa gönderilir.
 
 Planlı kapanış kanıtı `diagnostics/xm_session_diagnostic_2026-07-29.json` dosyasındadır.
 Pazar günü 18:00–20:59 ET ve hafta içi 20:00–20:59 ET broker M1/tick akışında

@@ -1,0 +1,35 @@
+.........................E.............................................. [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 27%]
+........................................................................ [ 37%]
+........................................................................ [ 46%]
+........................................................................ [ 55%]
+........................................................................ [ 64%]
+........................................................................ [ 74%]
+........................................................................ [ 83%]
+........................................................................ [ 92%]
+.........................................................                [100%]
+=================================== ERRORS ====================================
+_______ ERROR at setup of test_real_appcontainer_rejects_symlink_escape _______
+
+pytestconfig = <_pytest.config.Config object at 0x000001A276859B10>
+
+    @pytest.fixture
+    def owner_symlink_fixture_roots(pytestconfig: pytest.Config) -> dict[str, Path]:
+        raw_root = pytestconfig.getoption("--symlink-fixture-root")
+        if not raw_root:
+>           pytest.fail(
+                "LINK_FIXTURE_ROOT_REQUIRED: run the normal-user preparation script, have the owner create its reported symlink, then rerun with --symlink-fixture-root"
+            )
+E           Failed: LINK_FIXTURE_ROOT_REQUIRED: run the normal-user preparation script, have the owner create its reported symlink, then rerun with --symlink-fixture-root
+
+tests\test_backtest_sandbox.py:249: Failed
+============================== warnings summary ===============================
+tests/test_deploy_001_release_contract.py::test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries
+  C:\Program Files\Python311\Lib\zipfile.py:1566: UserWarning: Duplicate name: 'deploy/release_integrity.ps1'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR tests/test_backtest_sandbox.py::test_real_appcontainer_rejects_symlink_escape
+776 passed, 1 warning, 1 error in 415.14s (0:06:55)

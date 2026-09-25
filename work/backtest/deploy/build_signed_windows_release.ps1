@@ -6,6 +6,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputArchive,
     [string]$Python = "python",
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SymlinkFixtureRoot,
     [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA "OtoBacktest\release-private-key.dpapi"),
     [string]$ReleaseId
 )
@@ -26,12 +29,55 @@ $Wheelhouse = Join-Path $Stage "wheelhouse"
 $LinuxWheelhouse = Join-Path $Stage "wheelhouse-linux"
 $Super1ProvenanceFiles = @()
 
+function Assert-OwnerSymlinkFixture {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if (-not [IO.Path]::IsPathRooted($Root)) {
+        throw "LINK_FIXTURE_ROOT_REQUIRED: fixture root must be an absolute path."
+    }
+    $resolvedRoot = (Resolve-Path -LiteralPath $Root -ErrorAction Stop).ProviderPath
+    $requiredFiles = @(
+        (Join-Path $resolvedRoot "input\allowed.txt"),
+        (Join-Path $resolvedRoot "outside\outside.txt")
+    )
+    foreach ($path in $requiredFiles) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "LINK_FIXTURE_ROOT_INVALID: required owner fixture file is missing: $path"
+        }
+    }
+
+    $linkPath = Join-Path $resolvedRoot "output\escape-symlink.txt"
+    if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) {
+        throw "LINK_FIXTURE_REQUIRED: owner symlink is missing: $linkPath"
+    }
+    $link = Get-Item -LiteralPath $linkPath -Force -ErrorAction Stop
+    if ([string]$link.LinkType -cne "SymbolicLink") {
+        throw "LINK_FIXTURE_REQUIRED: expected an owner-created SymbolicLink: $linkPath"
+    }
+    $targetValue = [string]$link.Target
+    if ([string]::IsNullOrWhiteSpace($targetValue)) {
+        throw "LINK_FIXTURE_INVALID: owner symlink target could not be read."
+    }
+    $actualTargetPath = if ([IO.Path]::IsPathRooted($targetValue)) {
+        $targetValue
+    }
+    else {
+        Join-Path (Split-Path -Parent $linkPath) $targetValue
+    }
+    $actualTarget = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $actualTargetPath -ErrorAction Stop).ProviderPath)
+    $expectedTarget = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath (Join-Path $resolvedRoot "outside\outside.txt") -ErrorAction Stop).ProviderPath)
+    if (-not [string]::Equals($actualTarget, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "LINK_FIXTURE_INVALID: owner symlink target does not match the prepared outside file."
+    }
+    return $resolvedRoot
+}
+
 function Get-CollectionNodeIds {
     param([Parameter(Mandatory = $true)][object[]]$Output)
     $nodeIds = @()
     foreach ($line in $Output) {
         $trimmed = ([string]$line).Trim()
-        if ($trimmed -match '^(\S+::\S+)(?:\s+.*)?$') {
+        if ($trimmed -match '^((?:tests|artifact_tests)/\S+\.py::.+)$') {
             $nodeIds += $Matches[1]
         }
     }
@@ -63,6 +109,11 @@ function Write-NodeIdInventory {
         count = $sorted.Count
         sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+}
+
+$SymlinkFixtureRoot = Assert-OwnerSymlinkFixture -Root $SymlinkFixtureRoot
+if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable("PYTEST_ADDOPTS"))) {
+    throw "Release build refuses hidden PYTEST_ADDOPTS; pass all test options explicitly."
 }
 
 function Assert-JunitMatchesInventory {
@@ -259,15 +310,30 @@ $pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash
 # 3. Pre-build test suite execution
 $fullCollectPath = Join-Path $TempRoot "full.collect.txt"
 $fullJunitPath = Join-Path $TempRoot "full.junit.xml"
-$pytestCmd = "$Python -m pytest -q $SourceRoot --junitxml=<full-suite>"
-$fullCollectOutput = & $Python -m pytest --collect-only -q $SourceRoot
-if ($LASTEXITCODE -ne 0) {
+$pytestCollectCmd = "$Python -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root '$SymlinkFixtureRoot'"
+$pytestCmd = "$Python -m pytest -q -p no:cacheprovider tests --symlink-fixture-root '$SymlinkFixtureRoot' --junitxml=<full-suite>"
+Push-Location -LiteralPath $SourceRoot
+try {
+    $fullCollectOutput = & $Python -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root $SymlinkFixtureRoot
+    $fullCollectExitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+if ($fullCollectExitCode -ne 0) {
     throw "Release build aborted: full collect-only inventory failed."
 }
 $fullNodeIds = @(Get-CollectionNodeIds -Output $fullCollectOutput)
 $fullInventory = Write-NodeIdInventory -NodeIds $fullNodeIds -Path $fullCollectPath
-$pytestOutput = & $Python -m pytest -q $SourceRoot "--junitxml=$fullJunitPath"
-if ($LASTEXITCODE -ne 0) {
+Push-Location -LiteralPath $SourceRoot
+try {
+    $pytestOutput = & $Python -m pytest -q -p no:cacheprovider tests --symlink-fixture-root $SymlinkFixtureRoot "--junitxml=$fullJunitPath"
+    $fullSuiteExitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+if ($fullSuiteExitCode -ne 0) {
     throw "Release build aborted: pytest test suite failed."
 }
 if (-not (Test-Path -LiteralPath $fullJunitPath -PathType Leaf)) {
@@ -298,6 +364,18 @@ New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-N
 try {
     foreach ($directory in @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $directory) -Destination (Join-Path $Stage $directory) -Recurse
+    }
+    if ($Profile -eq "super1") {
+        $canonicalSuper1Config = Join-Path $Stage "live_forward\super1_xm_mt5_demo_config_v4.json"
+        $deployedSuper1Config = Join-Path $Stage "live_forward\super1_xm_mt5_demo_config.json"
+        if (-not (Test-Path -LiteralPath $canonicalSuper1Config -PathType Leaf)) {
+            throw "Versioned Super1 V4 runtime config is missing from release staging."
+        }
+        Copy-Item -LiteralPath $canonicalSuper1Config -Destination $deployedSuper1Config -Force
+        if ((Get-FileHash -LiteralPath $canonicalSuper1Config -Algorithm SHA256).Hash -cne
+            (Get-FileHash -LiteralPath $deployedSuper1Config -Algorithm SHA256).Hash) {
+            throw "Generated deployed Super1 runtime config is not byte-identical to V4."
+        }
     }
     foreach ($file in @("pyproject.toml", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $Stage $file)
@@ -489,6 +567,7 @@ try {
             "deploy/super1_secure_task.ps1",
             "deploy/upgrade_super1_signed_app_windows.ps1",
             "live_forward/super1_xm_mt5_demo_config.json",
+            "live_forward/super1_xm_mt5_demo_config_v4.json",
             "research_candidates/super1/super1_manifest.json",
             "research_candidates/super1/super1_signal_contract.json",
             "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json",
@@ -569,6 +648,8 @@ try {
         python_version = $pythonVersion
         python_executable_sha256 = $pythonExeSha256
         pytest_command = $pytestCmd
+        pytest_collect_command = $pytestCollectCmd
+        pytest_symlink_fixture_root = $SymlinkFixtureRoot
         pytest_passed = $pytestPassed
         pytest_collected_count = $pytestCollectedCount
         pytest_pass_count = $pytestPassedCount

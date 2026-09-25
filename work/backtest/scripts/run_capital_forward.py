@@ -19,6 +19,10 @@ from uuid import uuid4
 
 import pandas as pd
 
+from backtest.live.settings import environment_value
+from backtest.live.halt import HaltController, HaltError
+from backtest.live.retry import CircuitBreaker, NonRetryableReadError, RetryPolicy, RetryableReadError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -51,9 +55,16 @@ SCRIPT_PATH = Path(__file__).resolve()
 HARNESS_PATHS = (SCRIPT_PATH,)
 LEG_ORDER = ("nq", "spx")
 REQUIRED_ENV = ("CAPITAL_IDENTIFIER", "CAPITAL_API_KEY", "CAPITAL_API_PASSWORD")
+CREDENTIAL_PROVIDER: Any | None = None
 
 
 class CriticalLiveError(RuntimeError):
+    pass
+
+
+class UnsafeStopError(CriticalLiveError):
+    """Graceful shutdown could not prove broker-side safety."""
+
     pass
 
 
@@ -243,6 +254,7 @@ def campaign_lock(output_root: Path) -> dict[str, Any]:
     path = output_root / "campaign_lock.json"
     expected = {
         "schema_version": 1,
+        "campaign_id": None,
         "created_at": None,
         "parent_baseline_sha256": parent["baseline_manifest_sha256"],
         "engine_code_hash": parent["engine_manifest"]["code_hash"],
@@ -256,23 +268,33 @@ def campaign_lock(output_root: Path) -> dict[str, Any]:
         "execution": runtime["execution"],
     }
     if runtime["feed"] == "XM_MT5":
-        server = os.environ.get("XM_MT5_SERVER", "").strip()
-        if not server:
-            raise CriticalLiveError("XM_MT5_SERVER is required before the campaign can be locked.")
+        server = str(runtime.get("expected_server") or "").strip()
+        supplied_server = environment_value("XM_MT5_SERVER")
+        if not server or (supplied_server and supplied_server != server):
+            raise CriticalLiveError("XM broker identity must come from the signed runtime config.")
         expected["account_login"] = int(runtime["account_login"])
         expected["server"] = server
     if not path.exists():
+        expected["campaign_id"] = str(uuid4())
         expected["created_at"] = utc_now().isoformat()
         write_new_json(path, expected)
         return expected
     current = read_json(path)
+    if not isinstance(current.get("campaign_id"), str) or not current["campaign_id"].strip():
+        raise CriticalLiveError("Existing campaign lock has no campaign_id; start a new clean state.")
+    expected["campaign_id"] = current["campaign_id"]
     if {**current, "created_at": None} != expected:
         raise CriticalLiveError("Campaign code/config/selector lock changed; start a clean forward period.")
     return current
 
 
 def credentials() -> dict[str, str] | None:
-    values = {name: os.environ.get(name, "").strip() for name in REQUIRED_ENV}
+    if callable(CREDENTIAL_PROVIDER):
+        provided = CREDENTIAL_PROVIDER()
+        if provided is None:
+            return None
+        return {str(key): str(value) for key, value in provided.items()}
+    values = {name: environment_value(name) for name in REQUIRED_ENV}
     if not all(values.values()):
         return None
     return values
@@ -286,28 +308,24 @@ class CapitalDemoClient:
         self.api_password = secrets["CAPITAL_API_PASSWORD"]
         self.cst = ""
         self.security_token = ""
+        self._read_policy = RetryPolicy(breaker=CircuitBreaker())
 
     def login(self) -> dict[str, Any]:
-        request = Request(
-            f"{self.base_url}/session",
-            data=json.dumps(
-                {
-                    "identifier": self.identifier,
-                    "password": self.api_password,
-                    "encryptedPassword": False,
-                }
-            ).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json", "X-CAP-API-KEY": self.api_key},
-        )
-        status, headers, payload = self._open(request)
-        if status != 200:
-            raise CapitalApiError(f"Capital demo login returned HTTP {status}.")
-        self.cst = headers.get("CST", "")
-        self.security_token = headers.get("X-SECURITY-TOKEN", "")
-        if not self.cst or not self.security_token:
-            raise CapitalApiError("Capital demo login did not return session tokens.")
-        return payload
+        def login_once() -> dict[str, Any]:
+            request = Request(
+                f"{self.base_url}/session",
+                data=json.dumps({"identifier": self.identifier, "password": self.api_password, "encryptedPassword": False}).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json", "X-CAP-API-KEY": self.api_key},
+            )
+            status, headers, payload = self._open(request)
+            if status != 200:
+                raise NonRetryableReadError("Capital login returned an unexpected status")
+            cst, token = headers.get("CST", ""), headers.get("X-SECURITY-TOKEN", "")
+            if not cst or not token:
+                raise NonRetryableReadError("Capital login response schema is incomplete")
+            self.cst, self.security_token = cst, token
+            return payload
+        return self._read_policy.read(login_once)
 
     def get(self, endpoint: str, params: dict[str, object] | None = None) -> dict[str, Any]:
         if not self.cst:
@@ -318,21 +336,17 @@ class CapitalDemoClient:
             method="GET",
             headers={"CST": self.cst, "X-SECURITY-TOKEN": self.security_token},
         )
-        try:
-            status, _, payload = self._open(request)
-        except CapitalApiError as exc:
-            if "HTTP 401" not in str(exc):
-                raise
-            self.login()
-            request = Request(
+        def read_once() -> dict[str, Any]:
+            current = Request(
                 f"{self.base_url}/{endpoint.lstrip('/')}{query}",
                 method="GET",
                 headers={"CST": self.cst, "X-SECURITY-TOKEN": self.security_token},
             )
-            status, _, payload = self._open(request)
-        if status != 200:
-            raise CapitalApiError(f"Capital demo GET {endpoint} returned HTTP {status}.")
-        return payload
+            status, _, payload = self._open(current)
+            if status != 200:
+                raise NonRetryableReadError("Capital GET returned an unexpected status")
+            return payload
+        return self._read_policy.read(read_once, refresh_session=self.login)
 
     def prices(
         self,
@@ -362,10 +376,14 @@ class CapitalDemoClient:
                 payload = json.loads(raw) if raw else {}
                 return int(response.status), response.headers, payload
         except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise CapitalApiError(f"Capital API HTTP {exc.code}: {body[:300]}") from exc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            if exc.code == 429 or exc.code == 401 or 500 <= exc.code <= 599:
+                raise RetryableReadError("Capital API retryable HTTP response", status_code=exc.code, retry_after=retry_after) from exc
+            raise NonRetryableReadError(f"Capital API non-retryable HTTP {exc.code}") from exc
         except (URLError, TimeoutError) as exc:
-            raise CapitalApiError(f"Capital API connection error: {exc}") from exc
+            raise RetryableReadError("Capital API connection failure") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NonRetryableReadError("Capital API response schema is invalid") from exc
 
 
 class BarStore:
@@ -1373,6 +1391,26 @@ def fatal_latch_path(output_root: Path) -> Path:
     return output_root / "fatal_latch.json"
 
 
+def no_send_sentinel_path(output_root: Path) -> Path:
+    return output_root / "runtime" / "no_send.sentinel.json"
+
+
+def write_no_send_sentinel(output_root: Path, reason: str, **details: object) -> Path:
+    path = no_send_sentinel_path(output_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": 1, "state": "UNKNOWN_NO_SEND", "reason": reason, "updated_at": utc_now().isoformat(), **details}
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def assert_no_send_sentinel_clear(output_root: Path) -> None:
+    path = no_send_sentinel_path(output_root)
+    if path.exists():
+        raise CriticalLiveError(f"Durable no-send sentinel is active: {path}")
+
+
 def broker_recovery_path(output_root: Path) -> Path:
     return output_root / "runtime" / "broker_recovery_required.json"
 
@@ -1407,25 +1445,24 @@ def write_broker_recovery(
 
 
 def write_fatal_latch(output_root: Path, state: str, error: str, **details: object) -> Path:
-    path = fatal_latch_path(output_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": 1,
-        "latched_at": utc_now().isoformat(),
-        "state": state,
-        "error": error,
-        **details,
-    }
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    temp.replace(path)
-    return path
+    controller = HaltController(output_root)
+    # ``HaltController.trigger`` owns the canonical reason field; callers may
+    # also provide a legacy ``reason`` detail, but it must not become a
+    # duplicate keyword at the boundary.
+    details = dict(details)
+    details.pop("reason", None)
+    controller.trigger(state, error=error, **details)
+    return controller.sentinel
 
 
 def assert_no_fatal_latch(output_root: Path) -> None:
-    path = fatal_latch_path(output_root)
-    if path.exists():
-        latch = read_json(path)
+    controller = HaltController(output_root)
+    try:
+        latch = controller.read()
+    except HaltError as exc:
+        raise CriticalLiveError(str(exc)) from exc
+    if latch is not None:
+        path = controller.sentinel
         raise CriticalLiveError(
             f"Persistent fatal latch {latch.get('state', 'UNKNOWN')} is set at {path}; "
             "inspect broker state and clear it explicitly before restart."
@@ -1435,6 +1472,29 @@ def assert_no_fatal_latch(output_root: Path) -> None:
 def write_health(output_root: Path, state: str, **details: object) -> None:
     path = health_path(output_root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if "lease_id" not in details:
+        lease_path = Path(output_root).resolve().parent / "control" / "session-lease.json"
+        try:
+            lease = read_json(lease_path)
+            if lease.get("state") == "ACTIVE":
+                details["lease_id"] = str(lease.get("lease_id") or "")
+                details["campaign_id"] = str(lease.get("campaign_id") or "")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    # The launcher supplies these process-bound values for every protected
+    # Super1 invocation.  A timestamp alone is not evidence of a fresh task.
+    for key, env_name in (
+        ("invocation_nonce", "SUPER1_INVOCATION_NONCE"),
+        ("runner_sid", "SUPER1_RUNNER_SID"),
+        ("launcher_sha256", "SUPER1_LAUNCHER_SHA256"),
+        ("invocation_started_at_utc", "SUPER1_INVOCATION_STARTED_AT"),
+    ):
+        value = environment_value(env_name)
+        if value:
+            details.setdefault(key, value)
+    details.setdefault("process_id", os.getpid())
+    details.setdefault("process_executable", sys.executable)
+    details.setdefault("process_command_line", " ".join(sys.argv))
     temp = path.with_suffix(".tmp")
     temp.write_text(
         json.dumps(
@@ -1447,6 +1507,36 @@ def write_health(output_root: Path, state: str, **details: object) -> None:
         encoding="utf-8",
     )
     temp.replace(path)
+
+
+def stop_request_path(output_root: Path) -> Path:
+    return Path(output_root).resolve().parent / "control" / "stop-request.json"
+
+
+def read_stop_request(output_root: Path) -> dict[str, Any] | None:
+    path = stop_request_path(output_root)
+    if not path.exists():
+        return None
+    request = read_json(path)
+    if not isinstance(request, dict) or not request.get("request_id") or not request.get("reason"):
+        raise UnsafeStopError("Stop request is malformed; refusing to continue or send.")
+    return request
+
+
+def archive_stop_request(output_root: Path, request: dict[str, Any]) -> Path:
+    """Move a completed stop request out of the active control path."""
+    active = stop_request_path(output_root)
+    archive = active.parent / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    request_id = str(request.get("request_id") or "")
+    if not request_id:
+        raise UnsafeStopError("Completed stop request has no immutable request_id.")
+    target = archive / f"stop-{request_id}.json"
+    if active.exists():
+        active.replace(target)
+    elif not target.exists():
+        raise UnsafeStopError("Completed stop request disappeared before archival.")
+    return target
 
 
 def touch_health(output_root: Path, phase: str) -> None:
@@ -1508,6 +1598,13 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
                 "cycle_started_at": cycle_started_at.isoformat(),
                 "evaluation_at": evaluation_now.isoformat(),
             },
+            "heartbeats": {
+                "last_market_data": cycle_started_at.isoformat(),
+                "last_signal_cycle": evaluation_now.isoformat(),
+                "last_risk_cycle": evaluation_now.isoformat(),
+                "last_reconciliation": evaluation_now.isoformat(),
+                "last_audit_anchor": evaluation_now.isoformat(),
+            },
         }
     preflight: dict[str, object] = {"state": "NOT_APPLICABLE"}
     preflight_order_transport = getattr(client, "preflight_order_transport", None)
@@ -1519,6 +1616,7 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
     preflight_ready = str(preflight.get("state")) in {"NOT_APPLICABLE", "PASS", "ALREADY_PASSED"}
     send_guard_at: pd.Timestamp | None = None
     if callable(reconcile) and preflight_ready:
+        assert_no_send_sentinel_clear(output_root)
         send_guard_at = utc_now()
         prefix_record = None
         if prefix.get("path") and Path(str(prefix["path"])).is_file():
@@ -1573,6 +1671,13 @@ def run_once(output_root: Path, client: CapitalDemoClient, store: BarStore) -> d
             "send_guard_at": None if send_guard_at is None else send_guard_at.isoformat(),
             "finalization_at": finalization_at.isoformat(),
         },
+        "heartbeats": {
+            "last_market_data": cycle_started_at.isoformat(),
+            "last_signal_cycle": evaluation_now.isoformat(),
+            "last_risk_cycle": None if send_guard_at is None else send_guard_at.isoformat(),
+            "last_reconciliation": finalization_at.isoformat(),
+            "last_audit_anchor": finalization_at.isoformat(),
+        },
     }
 
 
@@ -1602,16 +1707,13 @@ def _cancel_for_stop(
     *,
     require_readback: bool = False,
 ) -> list[dict[str, object]]:
-    emergency = getattr(client, "cancel_all_pending", None)
-    if not callable(emergency):
-        if not require_readback:
-            return []
-        exc = CriticalLiveError("Order transport client cannot perform pending-order readback.")
-        _raise_unsafe_cancel_failure(output_root, reason, exc)
-    try:
-        return list(emergency(output_root, reason))
-    except Exception as exc:
-        _raise_unsafe_cancel_failure(output_root, reason, exc)
+    details = _graceful_stop(
+        output_root,
+        client,
+        reason,
+        require_readback=require_readback,
+    )
+    return list(details.get("cancelled", []))
 
 
 def _raise_unsafe_cancel_failure(output_root: Path, reason: str, exc: Exception) -> None:
@@ -1632,6 +1734,57 @@ def _raise_unsafe_cancel_failure(output_root: Path, reason: str, exc: Exception)
     raise CriticalLiveError(
         f"Pending-order cancellation/readback could not be verified; fatal latch: {latch}"
     ) from exc
+
+
+def _raise_unsafe_stop_failure(output_root: Path, reason: str, exc: Exception) -> None:
+    latch = write_fatal_latch(
+        output_root,
+        "UNSAFE_STOP_NO_SEND",
+        str(exc),
+        shutdown_reason=reason,
+        error_type=type(exc).__name__,
+    )
+    write_health(
+        output_root,
+        "UNSAFE_STOP_NO_SEND",
+        error=str(exc),
+        fatal_latch=str(latch),
+        order_transport_present=True,
+    )
+    raise UnsafeStopError(
+        f"Safe stop could not be proven; fatal latch: {latch}"
+    ) from exc
+
+
+def _graceful_stop(
+    output_root: Path,
+    client: CapitalDemoClient | None,
+    reason: str,
+    *,
+    require_readback: bool,
+) -> dict[str, object]:
+    emergency = getattr(client, "cancel_all_pending", None)
+    if not callable(emergency):
+        if require_readback:
+            _raise_unsafe_stop_failure(
+                output_root,
+                reason,
+                CriticalLiveError("Order transport client cannot reconcile pending orders."),
+            )
+        return {"cancelled": [], "safe_stop": "PASS", "owned_pending": 0, "open_positions": 0}
+    try:
+        cancelled = list(emergency(output_root, reason))
+        reconcile = getattr(client, "stop_reconciliation", None)
+        if not callable(reconcile):
+            raise CriticalLiveError("Order transport client cannot reconcile final positions.")
+        details = dict(reconcile(output_root, reason))
+        details["cancelled"] = cancelled
+        if str(details.get("safe_stop")) != "PASS":
+            raise CriticalLiveError(f"Broker exposure remained unsafe: {details}")
+        return details
+    except Exception as exc:
+        _raise_unsafe_stop_failure(output_root, reason, exc)
+        raise AssertionError("unreachable")
 
 
 def _cancel_for_recovery(
@@ -1715,6 +1868,37 @@ def _cancel_for_recovery(
     }
 
 
+def _ensure_expired_manual_lease_stop(output_root: Path) -> None:
+    """Turn an expired Super1 lease into the normal broker-reconciled stop path."""
+    lease_path = Path(output_root).resolve().parent / "control" / "session-lease.json"
+    if not lease_path.is_file():
+        return
+    try:
+        lease = read_json(lease_path)
+        expires = pd.Timestamp(str(lease.get("expires_at_utc"))).tz_convert("UTC")
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+    if str(lease.get("state")) != "ACTIVE" or pd.Timestamp(utc_now()) < expires:
+        return
+    stop_path = lease_path.parent / "stop-request.json"
+    if stop_path.exists():
+        return
+    payload = {
+        "schema_version": 1,
+        "request_id": str(uuid4()),
+        "lease_id": str(lease.get("lease_id") or ""),
+        "requested_at_utc": utc_now().isoformat(),
+        "reason": "LEASE_EXPIRED",
+        "requested_by": "Super1Daemon",
+    }
+    temporary = stop_path.with_name(f".{stop_path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(stop_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
     output_root = Path(args.output_root).resolve()
     campaign_lock(output_root)
@@ -1725,13 +1909,25 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
     active_client: CapitalDemoClient | None = None
     try:
         while not _STOP_EVENT.is_set():
+            _ensure_expired_manual_lease_stop(output_root)
+            stop_request = read_stop_request(output_root)
             secrets = credentials()
             if secrets is None:
+                if stop_request is not None:
+                    write_health(
+                        output_root,
+                        "UNSAFE_STOP_NO_SEND",
+                        reason=stop_request.get("reason"),
+                        error="Credentials unavailable for broker-side stop reconciliation.",
+                        order_transport_present=transport,
+                    )
+                    _STOP_EVENT.wait(5)
+                    continue
                 recovery_required = transport and broker_recovery_path(output_root).exists()
                 write_health(
                     output_root,
                     "RETRYING" if recovery_required else "WAITING_CREDENTIALS",
-                    missing=[name for name in REQUIRED_ENV if not os.environ.get(name, "").strip()],
+                    missing=[name for name in REQUIRED_ENV if not environment_value(name)],
                     broker_state="UNKNOWN_NO_SEND" if recovery_required else "NOT_CONNECTED",
                     recovery_required=recovery_required,
                     order_transport_present=transport,
@@ -1742,6 +1938,25 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
             active_client = None
             try:
                 active_client = CapitalDemoClient(runtime, secrets)
+                stop_request = read_stop_request(output_root)
+                if stop_request is not None:
+                    stop_details = _graceful_stop(
+                        output_root,
+                        active_client,
+                        str(stop_request["reason"]),
+                        require_readback=transport,
+                    )
+                    write_health(
+                        output_root,
+                        "STOPPED",
+                        reason=stop_request["reason"],
+                        request_id=stop_request["request_id"],
+                        lease_id=stop_request.get("lease_id"),
+                        **stop_details,
+                        order_transport_present=transport,
+                    )
+                    archive_stop_request(output_root, stop_request)
+                    return
                 if transport and broker_recovery_path(output_root).exists():
                     recovery = _cancel_for_recovery(
                         output_root,
@@ -1775,6 +1990,7 @@ def _daemon_locked(args: argparse.Namespace, output_root: Path) -> None:
                     "RUNNING",
                     markets=verified,
                     last_cycle=result,
+                    **dict(result.get("heartbeats", {})),
                     order_transport_present=transport,
                 )
                 _STOP_EVENT.wait(int(runtime["poll_seconds"]))
@@ -1990,6 +2206,11 @@ def daily_health(args: argparse.Namespace) -> None:
 def initialize(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).resolve()
     lock = campaign_lock(output_root)
+    initialize_ledger = getattr(CapitalDemoClient, "_initialize_order_db", None)
+    if callable(initialize_ledger):
+        # The ledger schema is created without constructing a broker session or
+        # sending any order.  This makes a fresh campaign readiness-checkable.
+        initialize_ledger(CapitalDemoClient.__new__(CapitalDemoClient), output_root)
     write_health(
         output_root,
         "INITIALIZED",
@@ -2002,14 +2223,77 @@ def initialize(args: argparse.Namespace) -> None:
 def clear_fatal_latch(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).resolve()
     if not args.confirm:
-        raise CriticalLiveError("Clearing the fatal latch requires --confirm after broker inspection.")
-    path = fatal_latch_path(output_root)
-    if path.exists():
-        cleared = path.with_name(f"fatal_latch.cleared.{utc_now().strftime('%Y%m%dT%H%M%SZ')}.json")
-        path.replace(cleared)
-        print(json.dumps({"state": "CLEARED", "archived_latch": str(cleared)}))
-    else:
+        raise CriticalLiveError("Clearing the fatal latch requires signed recovery, exact broker-flat evidence, intact audit, and --confirm.")
+    required = {
+        "recovery_record": getattr(args, "recovery_record", ""),
+        "audit_db": getattr(args, "audit_db", ""),
+    }
+    if any(not str(value).strip() for value in required.values()):
+        raise CriticalLiveError("Clearing the fatal latch requires --recovery-record and --audit-db.")
+    canonical_audit_db = (output_root / "orders" / "idempotency.sqlite3").resolve()
+    supplied_audit_db = Path(required["audit_db"]).resolve()
+    if supplied_audit_db != canonical_audit_db:
+        raise CriticalLiveError(f"--audit-db must be the canonical order ledger: {canonical_audit_db}")
+    try:
+        recovery = read_json(Path(required["recovery_record"]).resolve())
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise CriticalLiveError("signed recovery record is unreadable") from exc
+    try:
+        from backtest.live.audit_ledger import AuditLedger, canonical_json
+        from backtest.live.halt import clear_halt_episode
+        ledger = AuditLedger(Path(required["audit_db"]).resolve())
+        ledger.verify()
+        connection = sqlite3.connect(Path(required["audit_db"]).resolve())
+        rows = connection.execute("SELECT status FROM order_intents WHERE status IN ('SEND_ARMED','SEND_UNKNOWN','CANCEL_UNKNOWN','CANCEL_ARMED','CANCEL_REJECTED')").fetchall()
+        connection.close()
+    except sqlite3.Error as exc:
+        raise CriticalLiveError("canonical order ledger cannot be inspected") from exc
+    if rows:
+        raise CriticalLiveError("unresolved SEND_ARMED/UNKNOWN/cancel controls remain")
+    controller = HaltController(output_root)
+    latch = controller.read()
+    if latch is None:
+        ledger.close()
         print(json.dumps({"state": "NOT_SET"}))
+        return
+    runtime = runtime_config()
+    campaign_id = str(runtime.get("campaign_id") or "")
+    account_key = str(runtime.get("account_login") or runtime.get("account_id") or "")
+    policy = {
+        "schema_version": 1,
+        "require_exact_active_episode": True,
+        "require_fresh_orders_and_positions": True,
+        "require_audit_anchor_before_cas": True,
+        "preserve_episode_history": True,
+    }
+    policy_hash = sha256(canonical_json(policy).encode("utf-8")).hexdigest()
+    trust_root = ROOT / "deploy" / "release-public-key.pem"
+    secrets = credentials()
+    if secrets is None:
+        ledger.close()
+        raise CriticalLiveError(f"Missing credentials for fresh broker readback: {', '.join(REQUIRED_ENV)}")
+    client = CapitalDemoClient(runtime, secrets)
+    try:
+        broker_read = getattr(client, "_mt5_collection", None)
+        if not callable(broker_read):
+            raise CriticalLiveError("broker client has no exact collection readback API")
+        result = clear_halt_episode(
+            controller,
+            recovery_record=recovery,
+            trusted_public_key=trust_root.read_bytes(),
+            expected_campaign=campaign_id,
+            expected_account=account_key,
+            expected_policy_hash=policy_hash,
+            read_orders=lambda: broker_read("orders_get"),
+            read_positions=lambda: broker_read("positions_get"),
+            audit_ledger=ledger,
+        )
+    finally:
+        ledger.close()
+        close_client = getattr(client, "close", None)
+        if callable(close_client):
+            close_client()
+    print(json.dumps(result, sort_keys=True))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -2018,6 +2302,11 @@ def parser() -> argparse.ArgumentParser:
     output_name = "xm_mt5_forward" if runtime["feed"] == "XM_MT5" else "capital_forward"
     root = argparse.ArgumentParser(description=f"{provider} closed-bar causal forward shadow daemon.")
     root.add_argument("--output-root", default=str(ROOT / "outputs" / output_name / "nq3m_spx5m"))
+    root.add_argument(
+        "--credential-stdin",
+        action="store_true",
+        help="Read a transient broker password from stdin; never use an environment variable for it.",
+    )
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("init")
     sub.add_parser("daemon")
@@ -2025,6 +2314,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     clear_latch = sub.add_parser("clear-fatal-latch")
     clear_latch.add_argument("--confirm", action="store_true")
+    clear_latch.add_argument("--recovery-record")
+    clear_latch.add_argument("--audit-db")
     smoke = sub.add_parser("smoke-order")
     smoke.add_argument("--confirm-demo", action="store_true")
     report = sub.add_parser("daily-health")

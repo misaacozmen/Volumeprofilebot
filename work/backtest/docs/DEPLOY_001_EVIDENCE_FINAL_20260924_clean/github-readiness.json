@@ -1,0 +1,68 @@
+{
+  "": {
+    "full_name": "misaacozmen/Volumeprofilebot",
+    "default_branch": "main",
+    "permissions": {
+      "admin": true,
+      "maintain": true,
+      "push": true,
+      "triage": true,
+      "pull": true
+    },
+    "allow_merge_commit": true,
+    "allow_squash_merge": true,
+    "allow_rebase_merge": true
+  },
+  "/branches/main/protection": {
+    "http_status": 404
+  },
+  "/actions/runners": {
+    "total_count": 0,
+    "runners": []
+  },
+  "/actions/variables": {
+    "names": []
+  },
+  "/actions/secrets": {
+    "names": [
+      "BROKER_IDENTITY_DENYLIST_JSON"
+    ]
+  },
+  "/actions/runs?per_page=5": [
+    {
+      "name": "Broker identity scan",
+      "head_sha": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/35974401352"
+    },
+    {
+      "name": "Broker identity scan",
+      "head_sha": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/35837036012"
+    },
+    {
+      "name": "Broker identity scan",
+      "head_sha": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/35704526916"
+    },
+    {
+      "name": "Broker identity scan",
+      "head_sha": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/35579567077"
+    },
+    {
+      "name": "Broker identity scan",
+      "head_sha": "c1c769aec68b84c9c13f9add198ab130241c69ad",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/35520319045"
+    }
+  ]
+}

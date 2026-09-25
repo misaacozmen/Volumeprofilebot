@@ -1,0 +1,6 @@
+# Korunan başarısız / eksik geliştirme koşuları
+
+- d709b46 hedef koşusu: 25 passed, 1 failed. Yeni inventory harness, Windows PowerShell 5.1 içinde inherited PSModulePath nedeniyle Get-FileHash yükleyemedi. Native Utility modülü $PSHOME üzerinden açık import edildi; hash veya production gate taklit edilmedi. Ham log/XML/komut korunur.
+- İlk dış bootstrap probe: başarılı bootstrap dalı çalıştı; enjekte edilen erken ImportError dalında ctypes henüz import edilmemişti. Dispatch'te ctypes importu da doğru biçimde PermissionError aldı; iki ayrı yükleme çağrısına ulaşamadığı için probe kabul sayılmadı. İkinci probe failure injection sırasında trusted bootstrap fazında ctypes'ı import eder, ardından ImportError üretir. Production deny_hook, allowlist ve bootstrap fonksiyon AST'leri aynıdır; success/failure direct ve wrapper denemeleri ayrı reddedilir.
+- 5c950bc ilk full koşusu: süreç sonlandı, completion/exit/JUnit yok; kısmi stdout korunur ve PASS sayılmaz. Son tamamlanan koşu c574e55 üzerinde yeniden collection + full suite'tir.
+- Önceki tarihsel paketler özgün sonuçlarıyla korunur; bu teslimin kabul kanıtı olarak kullanılmaz. Historical verifier, eski unsafe commitleri çözmek yerine clean snapshot 5c2879b'deki değişmez manifest ve artifact byte'larını doğrular.

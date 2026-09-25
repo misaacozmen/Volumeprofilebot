@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .numeric_contracts import finite_float, strict_ratio
+
 
 @dataclass(frozen=True)
 class VolumeProfile:
@@ -15,12 +17,18 @@ class VolumeProfile:
 
 
 def compute_volume_profile(frame: pd.DataFrame, rows: int = 1000, value_area_pct: float = 0.70) -> VolumeProfile | None:
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows <= 0:
+        raise ValueError("rows must be a positive integer")
+    strict_ratio(value_area_pct, "value_area_pct")
     if frame.empty:
         return None
 
-    low = float(frame["low"].min())
-    high = float(frame["high"].max())
-    total_volume = float(frame["volume"].sum())
+    for column in ("low", "high", "volume"):
+        for value in frame[column].tolist():
+            finite_float(value, column)
+    low = finite_float(frame["low"].min(), "low")
+    high = finite_float(frame["high"].max(), "high")
+    total_volume = finite_float(frame["volume"].sum(), "total_volume")
     if high <= low or total_volume <= 0:
         return None
 
@@ -28,9 +36,9 @@ def compute_volume_profile(frame: pd.DataFrame, rows: int = 1000, value_area_pct
     volumes = np.zeros(rows, dtype=float)
 
     for candle in frame.itertuples(index=False):
-        candle_low = float(candle.low)
-        candle_high = float(candle.high)
-        candle_volume = float(candle.volume)
+        candle_low = finite_float(candle.low, "candle_low")
+        candle_high = finite_float(candle.high, "candle_high")
+        candle_volume = finite_float(candle.volume, "candle_volume")
         if candle_high <= candle_low or candle_volume <= 0:
             continue
         start = max(0, np.searchsorted(edges, candle_low, side="right") - 1)

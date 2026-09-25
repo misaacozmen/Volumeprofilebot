@@ -28,7 +28,7 @@ def check(root: Path) -> dict[str, object]:
 
 
 def main() -> int:
-    configured = os.environ.get("SUPER1_V08_REGRESSION_SOURCE_ROOT")
+    configured = environment_snapshot().get("SUPER1_V08_REGRESSION_SOURCE_ROOT")
     if not configured:
         print(json.dumps({"status": "FAIL", "errors": ["SOURCE_ROOT_REQUIRED"]}, sort_keys=True))
         return 2
@@ -38,3 +38,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+from backtest.live.settings import environment_snapshot

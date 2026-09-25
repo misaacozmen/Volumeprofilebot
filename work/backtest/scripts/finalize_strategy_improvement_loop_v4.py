@@ -188,8 +188,31 @@ def build_candidate() -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame, pd.Da
     return payload, first, metrics, rolling_frame
 
 
+def validate_publication_contract(payload: dict[str, Any], evaluated: pd.DataFrame) -> None:
+    protocol = payload.get("selection_protocol")
+    if not isinstance(protocol, dict):
+        raise ValueError("candidate selection protocol is missing")
+    if protocol.get("final_holdout_used_for_selection") is not False:
+        raise ValueError("final holdout was used for selection")
+    if protocol.get("final_holdout_used_for_publication") is not False:
+        raise ValueError("final holdout was used for publication")
+    criteria = payload.get("criteria")
+    if not isinstance(criteria, dict) or any("holdout" in str(key).lower() for key in criteria):
+        raise ValueError("publication criteria contain a holdout metric")
+    if "entry_year" not in evaluated:
+        raise ValueError("candidate evaluation has no entry_year column")
+    development = evaluated[evaluated["entry_year"].le(2024)]
+    if development.empty or not bool(evaluated["entry_year"].gt(2024).any()):
+        raise ValueError("candidate evaluation does not contain development and final holdout data")
+    if payload.get("development_result_sha256") != result_hash(development):
+        raise ValueError("development result hash is not bound to the published candidate")
+    if payload.get("full_evaluation_result_sha256") != result_hash(evaluated):
+        raise ValueError("full evaluation result hash is not bound to the published candidate")
+
+
 def main() -> None:
     payload, selected, metrics, rolling = build_candidate()
+    validate_publication_contract(payload, selected)
     test_result = run_project_tests()
     gates_pass = all(
         [

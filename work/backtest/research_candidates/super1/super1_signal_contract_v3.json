@@ -1,0 +1,44 @@
+{
+  "demo_order_transport": {
+    "account_identity_gate": "XM_FIXED_DEMO_TRADE_MODE_SERVER_COMPANY_LOGIN",
+    "path": "scripts/run_xm_mt5_forward.py",
+    "sha256": "43069952a94de4a22bf613e5f0bac22811ea3917a32df4f936718c46588ff63a"
+  },
+  "deployment_mode": "FROZEN_CANONICAL_PAIR_PIPELINE_WITH_SUPER1_OVERLAY",
+  "execution_scope": "XM_MT5_DEMO_ONLY",
+  "name": "SUPER1_CANONICAL_OVERLAY_FRESH_FORWARD_V3",
+  "overlay_candidate": {
+    "artifact_sha256": "54eb93875651730a34f3add23b001159e1a0183f3543220fe2138db554c1d642",
+    "defines_base_signals": false,
+    "file_sha256": "9b58fa2ba74c01d3b997586ec896282758a85682d579659baa31d486ea54bf66",
+    "path": "research_candidates/super1/super1_unsigned_candidate_v3.json",
+    "runtime_path": "scripts/run_super1_xm_mt5_forward.py",
+    "scope": "SETUP_FILTERS_AND_RISK_SCALING_ONLY"
+  },
+  "rth_session_calendar": {
+    "calendar_id": "US_EQUITY_RTH_2022_2026_V3",
+    "path": "live_forward/calendars/us_equity_rth_2022_2026_v3.json",
+    "sha256": "9b35b2d611157135653c301d57244ef42d7cda644886a9532e6d741bf22447f3"
+  },
+  "safety": {
+    "candidate_research_results_apply_to_deployed_pipeline": false,
+    "demo_order_execution_enabled": true,
+    "deployed_pipeline_historical_parity_proven": false,
+    "fresh_forward_required": true,
+    "independent_super1_signal_producer_present": false,
+    "real_money_execution_allowed": false,
+    "real_money_live_enabled": false
+  },
+  "schema_version": 3,
+  "signal_source": {
+    "config_path": "forward_shadow/frozen_config.json",
+    "config_sha256": "414ef22ff9eed0a6511f98a5c14fea3fbd54d69af96621aff7fbc9143717ee91",
+    "engine_source_sha256": "8258e7b7d0aa6c88f5a0c6675dd270a3052fb38a1010104767d2f19fa5e3abf1",
+    "generator_path": "scripts/run_capital_forward.py",
+    "generator_sha256": "b9e7fc638a0bf32d63c56df81d515e7feaa01c7318fed5da202e23c92e147929",
+    "kind": "FROZEN_CANONICAL_PAIR_PIPELINE",
+    "payload_adapter_path": "scripts/run_forward_shadow.py",
+    "payload_adapter_sha256": "5105421aa378770af357ec57f0ec8782e227ae56091690afd82ce578f8b609f4"
+  },
+  "status": "UNSIGNED_VALIDATION_ONLY"
+}

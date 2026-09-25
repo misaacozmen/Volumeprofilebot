@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "environment": "CAPITAL_DEMO_ONLY",
+  "account_mode": "DEMO_READ_ONLY",
+  "feed": "CAPITALCOM",
+  "base_url": "https://demo-api-capital.backend-capital.com/api/v1",
+  "timezone": "America/New_York",
+  "execution": "SHADOW_ONLY_NO_ORDER_TRANSPORT",
+  "legs": {
+    "nq": {
+      "epic": "CAPITALCOM_NAS100",
+      "symbol": "CAPITALCOM_NAS100",
+      "timeframe": "3m"
+    },
+    "spx": {
+      "epic": "CAPITALCOM_SPX500",
+      "symbol": "CAPITALCOM_SPX500",
+      "timeframe": "5m"
+    }
+  }
+}

@@ -11,7 +11,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "broker_identity_env.ps1")
-$ExpectedLogin = [long](Get-BrokerIdentityLogin)
+$ExpectedLogin = Get-BrokerIdentityLogin
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
 $OriginalPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 $OriginalPythonHome = $env:PYTHONHOME
 $OriginalPythonPath = $env:PYTHONPATH
@@ -43,13 +45,13 @@ if (-not (Test-Path -LiteralPath $ScheduledTasksModule -PathType Leaf)) {
 }
 Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
 
-$Root = [IO.Path]::GetFullPath("C:\Super1")
-$App = [IO.Path]::GetFullPath((Join-Path $Root "app"))
-$State = [IO.Path]::GetFullPath((Join-Path $Root "state"))
+$Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
+$App = [IO.Path]::GetFullPath([string]$RuntimeContract.app)
+$State = [IO.Path]::GetFullPath([string]$RuntimeContract.state)
 $ArchiveRoot = [IO.Path]::GetFullPath((Join-Path $Root "archive"))
-$Python = [IO.Path]::GetFullPath((Join-Path $Root "venv311\Scripts\python.exe"))
-$MainTask = "Super1XM"
-$WatchdogTask = "Super1Watchdog"
+$Python = [IO.Path]::GetFullPath([string]$RuntimeContract.python)
+$MainTask = [string]$RuntimeContract.main_task
+$WatchdogTask = [string]$RuntimeContract.watchdog_task
 $RunScript = [IO.Path]::GetFullPath((Join-Path $Root "app\deploy\run_super1_windows.ps1"))
 $TrustedScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\rollover_super1_campaign_windows.ps1"))
 $CurrentScript = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
@@ -69,9 +71,9 @@ if (-not (Test-Path -LiteralPath $FailureHelper -PathType Leaf) -or
 }
 . $FailureHelper
 $InternalFlatScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\check_super1_flat_windows.ps1"))
-$ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
+$ProbeControl = [IO.Path]::GetFullPath([string]$RuntimeContract.control)
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
-$TerminalPin = [IO.Path]::GetFullPath((Join-Path $App "deploy\terminal_runtime_pin.json"))
+$TerminalPin = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.runtime_trust) "terminal_runtime_pin.json"))
 $CapitalCandidate = [IO.Path]::GetFullPath((Join-Path $Root "run_capital_forward.py.candidate"))
 $CapitalTarget = [IO.Path]::GetFullPath((Join-Path $Root "app\scripts\run_capital_forward.py"))
 $XmCandidate = [IO.Path]::GetFullPath((Join-Path $Root "run_xm_mt5_forward.py.candidate"))
@@ -176,7 +178,7 @@ function Assert-FrozenSuper1TaskContracts {
 Assert-Super1SecureDirectoryAcl -Path $ArchiveRoot
 Assert-Super1SecureDirectoryAcl -Path $ProbeControl -RunnerSid $runnerSid
 if (Test-Path -LiteralPath $ProbeRequest) {
-    throw "Super1 probe-control already contains an active request."
+    throw "Super1 control directory already contains an active request."
 }
 Assert-Super1SecureStopped -Root $Root -MainTask $MainTask -WatchdogTask $WatchdogTask
 
@@ -322,11 +324,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $runtime = Get-Content -LiteralPath $RuntimeCandidate -Raw | ConvertFrom-Json
-if (
+if ([long]$runtime.account_login -le 0 -or
     [long]$runtime.account_login -ne [long]$ExpectedLogin -or
     [string]::IsNullOrWhiteSpace([string]$runtime.expected_server) -or
-    [string]::IsNullOrWhiteSpace([string]$runtime.expected_company)
-) {
+    [string]::IsNullOrWhiteSpace([string]$runtime.expected_company) -or
+    [string]$runtime.environment -cne "XM_MT5_DEMO_ORDER") {
     throw "Super1 staged runtime has an unexpected broker identity."
 }
 $readinessPattern = '^' + [regex]::Escape($ArchiveRoot) +
@@ -397,7 +399,7 @@ try {
         $identityChecks.Count -lt 5 -or $permissionChecks.Count -lt 5 -or
         -not [bool]$flat.identity_checks.windows_profile -or
         $identityChecks -contains $false -or $permissionChecks -contains $false -or
-        [long]$flat.account_login -ne [long]$ExpectedLogin -or
+        [int]$flat.account_login -ne [int]$runtime.account_login -or
         [string]$flat.server -cne [string]$runtime.expected_server -or
         [string]$flat.company -cne [string]$runtime.expected_company -or
         [int]$flat.open_orders -ne 0 -or [int]$flat.open_positions -ne 0 -or
@@ -477,7 +479,7 @@ try {
         [string]$internalFlat.readiness_sha256 -notmatch '^[a-f0-9]{64}$' -or
         (Get-Super1SecureSha256 -Path ([string]$internalFlat.readiness_evidence)) -cne
             [string]$internalFlat.readiness_sha256 -or
-        [long]$internalFlat.account_login -ne [long]$ExpectedLogin -or
+        [int]$internalFlat.account_login -ne [int]$runtime.account_login -or
         [string]$internalFlat.server -cne [string]$runtime.expected_server -or
         [string]$internalFlat.company -cne [string]$runtime.expected_company -or
         [int]$internalFlat.open_orders -ne 0 -or
@@ -604,7 +606,7 @@ try {
     Wait-RunningTaskFreshState -TaskName $MainTask -Path $healthPath -NotBefore $rolloutStarted `
         -TimeoutSeconds 90 -ExpectedState "RUNNING"
     Start-ScheduledTask -TaskName $WatchdogTask
-    $watchdogPath = Join-Path $Root "watchdog_status.json"
+    $watchdogPath = [string]$RuntimeContract.watchdog_status
     Wait-RunningTaskFreshState -TaskName $WatchdogTask -Path $watchdogPath -NotBefore $rolloutStarted `
         -TimeoutSeconds 90 -ExpectedState "HEALTHY" -ExpectedMainTask $MainTask
     $healthRaw = Get-Content -LiteralPath $healthPath -Raw
@@ -701,7 +703,7 @@ catch {
         } `
         -VerifyOldHealth {
             $oldHealthPath = Join-Path $State "health.json"
-            $oldWatchdogPath = Join-Path $Root "watchdog_status.json"
+            $oldWatchdogPath = [string]$RuntimeContract.watchdog_status
             $oldHealth = Get-Content -LiteralPath $oldHealthPath -Raw | ConvertFrom-Json
             $oldWatchdog = Get-Content -LiteralPath $oldWatchdogPath -Raw | ConvertFrom-Json
             if ([string]$oldHealth.state -ne "RUNNING" -or

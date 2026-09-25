@@ -1,8 +1,8 @@
 {
   "schema": "deploy-001-evidence-v1",
-  "tested_commit": "448df9b88cd45ba7512176c4d302302a7790b953",
-  "tested_tree": "887eae832f9b628d6ceb2ac2bde7f7edbc860de9",
-  "branch": "codex/hash-checkout-contract",
+  "tested_commit": "2e7b42f9791fc208f980e3564c361eeb94439d8d",
+  "tested_tree": "d8cc1d1c87bfbe81875769b1196c026d3f000d9a",
+  "branch": "codex/risk-hardening-1-11",
   "production_test_paths": [
     "work/backtest/deploy/upgrade_forward_shadow_windows.ps1",
     "work/backtest/tests/powershell_contract.py",
@@ -10,7 +10,9 @@
     "work/backtest/tests/test_forward_upgrade_transaction.py",
     ".gitattributes",
     "work/backtest/tests/test_pinned_checkout_bytes.py",
-    "work/backtest/tests/test_powershell_harness_newlines.py"
+    "work/backtest/tests/test_powershell_harness_newlines.py",
+    "work/backtest/scripts/backtest_sandbox_worker.py",
+    "work/backtest/tests/test_backtest_sandbox.py"
   ],
   "environment": {
     "python": "3.11.9",
@@ -20,49 +22,92 @@
   "runs": [
     {
       "suite": "targeted",
-      "command": "py -3.11 -m pytest -q -p no:cacheprovider tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py tests/test_pinned_checkout_bytes.py tests/test_powershell_harness_newlines.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
+      "command": ".venv311\\Scripts\\python.exe -m pytest -q -p no:cacheprovider tests/test_deploy_001_release_contract.py tests/test_deployment_security.py tests/test_forward_upgrade_transaction.py tests/test_v16_deployment_contract.py tests/test_v16_transfer_runbook.py tests/test_xm_mt5_forward.py tests/test_check_mt5_flat.py tests/test_pinned_checkout_bytes.py tests/test_powershell_harness_newlines.py --junitxml=docs/DEPLOY_001_EVIDENCE/targeted.junit.xml",
       "exit_code": 0,
-      "passed": 219,
+      "passed": 225,
       "failed": 0,
       "errors": 0,
       "skipped": 0,
       "junit": {
         "path": "targeted.junit.xml",
-        "sha256": "718afc300e6ce5dfcd1b5f0a70e97c826ef3618c24739e5f3a2510942f13a570",
-        "git_blob_sha256": "718afc300e6ce5dfcd1b5f0a70e97c826ef3618c24739e5f3a2510942f13a570"
+        "sha256": "4d3d81c55c0efc42e09bf712ba013c61a9124abcc030926835de68eb7020a973",
+        "git_blob_sha256": "4d3d81c55c0efc42e09bf712ba013c61a9124abcc030926835de68eb7020a973"
       },
       "stdout_stderr": {
         "path": "targeted.log",
-        "sha256": "425f6598b5ce99b4e6227cf4464e470a5dd5d770e0082d1da80e94ed2a32249f",
-        "git_blob_sha256": "425f6598b5ce99b4e6227cf4464e470a5dd5d770e0082d1da80e94ed2a32249f"
+        "sha256": "38b3410f56db05c4df05e8d59a77dbc04b773ce3d714a663aaaf977544ed4d26",
+        "git_blob_sha256": "38b3410f56db05c4df05e8d59a77dbc04b773ce3d714a663aaaf977544ed4d26"
       }
     },
     {
       "suite": "collection",
-      "command": "py -3.11 -m pytest --collect-only -q -p no:cacheprovider",
+      "command": ".venv311\\Scripts\\python.exe -m pytest --collect-only -q -p no:cacheprovider",
       "exit_code": 0,
-      "collected": 576,
+      "collected": 777,
       "status": "PASS_COLLECTION",
       "stdout_stderr": {
         "path": "collection.log",
-        "sha256": "12776edd2813689e4db0ebd42725e26f0e9752172900980fa92e620d7b4d80ec",
-        "git_blob_sha256": "12776edd2813689e4db0ebd42725e26f0e9752172900980fa92e620d7b4d80ec"
+        "sha256": "05b8d285f8fbd6710c5b5f6dbb48cfcf25ee2d05ad97d363c807c9ad17bff44e",
+        "git_blob_sha256": "05b8d285f8fbd6710c5b5f6dbb48cfcf25ee2d05ad97d363c807c9ad17bff44e"
       }
     },
     {
       "suite": "powershell_ast",
-      "command": "py -3.11: powershell_contract.powershell_ast for the three production builder/upgrader scripts",
+      "command": "python: powershell_contract.powershell_ast for the three production builder/upgrader scripts",
       "exit_code": 0,
       "stdout_stderr": {
         "path": "ast.log",
-        "sha256": "74decbbe12bd7dbee4b9c57c82aa0391631fd83a640e3a752f8535ccd3bdf348",
-        "git_blob_sha256": "74decbbe12bd7dbee4b9c57c82aa0391631fd83a640e3a752f8535ccd3bdf348"
+        "sha256": "42ba20f898ed58b14aeb20047322cc5387bfb51845bae9c91bb70a5d036d6404",
+        "git_blob_sha256": "42ba20f898ed58b14aeb20047322cc5387bfb51845bae9c91bb70a5d036d6404"
+      }
+    },
+    {
+      "suite": "full",
+      "command": ".venv311\\Scripts\\python.exe -m pytest -q --junitxml=outputs/risk-hardening-n1-full-20260922.junit.xml",
+      "exit_code": 1,
+      "collected": 777,
+      "passed": 776,
+      "failed": 0,
+      "errors": 1,
+      "skipped": 0,
+      "status": "BLOCKED_EXTERNAL_SYMLINK_FIXTURE",
+      "junit": {
+        "path": "full.junit.xml",
+        "sha256": "8b126d33b571574b01d9b105066efd839f148a3a63ff0f0dd4cb36a25c0b688d",
+        "git_blob_sha256": "8b126d33b571574b01d9b105066efd839f148a3a63ff0f0dd4cb36a25c0b688d"
+      },
+      "stdout_stderr": {
+        "path": "full.log",
+        "sha256": "6514c94ed0e3cda53f61307cb206cfdd0a49ccf4c0cd321be058788fc002c287",
+        "git_blob_sha256": "6514c94ed0e3cda53f61307cb206cfdd0a49ccf4c0cd321be058788fc002c287"
+      }
+    },
+    {
+      "suite": "sandbox_native_cli",
+      "command": ".venv311\\Scripts\\python.exe -m pytest -q tests/test_backtest_sandbox.py -k 'not symlink' --junitxml=outputs/risk-hardening-n1-sandbox-20260922.junit.xml",
+      "exit_code": 0,
+      "collected": 20,
+      "passed": 19,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 1,
+      "status": "PASS_NATIVE_CLI_RUNTIME_BLOCKED_SYMLINK_EXTERNAL",
+      "junit": {
+        "path": "sandbox-n1.junit.xml",
+        "sha256": "29bb543a551ef76b598439c2768de4409461872184ab95759dfbacaa81f0f4b7",
+        "git_blob_sha256": "29bb543a551ef76b598439c2768de4409461872184ab95759dfbacaa81f0f4b7"
+      },
+      "stdout_stderr": {
+        "path": "sandbox-n1.log",
+        "sha256": "f79b5ad49a347fb210a722ff6d0eb537e0f4eb564bc38e6e1a69a9756173ad7e",
+        "git_blob_sha256": "f79b5ad49a347fb210a722ff6d0eb537e0f4eb564bc38e6e1a69a9756173ad7e"
       }
     }
   ],
   "notes": [
     "These runs did not sign a release, deploy, contact MT5/broker or modify tasks/services/ACLs.",
-    "All 576 nodes collect. Targeted 219 passes are not a full-suite pass or external acceptance.",
+    "Collection contains 777 nodes. Targeted 225 passed; native/CLI sandbox subset produced 19 passes with 1 intentional symlink deselection; full suite produced 776 passes, 0 assertion failures and 1 external symlink-fixture setup error.",
     "Previous evidence remains available at d1c0b07cdbf5729136cc436746f78ddcc00544ec.",
     "Separate external key-access challenge evidence is not a signed release or deployment."
   ]

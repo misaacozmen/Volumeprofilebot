@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .numeric_contracts import finite_float, nonnegative_float, positive_float, strict_ratio
+
 
 @dataclass(frozen=True)
 class SymbolConfig:
@@ -49,6 +51,40 @@ class SymbolConfig:
     opening_premarket_direction_mode: str = "off"
     active_trade_block_mode: str = "exit"
     htf_body_close_requalification: str = "off"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if not isinstance(self.timeframe, str) or not self.timeframe.strip():
+            raise ValueError("timeframe must be non-empty")
+        nonnegative_float(self.vah_val_tolerance, "vah_val_tolerance")
+        nonnegative_float(self.spread_points, "spread_points")
+        nonnegative_float(self.slippage_points, "slippage_points")
+        if self.tick_size_points is not None:
+            positive_float(self.tick_size_points, "tick_size_points")
+        if not isinstance(self.max_trades_per_day, int) or isinstance(self.max_trades_per_day, bool):
+            raise ValueError("max_trades_per_day must be an integer")
+        if self.max_trades_per_day < 0:
+            raise ValueError("max_trades_per_day must be non-negative")
+        strict_ratio(self.value_area_pct, "value_area_pct")
+        if not isinstance(self.volume_profile_rows, int) or isinstance(self.volume_profile_rows, bool):
+            raise ValueError("volume_profile_rows must be an integer")
+        if self.volume_profile_rows <= 0:
+            raise ValueError("volume_profile_rows must be positive")
+        positive_float(self.reward_r, "reward_r")
+        for name in (
+            "equal_swing_tolerance",
+            "min_fvg_points",
+            "first30_range_max",
+            "swing_first30_directionality_min",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                finite_float(value, name)
+
+    @property
+    def cost_unit(self) -> str:
+        return "price"
 
 
 def _configs_for_timeframes(

@@ -170,14 +170,15 @@ def test_smoke_binds_launcher_scalar_and_result_hash_to_producer() -> None:
 def test_smoke_seals_before_restart_and_requires_fresh_health() -> None:
     commands_for_smoke = commands("run_super1_demo_smoke_windows.ps1")
     seal = next(item for item in commands_for_smoke if item["name"] == "Seal-Super1SecureEvidenceTree")
-    restart = next(item for item in commands_for_smoke if item["name"] == "Start-ScheduledTask" and item["start"] > seal["start"])
-    assert seal["start"] < restart["start"]
+    smoke_source = (DEPLOY / "run_super1_demo_smoke_windows.ps1").read_text(encoding="utf-8")
+    restart = smoke_source.index("start_super1_local_windows.ps1", smoke_source.index("Seal-Super1SecureEvidenceTree"))
+    assert seal["start"] < restart
     assignments = {item["left"] for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "assignment")}
     members = {item["member"] for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "member")}
-    assert "$restartStarted" in assignments and "LastWriteTimeUtc" in members
+    assert "$restartStarted" in assignments and "updated_at" in members
     conditions = "\n".join(str(clause["condition"]) for item in facts(DEPLOY / "run_super1_demo_smoke_windows.ps1", "if") for clause in item["clauses"])
-    assert 'state -eq "RUNNING"' in conditions and 'state -eq "HEALTHY"' in conditions
-    assert "main_task" in conditions
+    assert 'state -ne "RUNNING"' in smoke_source and 'HEALTHY' in smoke_source
+    assert "$MainTask" in smoke_source and "$WatchdogTask" in smoke_source
 
 
 def test_builder_and_integrity_use_v16_baselines() -> None:

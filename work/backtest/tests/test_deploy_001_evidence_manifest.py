@@ -8,26 +8,28 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FINAL_EVIDENCE_ROOT = ROOT / "docs" / "DEPLOY_001_EVIDENCE_FINAL_20260922_a6988d9"
+# Clean import of the immutable historical records, parented only by accepted main.
+# Original tested refs remain metadata; making their private ancestry reachable is forbidden.
+HISTORICAL_ARCHIVE_COMMIT = "5c2879bef9c9babcd7b8e7d450d8ce68e5abfc74"
 
 
-def _verify_evidence_manifest(evidence_root: Path, repo_root: Path) -> None:
+def _verify_evidence_manifest(
+    evidence_root: Path,
+    repo_root: Path,
+    *,
+    require_current_source: bool = False,
+) -> None:
     manifest = json.loads((evidence_root / "manifest.json").read_text(encoding="utf-8"))
-    tested_commit = str(manifest["tested_commit"])
-    assert subprocess.check_output(
-        ["git", "rev-parse", tested_commit], cwd=repo_root, text=True
-    ).strip() == tested_commit
-    assert subprocess.check_output(
-        ["git", "rev-parse", f"{tested_commit}^{{tree}}"],
+    committed_evidence_root = f"HEAD:work/backtest/docs/{evidence_root.name}"
+    archived_manifest = subprocess.check_output(
+        ["git", "show", f"{HISTORICAL_ARCHIVE_COMMIT}:work/backtest/docs/{evidence_root.name}/manifest.json"],
         cwd=repo_root,
-        text=True,
-    ).strip() == manifest["tested_tree"]
-
-    source_paths = [str(path) for path in manifest["production_test_paths"]]
-    assert subprocess.run(
-        ["git", "diff", "--quiet", tested_commit, "HEAD", "--", *source_paths],
-        cwd=repo_root,
-        check=False,
-    ).returncode == 0
+    )
+    assert (evidence_root / "manifest.json").read_bytes() == archived_manifest
+    # This binds the unmodified original commit/tree declaration and all artifact
+    # hashes without pretending that archived runs accept the new clean source.
+    assert not require_current_source, "Historical evidence cannot accept current source; run the clean delivery verifier"
 
     for run in manifest["runs"]:
         for binding_name in ("junit", "stdout_stderr"):
@@ -42,7 +44,7 @@ def _verify_evidence_manifest(evidence_root: Path, repo_root: Path) -> None:
                 [
                     "git",
                     "show",
-                    f"HEAD:work/backtest/docs/DEPLOY_001_EVIDENCE/{relative}",
+                    f"{committed_evidence_root}/{relative}",
                 ],
                 cwd=repo_root,
             )
@@ -52,6 +54,47 @@ def _verify_evidence_manifest(evidence_root: Path, repo_root: Path) -> None:
 
 def test_evidence_manifest_binds_checkout_and_committed_bytes() -> None:
     _verify_evidence_manifest(ROOT / "docs" / "DEPLOY_001_EVIDENCE", ROOT.parents[1])
+
+
+def test_historical_final_evidence_manifest_binds_its_original_ref_and_committed_bytes() -> None:
+    _verify_evidence_manifest(
+        FINAL_EVIDENCE_ROOT,
+        ROOT.parents[1],
+    )
+
+
+def test_historical_evidence_cannot_be_mistaken_for_current_source_acceptance() -> None:
+    with pytest.raises(AssertionError):
+        _verify_evidence_manifest(
+            FINAL_EVIDENCE_ROOT,
+            ROOT.parents[1],
+            require_current_source=True,
+        )
+
+
+def test_final_evidence_manifest_rejects_each_corrupted_artifact(tmp_path: Path) -> None:
+    fixture_root = tmp_path / FINAL_EVIDENCE_ROOT.name
+    shutil.copytree(FINAL_EVIDENCE_ROOT, fixture_root)
+    manifest = json.loads((fixture_root / "manifest.json").read_text(encoding="utf-8"))
+    artifacts = [
+        str(run[binding_name]["path"])
+        for run in manifest["runs"]
+        for binding_name in ("junit", "stdout_stderr")
+        if binding_name in run
+    ]
+    assert sorted(artifacts) == sorted(
+        ["collection.log", "full.xml", "full.log", "sandbox.junit.xml", "sandbox.log"]
+    )
+    _verify_evidence_manifest(
+        fixture_root,
+        ROOT.parents[1],
+    )
+    for relative in artifacts:
+        artifact = fixture_root / relative
+        artifact.write_bytes(artifact.read_bytes() + b"\nCORRUPTED\n")
+        with pytest.raises(AssertionError):
+            _verify_evidence_manifest(fixture_root, ROOT.parents[1])
+        shutil.copy2(FINAL_EVIDENCE_ROOT / relative, artifact)
 
 
 def test_evidence_manifest_rejects_each_individually_corrupted_artifact(
@@ -68,7 +111,16 @@ def test_evidence_manifest_rejects_each_individually_corrupted_artifact(
         if binding_name in run
     ]
     assert sorted(artifacts) == sorted(
-        ["targeted.junit.xml", "targeted.log", "collection.log", "ast.log"]
+            [
+                "targeted.junit.xml",
+                "targeted.log",
+                "collection.log",
+                "ast.log",
+                "full.junit.xml",
+                "full.log",
+                "sandbox-n1.junit.xml",
+                "sandbox-n1.log",
+            ]
     )
 
     _verify_evidence_manifest(fixture_root, ROOT.parents[1])

@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$script:Super1RuntimeContractValues = Assert-Super1RuntimeContract
 $script:Super1SecureIcaclsExe = [IO.Path]::GetFullPath(
     (Join-Path ([Environment]::SystemDirectory) "icacls.exe")
 )
@@ -59,7 +61,7 @@ function Get-Super1SecurePythonProcesses {
 
 function Get-Super1SecureTerminalProcesses {
     param([Parameter(Mandatory = $true)][string]$Root)
-    $terminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
+    $terminal = [IO.Path]::GetFullPath((Get-Super1RuntimePath -Name terminal))
     $matching = @(
         Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" -ErrorAction Stop |
             Where-Object {
@@ -144,7 +146,7 @@ function Get-Super1SecureUnexpectedRunnerProcesses {
         [Parameter(Mandatory = $true)][string]$RunnerSid,
         [switch]$PreserveTerminal
     )
-    $terminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
+    $terminal = [IO.Path]::GetFullPath((Get-Super1RuntimePath -Name terminal))
     return @(Get-Super1SecureRunnerProcesses -RunnerSid $RunnerSid | Where-Object {
         if (-not $PreserveTerminal) { return $true }
         if ([string]::IsNullOrWhiteSpace([string]$_.ExecutablePath)) { return $true }
@@ -736,25 +738,19 @@ function Get-Super1SecurePrincipalSid {
     ).Value
 }
 
-function Assert-Super1SecureBootTrigger {
+function Assert-Super1SecureNoTriggers {
     param([Parameter(Mandatory = $true)][object]$Task)
     $triggers = @($Task.Triggers)
-    if ($triggers.Count -ne 1) {
-        throw "$($Task.TaskName) must have exactly one boot trigger."
+    if ($triggers.Count -ne 0) {
+        throw "$($Task.TaskName) must have no trigger; manual lease controls every start."
     }
-    $trigger = $triggers[0]
-    if ([string]$trigger.CimClass.CimClassName -cne "MSFT_TaskBootTrigger" -or
-        -not [bool]$trigger.Enabled -or
-        -not [string]::IsNullOrEmpty([string]$trigger.StartBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.EndBoundary) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.ExecutionTimeLimit) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.Id) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.Delay) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.Repetition.Interval) -or
-        -not [string]::IsNullOrEmpty([string]$trigger.Repetition.Duration) -or
-        [bool]$trigger.Repetition.StopAtDurationEnd) {
-        throw "$($Task.TaskName) boot trigger differs from the exact Super1 contract."
-    }
+}
+
+# Kept as a compatibility name for callers that only imported the helper in
+# older evidence harnesses. It enforces the new no-trigger contract.
+function Assert-Super1SecureBootTrigger {
+    param([Parameter(Mandatory = $true)][object]$Task)
+    Assert-Super1SecureNoTriggers -Task $Task
 }
 
 function Assert-Super1SecureTaskBindings {
@@ -778,9 +774,8 @@ function Assert-Super1SecureTaskBindings {
         "-ExecutionPolicy Bypass"
         "-File `"$resolvedRoot\app\deploy\watchdog_windows.ps1`""
         "-MainTaskName `"$MainTask`""
-        "-HealthPath `"$resolvedRoot\state\health.json`""
-        '-ProcessPattern "run_super1_xm_mt5_forward.py"'
-        "-StatusPath `"$resolvedRoot\watchdog_status.json`""
+        "-HealthPath `"$([string](Get-Super1RuntimeContract).health)`""
+        "-StatusPath `"$([string](Get-Super1RuntimeContract).watchdog_status)`""
     ) -join " "
     $mainRestartInterval = ConvertFrom-Super1SecureTaskDuration `
         -Value $main.Settings.RestartInterval
@@ -793,21 +788,27 @@ function Assert-Super1SecureTaskBindings {
 
     if ([string]$main.TaskPath -cne "\" -or
         $mainActions.Count -ne 1 -or
-        [string]$mainActions[0].Execute -cne "powershell.exe" -or
+        -not [IO.Path]::GetFullPath([string]$mainActions[0].Execute).Equals(
+            $script:Super1SecurePowerShellExe,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
         [string]$mainActions[0].Arguments -cne $mainArguments -or
         -not [string]::IsNullOrEmpty([string]$mainActions[0].WorkingDirectory) -or
         $mainPrincipalSid -cne $runnerSid -or
         [string]$main.Principal.LogonType -cne "Password" -or
         [string]$main.Principal.RunLevel -cne "Limited" -or
         -not [bool]$main.Settings.Enabled -or
-        [int]$main.Settings.RestartCount -ne 999 -or
-        $mainRestartInterval -ne [TimeSpan]::FromMinutes(1) -or
+         [int]$main.Settings.RestartCount -ne 0 -or
+        $mainRestartInterval -ne [TimeSpan]::FromMinutes(15) -or
         $mainExecutionLimit -ne [TimeSpan]::Zero -or
         -not [bool]$main.Settings.StartWhenAvailable -or
-        [string]$main.Settings.MultipleInstances -cne "IgnoreNew") {
+         [string]$main.Settings.MultipleInstances -cne "IgnoreNew" -or
+         [bool]$main.Settings.DisallowStartIfOnBatteries -or
+         [bool]$main.Settings.StopIfGoingOnBatteries -or
+         [bool]$main.Settings.WakeToRun) {
         throw "Super1 main Password task differs from the exact fixed contract."
     }
-    Assert-Super1SecureBootTrigger -Task $main
+    Assert-Super1SecureNoTriggers -Task $main
 
     $otherRunnerTasks = New-Object Collections.Generic.List[string]
     foreach ($candidateTask in @(Get-ScheduledTask -ErrorAction Stop)) {
@@ -839,14 +840,17 @@ function Assert-Super1SecureTaskBindings {
         [string]$watchdog.Principal.LogonType -cne "ServiceAccount" -or
         [string]$watchdog.Principal.RunLevel -cne "Highest" -or
         -not [bool]$watchdog.Settings.Enabled -or
-        [int]$watchdog.Settings.RestartCount -ne 3 -or
-        $watchdogRestartInterval -ne [TimeSpan]::FromMinutes(1) -or
+         [int]$watchdog.Settings.RestartCount -ne 0 -or
+        $watchdogRestartInterval -ne [TimeSpan]::FromMinutes(15) -or
         $watchdogExecutionLimit -ne [TimeSpan]::Zero -or
         -not [bool]$watchdog.Settings.StartWhenAvailable -or
-        [string]$watchdog.Settings.MultipleInstances -cne "IgnoreNew") {
+         [string]$watchdog.Settings.MultipleInstances -cne "IgnoreNew" -or
+         [bool]$watchdog.Settings.DisallowStartIfOnBatteries -or
+         [bool]$watchdog.Settings.StopIfGoingOnBatteries -or
+         [bool]$watchdog.Settings.WakeToRun) {
         throw "Super1 watchdog task differs from the exact fixed contract."
     }
-    Assert-Super1SecureBootTrigger -Task $watchdog
+    Assert-Super1SecureNoTriggers -Task $watchdog
     return $runnerSid
 }
 

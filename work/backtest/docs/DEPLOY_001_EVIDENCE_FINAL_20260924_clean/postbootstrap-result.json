@@ -1,0 +1,129 @@
+{
+  "success": {
+    "response": {
+      "ok": true,
+      "stdout": "{\"phase\": \"dispatch\", \"probes\": [{\"label\": \"direct\", \"allowed\": false, \"error_type\": \"PermissionError\", \"winerror\": null, \"errno\": null}, {\"label\": \"trusted_wrapper\", \"allowed\": false, \"error_type\": \"PermissionError\", \"winerror\": null, \"errno\": null}]}\n",
+      "sandbox_attestation": {
+        "acl_roots": {
+          "read_only": [
+            "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-ypmr49bo\\runtime"
+          ],
+          "read_write": [
+            "C:\\Users\\ISAAC\\Documents\\risk-clean-delivery-20260924\\native-probe-final\\success_output"
+          ]
+        },
+        "appcontainer_sid": "S-1-15-2-968449700-3271263086-1659035046-2041051975-3187035973-1288280912-2145011612",
+        "capabilities": [],
+        "command": [
+          "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-ypmr49bo\\runtime\\python\\python.exe",
+          "-I",
+          "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-ypmr49bo\\runtime\\scripts\\backtest_sandbox_worker.py"
+        ],
+        "exit_code": 0,
+        "job_limits": {
+          "active_process_limit": 1,
+          "cpu_seconds": 600,
+          "memory_mb": 4096,
+          "output_bytes": 1073741824,
+          "wall_seconds": 900
+        },
+        "launcher_sha256": "e0d4865243bc245b7fe2c2bc6de0a8b859c5b304ba77de9d40a42482d5261c61",
+        "network_capabilities": [],
+        "runtime_manifest_sha256": "abb9b9e9dd694e98ff95e3da433dacf51381e8b172014964faa98097b8cc7a39",
+        "schema_version": "windows-appcontainer-launcher-v1",
+        "test_results_sha256": "62bd840f019df6749eb17590ef3b91bd837667952a952b5ad5d7d16ec29f8226",
+        "windows_build": "10.0.26200",
+        "worker_sha256": "306e7d213ac4b1db8e6aba68865655fd8b2ff470e3f5acf3b0b9abd3335127ab"
+      }
+    },
+    "probes": {
+      "phase": "dispatch",
+      "probes": [
+        {
+          "label": "direct",
+          "allowed": false,
+          "error_type": "PermissionError",
+          "winerror": null,
+          "errno": null
+        },
+        {
+          "label": "trusted_wrapper",
+          "allowed": false,
+          "error_type": "PermissionError",
+          "winerror": null,
+          "errno": null
+        }
+      ]
+    },
+    "production_hook_ast_sha256": {
+      "deny_hook": "144cce0800bc3d8fb531c97fa050549e3679aaf19dd936e64907744f1705b3be",
+      "_bootstrap_cli_runtime": "c56348c681d7ffc88de6118fa5ff74de9c297ec7bf94bb7cfe3625f8252c4132",
+      "_bootstrap_dll_is_allowlisted": "12eab3ed29101107d0e8730acfa48443f04a51525cce7be00834add02110b038"
+    },
+    "worker_sha256": "306e7d213ac4b1db8e6aba68865655fd8b2ff470e3f5acf3b0b9abd3335127ab"
+  },
+  "import_failure": {
+    "response": {
+      "ok": true,
+      "stdout": "{\"phase\": \"dispatch\", \"probes\": [{\"label\": \"direct\", \"allowed\": false, \"error_type\": \"PermissionError\", \"winerror\": null, \"errno\": null}, {\"label\": \"trusted_wrapper\", \"allowed\": false, \"error_type\": \"PermissionError\", \"winerror\": null, \"errno\": null}]}\n",
+      "sandbox_attestation": {
+        "acl_roots": {
+          "read_only": [
+            "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-oppurd1a\\runtime"
+          ],
+          "read_write": [
+            "C:\\Users\\ISAAC\\Documents\\risk-clean-delivery-20260924\\native-probe-final\\import_failure_output"
+          ]
+        },
+        "appcontainer_sid": "S-1-15-2-3248648458-1892352442-2792197767-3424012981-2221118708-3446241218-4022504936",
+        "capabilities": [],
+        "command": [
+          "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-oppurd1a\\runtime\\python\\python.exe",
+          "-I",
+          "C:\\Users\\ISAAC\\AppData\\Local\\Temp\\.otobt-appcontainer-oppurd1a\\runtime\\scripts\\backtest_sandbox_worker.py"
+        ],
+        "exit_code": 0,
+        "job_limits": {
+          "active_process_limit": 1,
+          "cpu_seconds": 600,
+          "memory_mb": 4096,
+          "output_bytes": 1073741824,
+          "wall_seconds": 900
+        },
+        "launcher_sha256": "e0d4865243bc245b7fe2c2bc6de0a8b859c5b304ba77de9d40a42482d5261c61",
+        "network_capabilities": [],
+        "runtime_manifest_sha256": "abb9b9e9dd694e98ff95e3da433dacf51381e8b172014964faa98097b8cc7a39",
+        "schema_version": "windows-appcontainer-launcher-v1",
+        "test_results_sha256": "62bd840f019df6749eb17590ef3b91bd837667952a952b5ad5d7d16ec29f8226",
+        "windows_build": "10.0.26200",
+        "worker_sha256": "b7a93ef35a0e568ff7d162368f570ea8770fce249478d5d4b17843fa732d5c62"
+      }
+    },
+    "probes": {
+      "phase": "dispatch",
+      "probes": [
+        {
+          "label": "direct",
+          "allowed": false,
+          "error_type": "PermissionError",
+          "winerror": null,
+          "errno": null
+        },
+        {
+          "label": "trusted_wrapper",
+          "allowed": false,
+          "error_type": "PermissionError",
+          "winerror": null,
+          "errno": null
+        }
+      ]
+    },
+    "production_hook_ast_sha256": {
+      "deny_hook": "144cce0800bc3d8fb531c97fa050549e3679aaf19dd936e64907744f1705b3be",
+      "_bootstrap_cli_runtime": "c56348c681d7ffc88de6118fa5ff74de9c297ec7bf94bb7cfe3625f8252c4132",
+      "_bootstrap_dll_is_allowlisted": "12eab3ed29101107d0e8730acfa48443f04a51525cce7be00834add02110b038"
+    },
+    "worker_sha256": "b7a93ef35a0e568ff7d162368f570ea8770fce249478d5d4b17843fa732d5c62"
+  },
+  "source_sha256": "2f8fd724a74d5e1bfcd634739603cebcb35c7bf8b9e69e30f6ca64257a2b98e6"
+}

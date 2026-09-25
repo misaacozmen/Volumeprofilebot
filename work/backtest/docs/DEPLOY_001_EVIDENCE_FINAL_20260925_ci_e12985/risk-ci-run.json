@@ -1,0 +1,77 @@
+{
+  "run_id": 36139521424,
+  "run_attempt": 2,
+  "event": "pull_request",
+  "status": "completed",
+  "conclusion": "success",
+  "head_sha": "e12985fb54c6ca6b1deaf94b64f086a2d993e2fc",
+  "head_branch": "codex/risk-clean-delivery-20260924",
+  "html_url": "https://github.com/misaacozmen/Volumeprofilebot/actions/runs/36139521424",
+  "run_started_at": "2026-09-25T13:25:52Z",
+  "updated_at": "2026-09-25T13:41:05Z",
+  "job_id": 108090203700,
+  "job_name": "risk-gates",
+  "job_status": "completed",
+  "job_conclusion": "success",
+  "job_started_at": "2026-09-25T13:27:09Z",
+  "job_completed_at": "2026-09-25T13:41:04Z",
+  "steps": [
+    {
+      "number": 5,
+      "name": "Assert required external fixtures are prepared",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:28:16Z",
+      "completed_at": "2026-09-25T13:28:17Z"
+    },
+    {
+      "number": 6,
+      "name": "Scan project environment",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:28:17Z",
+      "completed_at": "2026-09-25T13:28:20Z"
+    },
+    {
+      "number": 7,
+      "name": "Run environment schema and sandbox gates",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:28:20Z",
+      "completed_at": "2026-09-25T13:31:14Z"
+    },
+    {
+      "number": 8,
+      "name": "Verify pinned provenance and baseline",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:31:14Z",
+      "completed_at": "2026-09-25T13:33:07Z"
+    },
+    {
+      "number": 9,
+      "name": "Collect full CPython 3.11 test inventory",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:33:07Z",
+      "completed_at": "2026-09-25T13:33:11Z"
+    },
+    {
+      "number": 10,
+      "name": "Run full CPython 3.11 JUnit gate",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-25T13:33:11Z",
+      "completed_at": "2026-09-25T13:40:58Z"
+    }
+  ],
+  "suite": {
+    "collection": 803,
+    "passed": 803,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "deselected": 0,
+    "warning": "1 expected duplicate-zip UserWarning"
+  }
+}

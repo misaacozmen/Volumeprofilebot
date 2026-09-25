@@ -1,14 +1,21 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
 
-$Root = [IO.Path]::GetFullPath("C:\Super1")
+$Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
+$App = [IO.Path]::GetFullPath([string]$RuntimeContract.app)
 $script:LauncherPhase = "BOOTSTRAP_START"
 trap {
+    $failure = $_.Exception
+    $sanitizedMessage = if ($null -eq $failure) { "Unknown launcher failure." } else { [string]$failure.Message }
+    $sanitizedMessage = $sanitizedMessage -replace "(?i)(password|secret|token)=?[^ ;,}]+", '$1=***'
     try {
-        $fatalState = [IO.Path]::GetFullPath((Join-Path $Root "state\health.json"))
-        $launcherFailure = [IO.Path]::GetFullPath(
-            (Join-Path $Root "state\launcher_failure.json")
-        )
+        $trapContract = Get-Variable -Name RuntimeContract -ValueOnly -ErrorAction SilentlyContinue
+        # The literal is the emergency copy of the contract value used only if
+        # the contract itself failed before the trap could resolve it.
+        $fatalState = if ($null -ne $trapContract) { [IO.Path]::GetFullPath([string]$trapContract.health) } else { [IO.Path]::GetFullPath((Join-Path $Root "state\health.json")) }
+        $launcherFailure = if ($null -ne $trapContract) { [IO.Path]::GetFullPath([string]$trapContract.launcher_failure) } else { [IO.Path]::GetFullPath((Join-Path $Root "state\launcher_failure.json")) }
         $fatalDirectory = Split-Path -Parent $fatalState
         [void][IO.Directory]::CreateDirectory($fatalDirectory)
         $fatalStamp = [DateTimeOffset]::UtcNow.ToString("o")
@@ -16,6 +23,8 @@ trap {
             schema_version = 1
             state = "LAUNCHER_FATAL_NO_SEND"
             phase = $script:LauncherPhase
+            exception_type = if ($null -eq $failure) { "Unknown" } else { $failure.GetType().FullName }
+            error = $sanitizedMessage
             updated_at_utc = $fatalStamp
         } | ConvertTo-Json -Compress
         $failureTemp = "$launcherFailure.$([Guid]::NewGuid().ToString('N')).tmp"
@@ -30,23 +39,33 @@ trap {
         else { [IO.File]::Move($failureTemp, $launcherFailure) }
     }
     catch {
-        # Continue to the health fail-safe even if phase evidence cannot be written.
+            # Continue to the health fail-safe even if phase evidence cannot be written.
     }
     try {
-        $fatalState = [IO.Path]::GetFullPath((Join-Path $Root "state\health.json"))
+        $trapContract = Get-Variable -Name RuntimeContract -ValueOnly -ErrorAction SilentlyContinue
+        $fatalState = if ($null -ne $trapContract) { [IO.Path]::GetFullPath([string]$trapContract.health) } else { [IO.Path]::GetFullPath((Join-Path $Root "state\health.json")) }
         $fatalDirectory = Split-Path -Parent $fatalState
         [void][IO.Directory]::CreateDirectory($fatalDirectory)
         $fatalStamp = [DateTimeOffset]::UtcNow.ToString("o")
-        $fatalJson = (
-            '{"schema_version":1,"state":"CRITICAL_STOP",' +
-            '"error":"Super1 launcher failed its protected bootstrap/runtime gate.",' +
-            '"updated_at":"' + $fatalStamp + '","markets":{' +
-            '"nq":{"streaming":false},"spx":{"streaming":false}},' +
-            '"last_cycle":{"execution":{"state":"LAUNCHER_FATAL_NO_SEND"},' +
-            '"daily_report":{"path":""},"prefix":{"path":""},"fetches":{' +
-            '"nq":{"latest_bar_utc":"","conflicts":0,"rejected":0},' +
-            '"spx":{"latest_bar_utc":"","conflicts":0,"rejected":0}}}}'
-        )
+        $fatalJson = [ordered]@{
+            schema_version = 1
+            state = "CRITICAL_STOP"
+            error = $sanitizedMessage
+            updated_at = $fatalStamp
+            markets = [ordered]@{
+                nq = [ordered]@{ streaming = $false }
+                spx = [ordered]@{ streaming = $false }
+            }
+            last_cycle = [ordered]@{
+                execution = [ordered]@{ state = "LAUNCHER_FATAL_NO_SEND" }
+                daily_report = [ordered]@{ path = "" }
+                prefix = [ordered]@{ path = "" }
+                fetches = [ordered]@{
+                    nq = [ordered]@{ latest_bar_utc = ""; conflicts = 0; rejected = 0 }
+                    spx = [ordered]@{ latest_bar_utc = ""; conflicts = 0; rejected = 0 }
+                }
+            }
+        } | ConvertTo-Json -Depth 12 -Compress
         $fatalTemp = "$fatalState.$([Guid]::NewGuid().ToString('N')).tmp"
         [IO.File]::WriteAllText(
             $fatalTemp,
@@ -61,12 +80,11 @@ trap {
         }
     }
     catch {
-        # The task must still return success to prevent its fixed restart-999 policy looping.
+        # A fatal launcher failure must remain observable as a nonzero task result.
     }
-    exit 0
+    exit 78
 }
 
-$App = [IO.Path]::GetFullPath((Join-Path $Root "app"))
 $script:LauncherPhase = "POWERSHELL_PATH_GATE"
 $TrustedScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\run_super1_windows.ps1"))
 $CurrentScript = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
@@ -96,7 +114,7 @@ $PreviousPSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "P
 $TrustedPSModulePath = [IO.Path]::GetFullPath((Join-Path $ExpectedPSHome "Modules"))
 $env:PSModulePath = $TrustedPSModulePath
 $PowerShellPinPath = [IO.Path]::GetFullPath(
-    (Join-Path $App "deploy\powershell_runtime_pin.json")
+    (Join-Path ([string]$RuntimeContract.runtime_trust) "powershell_runtime_pin.json")
 )
 $script:LauncherPhase = "POWERSHELL_PIN_GATE"
 $PowerShellPinLock = $null
@@ -216,21 +234,22 @@ function Write-Super1ProbeProducerEnvelope {
     finally { $stream.Dispose() }
 }
 
-$Python = [IO.Path]::GetFullPath((Join-Path $Root "venv311\Scripts\python.exe"))
+$Python = [IO.Path]::GetFullPath([string]$RuntimeContract.python)
 $Runner = [IO.Path]::GetFullPath((Join-Path $App "scripts\run_super1_xm_mt5_forward.py"))
 $FlatDiagnostic = [IO.Path]::GetFullPath((Join-Path $App "scripts\check_mt5_flat.py"))
-$RuntimeConfig = [IO.Path]::GetFullPath((Join-Path $App "live_forward\super1_xm_mt5_demo_config.json"))
-$TerminalPinPath = [IO.Path]::GetFullPath((Join-Path $App "deploy\terminal_runtime_pin.json"))
-$TerminalPointer = [IO.Path]::GetFullPath((Join-Path $Root "mt5-terminal.txt"))
-$CanonicalTerminal = [IO.Path]::GetFullPath((Join-Path $Root "mt5-clean5833\terminal64.exe"))
-$ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
+$RuntimeConfig = [IO.Path]::GetFullPath((Join-Path $App ([string]$RuntimeContract.runtime_config)))
+$CredentialPath = Get-Super1RuntimeCredentialPath
+$TerminalPinPath = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.runtime_trust) "terminal_runtime_pin.json"))
+$CanonicalTerminal = [IO.Path]::GetFullPath([string]$RuntimeContract.terminal)
+$ProbeControl = [IO.Path]::GetFullPath([string]$RuntimeContract.control)
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
 # Policy compatibility marker: kind -notin @("flat", "rollover_init") is extended only by the fixed smoke kind below.
 $RunnerSid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$LauncherSha256 = Get-Super1SecureSha256 -Path $TrustedScript
 
 foreach ($required in @(
-    $Python, $Runner, $FlatDiagnostic, $RuntimeConfig, $TerminalPinPath,
-    $TerminalPointer, $CanonicalTerminal, $ProbeControl
+    $Python, $Runner, $FlatDiagnostic, $RuntimeConfig, $TerminalPinPath, $CredentialPath,
+    $CanonicalTerminal, $ProbeControl, [string]$RuntimeContract.runtime_trust
 )) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Super1 protected runtime dependency is missing: $required"
@@ -241,11 +260,106 @@ foreach ($required in @(
 }
 Assert-Super1SecureDirectoryAcl -Path $ProbeControl -RunnerSid $RunnerSid
 
+$script:Super1PasswordPlain = $null
+$script:Super1PythonExitCode = -1
+$script:Super1PythonStderr = ""
+function Invoke-Super1Python {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$ProvideCredential
+    )
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Python
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Arguments = (($Arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value -match '[\s"]') { '"' + $value.Replace('"', '\\"') + '"' } else { $value }
+    }) -join " ")
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw "Could not start the pinned Super1 Python runtime." }
+    try {
+        if ($ProvideCredential) {
+            if ([string]::IsNullOrEmpty($script:Super1PasswordPlain)) {
+                throw "Transient Super1 credential is unavailable."
+            }
+            $process.StandardInput.WriteLine($script:Super1PasswordPlain)
+        }
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $script:Super1PythonStderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $script:Super1PythonExitCode = [int]$process.ExitCode
+        return $stdout
+    }
+    finally { $process.Dispose() }
+}
+
+function Write-Super1SmokeStopHealth {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][object]$StopRequest
+    )
+    $openOrders = [int]$Result.open_orders_after
+    $openPositions = [int]$Result.open_positions_after
+    $unknown = [int]$Result.unknown_exposure_after
+    $safe = [string]$Result.state -ceq "PASS" -and $openOrders -eq 0 -and
+        $openPositions -eq 0 -and $unknown -eq 0
+    $state = if ($safe) { "STOPPED" } else { "UNSAFE_STOP_NO_SEND" }
+    $payload = [ordered]@{
+        updated_at = [DateTimeOffset]::UtcNow.ToString("o")
+        state = $state
+        request_id = [string]$StopRequest.request_id
+        lease_id = [string]$StopRequest.lease_id
+        safe_stop = if ($safe) { "PASS" } else { "FAIL" }
+        cancelled = $Result.cancelled
+        owned_pending = $openOrders
+        open_positions = $openPositions
+        owned_positions = $openPositions
+        protected_open = 0
+        foreign_exposure = 0
+        unknown = $unknown
+        last_cycle = [ordered]@{ execution = [ordered]@{ state = "DEMO_SMOKE" } }
+    }
+    $healthPath = [IO.Path]::GetFullPath([string]$RuntimeContract.health)
+    $temp = "$healthPath.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllText(
+            $temp,
+            (($payload | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine),
+            (New-Object Text.UTF8Encoding($false))
+        )
+        if ([IO.File]::Exists($healthPath)) { [IO.File]::Replace($temp, $healthPath, $null) }
+        else { [IO.File]::Move($temp, $healthPath) }
+    }
+    finally { if ([IO.File]::Exists($temp)) { Remove-Item -LiteralPath $temp -Force } }
+}
+
+function Wait-Super1SmokeStopRequest {
+    $path = Join-Path $ProbeControl "stop-request.json"
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(90)
+    do {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            try {
+                $request = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+                if ([string]$request.request_id -and [string]$request.reason) { return $request }
+            }
+            catch { }
+        }
+        Start-Sleep -Seconds 1
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "Smoke completed without a protected stop request; refusing to claim safe shutdown."
+}
+
 $PreviousPythonHome = $env:PYTHONHOME
 $PreviousPythonPath = $env:PYTHONPATH
 $PreviousBytecode = $env:PYTHONDONTWRITEBYTECODE
 $PasswordPtr = [IntPtr]::Zero
-$PointerLock = $null
+$SecurePassword = $null
 $TerminalLock = $null
 $ProbeLock = $null
 $TransactionRequestLock = $null
@@ -264,18 +378,6 @@ try {
     if (-not $pinnedTerminal.Equals($CanonicalTerminal, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Super1 terminal pin does not name the canonical terminal."
     }
-    $PointerLock = [IO.File]::Open(
-        $TerminalPointer,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Read,
-        [IO.FileShare]::Read
-    )
-    $pointerReader = New-Object IO.StreamReader($PointerLock, [Text.Encoding]::UTF8, $true, 1024, $true)
-    try { $pointerTerminal = [IO.Path]::GetFullPath($pointerReader.ReadToEnd().Trim()) }
-    finally { $pointerReader.Dispose() }
-    if (-not $pointerTerminal.Equals($pinnedTerminal, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Super1 terminal pointer differs from the protected terminal pin."
-    }
     $TerminalLock = [IO.File]::Open(
         $pinnedTerminal,
         [IO.FileMode]::Open,
@@ -287,28 +389,17 @@ try {
     }
 
     $script:LauncherPhase = "BROKER_CREDENTIAL_GATE"
-    $server = (Get-Content -Raw (Join-Path $Root "xm-server.txt")).Trim()
     $runtime = [IO.File]::ReadAllText($RuntimeConfig) | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace($server) -or
-        $server -cne [string]$runtime.expected_server) {
-        throw "Super1 protected server config differs from the signed broker identity."
-    }
-    $env:XM_MT5_SERVER = $server
-    $env:XM_MT5_TERMINAL_PATH = $pinnedTerminal
     try {
-        $SecurePassword = (Get-Content -Raw (Join-Path $Root "xm-password.dpapi")).Trim() |
+        $SecurePassword = (Get-Content -Raw $CredentialPath).Trim() |
             ConvertTo-SecureString
         $PasswordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-        $env:XM_MT5_READ_ONLY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
-            $PasswordPtr
-        )
+        $script:Super1PasswordPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPtr)
     }
-    catch [Security.Cryptography.CryptographicException] {
-        # This legacy blob belongs to the pre-service account. The pinned portable
-        # demo terminal may use its saved session; the Python transport still
-        # verifies login/server/company/demo identity before every broker action.
-        $script:LauncherPhase = "BROKER_SAVED_SESSION"
-        $env:XM_MT5_READ_ONLY_PASSWORD = $null
+    catch {
+        $script:LauncherPhase = "BROKER_CREDENTIAL_FATAL"
+        $script:Super1PasswordPlain = $null
+        throw "Super1 broker credential is unavailable or cannot be decrypted."
     }
 
     if (Test-Path -LiteralPath $ProbeRequest -PathType Leaf) {
@@ -318,6 +409,10 @@ try {
         $request = [string]$requestEvidence.content | ConvertFrom-Json
         $transactionId = [string]$request.transaction_id
         $nonce = [string]$request.nonce
+        $env:SUPER1_INVOCATION_NONCE = $nonce
+        $env:SUPER1_RUNNER_SID = $RunnerSid
+        $env:SUPER1_LAUNCHER_SHA256 = $LauncherSha256
+        $env:SUPER1_INVOCATION_STARTED_AT = [DateTimeOffset]::UtcNow.ToString("o")
         try {
             $requestedAt = [DateTimeOffset]::Parse(
                 [string]$request.requested_at_utc
@@ -328,7 +423,7 @@ try {
         if ([int]$request.schema_version -ne 1 -or
             $transactionId -notmatch '^[a-f0-9]{32}$' -or
             $nonce -notmatch '^[a-f0-9]{32}$' -or
-            [string]$request.kind -notin @("flat", "rollover_init", "smoke") -or
+            [string]$request.kind -notin @("flat", "rollover_init", "binding_readiness", "smoke") -or
             [string]$request.expected_runner_sid -cne $RunnerSid -or
             [string]$request.expected_launcher_sha256 -cne $launcherSha256 -or
             $requestedAt -lt [DateTimeOffset]::UtcNow.AddSeconds(-30) -or
@@ -363,22 +458,31 @@ try {
         $probeStartedAt = [DateTimeOffset]::UtcNow
         if ([string]$request.kind -ceq "smoke") {
             $script:LauncherPhase = "DEMO_SMOKE"
-            $smokeOutput = & $Python -I -E -B $Runner --output-root (Join-Path $Root "state") smoke-order --confirm-demo
-            $smokeCode = [int]$LASTEXITCODE
+            $smokeOutput = Invoke-Super1Python -Arguments @(
+                "-I", "-E", "-B", $Runner, "--output-root", (Join-Path $Root "state"),
+                "--credential-stdin", "smoke-order", "--confirm-demo"
+            ) -ProvideCredential
+            $smokeCode = [int]$script:Super1PythonExitCode
             [IO.File]::WriteAllText($resultPath, ($smokeOutput -join "`n") + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
             Write-Super1ProbeProducerEnvelope -Path $producerPath -ResultPath $resultPath -Kind "smoke" -TransactionId $transactionId -Nonce $nonce -RequestSha256 ([string]$requestEvidence.sha256) -RunnerSid $RunnerSid -LauncherPath $TrustedScript -LauncherSha256 $launcherSha256 -StartedAt $probeStartedAt -ExitCode $smokeCode
             if ($smokeCode -ne 0) { throw "Super1 demo smoke failed." }
+            $smokeResult = ($smokeOutput -join "`n") | ConvertFrom-Json
+            $stopRequest = Wait-Super1SmokeStopRequest
+            Write-Super1SmokeStopHealth -Result $smokeResult -StopRequest $stopRequest
             exit 0
         }
         if ([string]$request.kind -ceq "flat") {
             $script:LauncherPhase = "FLAT_DIAGNOSTIC"
-            & $Python -I -E -B $FlatDiagnostic `
-                --root $Root `
-                --config "live_forward\super1_xm_mt5_demo_config.json" `
-                --profile super1 `
-                --output $resultPath `
-                --evidence-nonce $nonce
-            $flatCode = [int]$LASTEXITCODE
+            $null = Invoke-Super1Python -Arguments @(
+                "-I", "-E", "-B", $FlatDiagnostic,
+                "--root", $Root,
+                "--config", ([string]$RuntimeContract.runtime_config),
+                "--profile", "super1",
+                "--output", $resultPath,
+                "--evidence-nonce", $nonce,
+                "--credential-stdin"
+            ) -ProvideCredential
+            $flatCode = [int]$script:Super1PythonExitCode
             $script:LauncherPhase = "FLAT_PRODUCER_ENVELOPE"
             Write-Super1ProbeProducerEnvelope `
                 -Path $producerPath `
@@ -395,8 +499,39 @@ try {
             exit 0
         }
 
-        & $Python -I -E -B $Runner --output-root (Join-Path $Root "state") init
-        $initCode = [int]$LASTEXITCODE
+        if ([string]$request.kind -ceq "binding_readiness") {
+            $script:LauncherPhase = "BINDING_READINESS"
+            $null = Invoke-Super1Python -Arguments @(
+                "-I", "-E", "-B", $FlatDiagnostic,
+                "--root", $Root,
+                "--config", ([string]$RuntimeContract.runtime_config),
+                "--profile", "super1",
+                "--output", $resultPath,
+                "--evidence-nonce", $nonce,
+                "--binding-proof",
+                "--credential-stdin"
+            ) -ProvideCredential
+            $bindingCode = [int]$script:Super1PythonExitCode
+            Write-Super1ProbeProducerEnvelope `
+                -Path $producerPath `
+                -ResultPath $resultPath `
+                -Kind "binding_readiness" `
+                -TransactionId $transactionId `
+                -Nonce $nonce `
+                -RequestSha256 ([string]$requestEvidence.sha256) `
+                -RunnerSid $RunnerSid `
+                -LauncherPath $TrustedScript `
+                -LauncherSha256 $launcherSha256 `
+                -StartedAt $probeStartedAt `
+                -ExitCode $bindingCode
+            exit $bindingCode
+        }
+
+        $null = Invoke-Super1Python -Arguments @(
+            "-I", "-E", "-B", $Runner, "--output-root", (Join-Path $Root "state"),
+            "--credential-stdin", "init"
+        ) -ProvideCredential
+        $initCode = [int]$script:Super1PythonExitCode
         $initResult = [ordered]@{
             schema_version = 1
             evidence_nonce = $nonce
@@ -432,24 +567,53 @@ try {
     }
 
     $script:LauncherPhase = "DAEMON"
-    & $Python -I -E -B $Runner --output-root (Join-Path $Root "state") daemon
-    $daemonCode = [int]$LASTEXITCODE
+    $leasePath = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.control) "session-lease.json"))
+    if (-not (Test-Path -LiteralPath $leasePath -PathType Leaf)) {
+        throw "Super1 daemon has no active manual lease."
+    }
+    $daemonLease = Get-Content -Raw -LiteralPath $leasePath | ConvertFrom-Json
+    if ([string]$daemonLease.state -cne "ACTIVE" -or [string]$daemonLease.lease_id -eq "") {
+        throw "Super1 daemon lease is not active."
+    }
+    $env:SUPER1_INVOCATION_NONCE = [string]$daemonLease.invocation_nonce
+    $env:SUPER1_RUNNER_SID = $RunnerSid
+    $env:SUPER1_LAUNCHER_SHA256 = $LauncherSha256
+    $env:SUPER1_INVOCATION_STARTED_AT = [DateTimeOffset]::UtcNow.ToString("o")
+    $null = Invoke-Super1Python -Arguments @(
+        "-I", "-E", "-B", $Runner, "--output-root", (Join-Path $Root "state"),
+        "--credential-stdin", "daemon"
+    ) -ProvideCredential
+    $daemonCode = [int]$script:Super1PythonExitCode
+    if ($daemonCode -eq 0) {
+        $healthPath = [string]$RuntimeContract.health
+        if (Test-Path -LiteralPath $healthPath -PathType Leaf) {
+            $health = Get-Content -Raw -LiteralPath $healthPath | ConvertFrom-Json
+            if ([string]$health.state -ceq "STOPPED" -and [string]$health.safe_stop -ceq "PASS") {
+                exit 0
+            }
+        }
+    }
     throw "Super1 daemon exited unexpectedly with persistent code: $daemonCode"
 }
 finally {
-    $env:XM_MT5_SERVER = $null
-    $env:XM_MT5_TERMINAL_PATH = $null
-    $env:XM_MT5_READ_ONLY_PASSWORD = $null
+    $script:Super1PasswordPlain = $null
+    $env:SUPER1_INVOCATION_NONCE = $null
+    $env:SUPER1_RUNNER_SID = $null
+    $env:SUPER1_LAUNCHER_SHA256 = $null
+    $env:SUPER1_INVOCATION_STARTED_AT = $null
     $env:PYTHONDONTWRITEBYTECODE = $PreviousBytecode
     $env:PYTHONHOME = $PreviousPythonHome
     $env:PYTHONPATH = $PreviousPythonPath
     if ($PasswordPtr -ne [IntPtr]::Zero) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($PasswordPtr)
     }
+    if ($SecurePassword) {
+        $SecurePassword.Dispose()
+        $SecurePassword = $null
+    }
     if ($TransactionRequestLock) { $TransactionRequestLock.Dispose() }
     if ($ProbeLock) { $ProbeLock.Dispose() }
     if ($TerminalLock) { $TerminalLock.Dispose() }
-    if ($PointerLock) { $PointerLock.Dispose() }
     if ($PowerShellHostLock) { $PowerShellHostLock.Dispose() }
     if ($PowerShellPinLock) { $PowerShellPinLock.Dispose() }
     $env:PSModulePath = $PreviousPSModulePath

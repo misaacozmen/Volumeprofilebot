@@ -1,0 +1,86 @@
+name: super1-risk-gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      risk_provenance_source_root:
+        description: "Prepared DUKASCOPY input tree containing data/raw/nq and data/raw/spx"
+        required: true
+        type: string
+      engine_audit_source_root:
+        description: "Provider-sourced 2025 NQ 3m and SPX 5m data with engine_audit_manifest.json"
+        required: true
+        type: string
+      symlink_fixture_root:
+        description: "Owner-prepared AppContainer symlink fixture root"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  risk-gates:
+    # This is an owner-managed runner, pre-provisioned with the hash-pinned
+    # DUKASCOPY tree and owner-created AppContainer link fixture. A fresh
+    # hosted VM cannot satisfy those external-input and owner-boundary gates.
+    runs-on: [self-hosted, Windows, risk-hardened]
+    defaults:
+      run:
+        working-directory: work/backtest
+    env:
+      PYTHONHASHSEED: "0"
+      RISK_PROVENANCE_SOURCE_ROOT: ${{ inputs.risk_provenance_source_root || vars.RISK_PROVENANCE_SOURCE_ROOT }}
+      ENGINE_AUDIT_SOURCE_ROOT: ${{ inputs.engine_audit_source_root || vars.ENGINE_AUDIT_SOURCE_ROOT }}
+      SYMLINK_FIXTURE_ROOT: ${{ inputs.symlink_fixture_root || vars.SUPER1_SYMLINK_FIXTURE_ROOT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Evidence and immutable helper pins resolve ancestor commits.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: work/backtest/pyproject.toml
+      - name: Install pinned project and test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Assert required external fixtures are prepared
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrEmpty($env:PYTEST_ADDOPTS)) {
+            throw "Hidden PYTEST_ADDOPTS is forbidden; pass all test selection and fixture arguments explicitly"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RISK_PROVENANCE_SOURCE_ROOT)) {
+            throw "BLOCKED_PROVENANCE_INPUT: configure risk_provenance_source_root or RISK_PROVENANCE_SOURCE_ROOT"
+          }
+          if (-not (Test-Path -LiteralPath $env:RISK_PROVENANCE_SOURCE_ROOT -PathType Container)) {
+            throw "BLOCKED_PROVENANCE_INPUT: prepared DUKASCOPY input root does not exist"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ENGINE_AUDIT_SOURCE_ROOT)) {
+            throw "BLOCKED_ENGINE_AUDIT_INPUT: configure engine_audit_source_root or ENGINE_AUDIT_SOURCE_ROOT"
+          }
+          if (-not (Test-Path -LiteralPath $env:ENGINE_AUDIT_SOURCE_ROOT -PathType Container)) {
+            throw "BLOCKED_ENGINE_AUDIT_INPUT: provider-sourced 2025 audit input root does not exist"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:ENGINE_AUDIT_SOURCE_ROOT 'engine_audit_manifest.json') -PathType Leaf)) {
+            throw "BLOCKED_ENGINE_AUDIT_INPUT: engine_audit_manifest.json is missing"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:SYMLINK_FIXTURE_ROOT)) {
+            throw "LINK_FIXTURE_ROOT_REQUIRED: configure symlink_fixture_root or SUPER1_SYMLINK_FIXTURE_ROOT"
+          }
+          if (-not (Test-Path -LiteralPath $env:SYMLINK_FIXTURE_ROOT -PathType Container)) {
+            throw "LINK_FIXTURE_ROOT_INVALID: owner-prepared fixture root does not exist"
+          }
+      - name: Scan project environment
+        run: python scripts/scan_project_environment.py
+      - name: Run environment schema and sandbox gates
+        run: python -m pytest -q tests/test_environment_schema_scanner.py tests/test_backtest_sandbox.py --symlink-fixture-root "$env:SYMLINK_FIXTURE_ROOT"
+      - name: Verify pinned provenance and baseline
+        run: python scripts/prepare_risk_provenance.py --source-root "$env:RISK_PROVENANCE_SOURCE_ROOT" --engine-audit-source-root "$env:ENGINE_AUDIT_SOURCE_ROOT"
+      - name: Collect full CPython 3.11 test inventory
+        run: python -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root "$env:SYMLINK_FIXTURE_ROOT"
+      - name: Run full CPython 3.11 JUnit gate
+        run: python -m pytest -q -p no:cacheprovider tests --junitxml=outputs/risk-hardening-py311.junit.xml --symlink-fixture-root "$env:SYMLINK_FIXTURE_ROOT"

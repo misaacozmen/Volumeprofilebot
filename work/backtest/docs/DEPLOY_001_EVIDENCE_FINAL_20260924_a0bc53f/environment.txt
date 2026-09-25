@@ -1,0 +1,28 @@
+tested_commit=a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2
+tested_tree=9d6e58445ece28f863165326075ac610f6e52c10
+core.autocrlf=true
+core.eol=<unset>
+PYTEST_ADDOPTS_set=False
+administrator_session=False
+python_version:
+Python 3.11.9
+module_paths:
+C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\clean-final-a0bc53f\work\backtest\backtest\__init__.py
+C:\Users\ISAAC\Documents\risk-hardening-closeout-20260924\clean-final-a0bc53f\work\backtest\scripts\scan_project_environment.py
+pip_freeze:
+cffi==2.1.1
+colorama==0.4.6
+cryptography==50.0.1
+iniconfig==2.3.0
+metatrader5==5.0.6090
+numpy==2.4.6
+-e git+https://github.com/misaacozmen/Volumeprofilebot.git@a0bc53f3f7e9735adc90eaea1899b7cdd1bde4d2#egg=otobacktest&subdirectory=..\..\..\risk-hardening-closeout-20260924\clean-final-a0bc53f\work\backtest
+packaging==26.3
+pandas==3.0.3
+pluggy==1.6.0
+pycparser==3.0
+Pygments==2.21.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+six==1.17.0
+tzdata==2026.4

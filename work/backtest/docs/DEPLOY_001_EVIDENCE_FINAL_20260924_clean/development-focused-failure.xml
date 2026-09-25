@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="26" time="56.456" timestamp="2026-09-24T21:49:36.376691+02:00" hostname="DESKTOP-HQ02T33"><testcase classname="tests.test_deploy_001_release_contract" name="test_release_builder_requires_and_forwards_owner_symlink_fixture" time="3.256" /><testcase classname="tests.test_deploy_001_release_contract" name="test_release_builder_collection_parser_preserves_whitespace_parameter_ids" time="1.343" /><testcase classname="tests.test_deploy_001_release_contract" name="test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets" time="1.390"><failure message="AssertionError: ('tests', 'valid', '', &quot;Write-NodeIdInventory : The term 'Get-FileHash' is not recognized as the name of a cmdlet, fun...ventory], CommandNotFoundException&#10;      + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory&#10;   &#10;  &quot;)&#10;assert (1 == 0) is True&#10; +  where 1 = CompletedProcess(args=['C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', '-NoProfile', '-NonInteractive', '...ventory], CommandNotFoundException\n    + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory\n \n&quot;).returncode">tmp_path = WindowsPath('C:/Users/ISAAC/AppData/Local/Temp/pytest-of-ISAAC/pytest-4311/test_release_builder_inventory0')
+
+    def test_release_builder_inventory_gate_checks_both_roots_and_exact_multisets(tmp_path: Path) -&gt; None:
+        builder_path = DEPLOY / "build_signed_windows_release.ps1"
+        functions = "\n".join(
+            item["extent_text"] for item in facts(builder_path, "function")
+            if item["name"] in {
+                "Get-CollectionNodeIds", "Get-JunitNodeIds",
+                "Write-NodeIdInventory", "Assert-JunitMatchesInventory",
+            }
+        )
+        for root in ("tests", "artifact_tests"):
+            nodes = [f"{root}/test_example.py::test_case[  spaced  ]", f"{root}/test_example.py::test_second"]
+            cases = [
+                f'&lt;testcase classname="{root}.test_example" name="test_case[  spaced  ]"/&gt;',
+                f'&lt;testcase classname="{root}.test_example" name="test_second"/&gt;',
+            ]
+            scenarios = {
+                "valid": (nodes, cases, True),
+                "valid-duplicates": (nodes + nodes[:1], cases + cases[:1], True),
+                "missing-inventory": (nodes[:1], cases, False),
+                "empty-inventory": ([], cases, False),
+                "duplicate-replaces-node": (nodes[:1] * 2, cases, False),
+                "extra-inventory": (nodes + [f"{root}/test_example.py::test_extra"], cases, False),
+                "missing-junit": (nodes, cases[:1], False),
+                "empty-junit": (nodes, [], False),
+                "wrong-root": ([node.replace(root + "/", "other/", 1) for node in nodes], cases, False),
+            }
+            for bad in ("failure", "error", "skipped"):
+                scenarios[bad] = (nodes, [cases[0].replace("/&gt;", f"&gt;&lt;{bad}/&gt;&lt;/testcase&gt;"), cases[1]], False)
+            for name, (inventory, junit_cases, accepted) in scenarios.items():
+                literals = ",".join("'" + node + "'" for node in inventory + ["2 tests collected"])
+                junit = "&lt;testsuites&gt;&lt;testsuite&gt;" + "".join(junit_cases) + "&lt;/testsuite&gt;&lt;/testsuites&gt;"
+                result = powershell_harness(
+                    functions
+                    + f"\n$ids = @(Get-CollectionNodeIds -Output @({literals}))"
+                    + "\nWrite-NodeIdInventory -NodeIds $ids -Path $args[0] | Out-Null"
+                    + f"\n[xml]$junit = '{junit}'"
+                    + "\nAssert-JunitMatchesInventory -InventoryPath $args[0] -Junit $junit -SuiteName 'Harness' | Out-Null"
+                    + "\n'PASS'",
+                    str(tmp_path / f"{root}-{name}.txt"),
+                )
+&gt;               assert (result.returncode == 0) is accepted, (root, name, result.stdout, result.stderr)
+E               AssertionError: ('tests', 'valid', '', "Write-NodeIdInventory : The term 'Get-FileHash' is not recognized as the name of a cmdlet, fun...ventory], CommandNotFoundException
+E                     + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory
+E                  
+E                 ")
+E               assert (1 == 0) is True
+E                +  where 1 = CompletedProcess(args=['C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', '-NoProfile', '-NonInteractive', '...ventory], CommandNotFoundException\n    + FullyQualifiedErrorId : CommandNotFoundException,Write-NodeIdInventory\n \n").returncode
+
+tests\test_deploy_001_release_contract.py:121: AssertionError</failure></testcase><testcase classname="tests.test_deploy_001_release_contract" name="test_release_builder_fixture_guard_accepts_owner_link_and_rejects_invalid_root" time="1.614" /><testcase classname="tests.test_deploy_001_release_contract" name="test_release_builder_rejects_bad_fixture_before_key_or_release_work" time="0.475" /><testcase classname="tests.test_deploy_001_release_contract" name="test_release_integrity_contract_binds_the_exact_git_source_and_bytes" time="0.055" /><testcase classname="tests.test_deploy_001_release_contract" name="test_both_upgraders_have_exactly_the_contract_pin" time="0.037" /><testcase classname="tests.test_deploy_001_release_contract" name="test_builder_byte_gate_rejects_crlf_bom_and_single_byte_corruption" time="2.414" /><testcase classname="tests.test_deploy_001_release_contract" name="test_preflight_failure_cannot_reach_runtime_stop_or_mutation" time="0.001" /><testcase classname="tests.test_deploy_001_release_contract" name="test_ast_harness_executes_real_stop_bodies_and_phase_guards" time="5.450" /><testcase classname="tests.test_deploy_001_release_contract" name="test_phase_mutations_are_sensitive" time="0.002" /><testcase classname="tests.test_deploy_001_release_contract" name="test_mutated_forward_preflight_guard_fails_the_real_catch_harness" time="6.399" /><testcase classname="tests.test_deploy_001_release_contract" name="test_forward_production_phase_chain_rejects_stop_and_rollback_mutants" time="13.907" /><testcase classname="tests.test_deploy_001_release_contract" name="test_zip_integrity_gate_rejects_autocrlf_bom_duplicate_and_missing_entries" time="2.655" /><testcase classname="tests.test_deploy_001_release_contract" name="test_ast_main_catch_finally_preserves_preflight_ownership_and_primary_error" time="1.327" /><testcase classname="tests.test_deploy_001_release_contract" name="test_super1_production_phase_chain_rejects_preentry_stop_mutants" time="8.236" /><testcase classname="tests.test_deploy_001_release_contract" name="test_super1_ast_catch_and_finally_preflight_path_is_executed" time="0.237" /><testcase classname="tests.test_deploy_001_release_contract" name="test_builder_checks_contract_before_signing_key_resolution" time="0.971" /><testcase classname="tests.test_deploy_001_evidence_manifest" name="test_evidence_manifest_binds_checkout_and_committed_bytes" time="0.543" /><testcase classname="tests.test_deploy_001_evidence_manifest" name="test_historical_final_evidence_manifest_binds_its_original_ref_and_committed_bytes" time="0.237" /><testcase classname="tests.test_deploy_001_evidence_manifest" name="test_historical_evidence_cannot_be_mistaken_for_current_source_acceptance" time="0.032" /><testcase classname="tests.test_deploy_001_evidence_manifest" name="test_final_evidence_manifest_rejects_each_corrupted_artifact" time="0.758" /><testcase classname="tests.test_deploy_001_evidence_manifest" name="test_evidence_manifest_rejects_each_individually_corrupted_artifact" time="2.018" /><testcase classname="tests.test_clean_delivery_evidence" name="test_clean_evidence_binds_real_git_bytes_and_rejects_mutation" time="1.107" /><testcase classname="tests.test_clean_delivery_evidence" name="test_clean_evidence_rejects_config_change_after_tested_commit" time="0.818" /><testcase classname="tests.test_clean_delivery_evidence" name="test_clean_evidence_rejects_unlisted_files_and_unsafe_paths" time="0.812" /></testsuite></testsuites>

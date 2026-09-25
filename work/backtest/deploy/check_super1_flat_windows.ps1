@@ -6,6 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "super1_runtime_contract.ps1")
+$RuntimeContract = Assert-Super1RuntimeContract
 if ($PreserveExistingTerminal) {
     throw "Preserving an existing Super1 terminal is forbidden for broker evidence."
 }
@@ -36,8 +38,8 @@ if (-not (Test-Path -LiteralPath $ScheduledTasksModule -PathType Leaf)) {
 }
 Import-Module -Name $ScheduledTasksModule -Force -ErrorAction Stop
 
-$Root = [IO.Path]::GetFullPath("C:\Super1")
-$App = [IO.Path]::GetFullPath((Join-Path $Root "app"))
+$Root = [IO.Path]::GetFullPath([string]$RuntimeContract.root)
+$App = [IO.Path]::GetFullPath([string]$RuntimeContract.app)
 $TrustedScript = [IO.Path]::GetFullPath((Join-Path $App "deploy\check_super1_flat_windows.ps1"))
 $CurrentScript = [IO.Path]::GetFullPath([string]$MyInvocation.MyCommand.Path)
 if (-not $CurrentScript.Equals($TrustedScript, [StringComparison]::OrdinalIgnoreCase)) {
@@ -51,12 +53,12 @@ if (-not (Test-Path -LiteralPath $SecureHelper -PathType Leaf) -or
 . $SecureHelper
 
 $ArchiveRoot = [IO.Path]::GetFullPath((Join-Path $Root "archive"))
-$ProbeControl = [IO.Path]::GetFullPath((Join-Path $Root "probe-control"))
+$ProbeControl = [IO.Path]::GetFullPath([string]$RuntimeContract.control)
 $ProbeRequest = [IO.Path]::GetFullPath((Join-Path $ProbeControl "active.json"))
-$RuntimeConfig = [IO.Path]::GetFullPath((Join-Path $App "live_forward\super1_xm_mt5_demo_config.json"))
-$TerminalPin = [IO.Path]::GetFullPath((Join-Path $App "deploy\terminal_runtime_pin.json"))
-$Task = "Super1XM"
-$WatchdogTask = "Super1Watchdog"
+$RuntimeConfig = [IO.Path]::GetFullPath((Join-Path $App ([string]$RuntimeContract.runtime_config)))
+$TerminalPin = [IO.Path]::GetFullPath((Join-Path ([string]$RuntimeContract.runtime_trust) "terminal_runtime_pin.json"))
+$Task = [string]$RuntimeContract.main_task
+$WatchdogTask = [string]$RuntimeContract.watchdog_task
 $RunId = [Guid]::NewGuid().ToString("N")
 $Nonce = [Guid]::NewGuid().ToString("N")
 $Transaction = [IO.Path]::GetFullPath((Join-Path $ArchiveRoot "readiness-$RunId"))
@@ -93,7 +95,7 @@ if ($runnerSid -eq $callerSid -or $runnerSid -in @("S-1-5-18", "S-1-5-32-544")) 
 Assert-Super1SecureDirectoryAcl -Path $ArchiveRoot
 Assert-Super1SecureDirectoryAcl -Path $ProbeControl -RunnerSid $runnerSid
 if (Test-Path -LiteralPath $ProbeRequest) {
-    throw "Super1 probe-control already contains an active request."
+    throw "Super1 control directory already contains an active request."
 }
 
 $requestEvidence = $null
