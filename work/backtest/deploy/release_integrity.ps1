@@ -213,6 +213,32 @@ function Assert-SignedReleaseArchive {
             if ((Get-ReleaseBytesSha256 -Bytes $riskSetBytes) -cne ([string]$testInputs.risk_set_sha256).ToLowerInvariant()) {
                 throw "Release manifest pinned risk input set hash is invalid."
             }
+            $engineAuditFiles = @($testInputs.engine_audit_files)
+            if ([int]$testInputs.engine_audit_csv_count -le 0 -or
+                $engineAuditFiles.Count -ne [int]$testInputs.engine_audit_csv_count -or
+                [string]$testInputs.engine_audit_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+                throw "Release manifest engine-audit input evidence is incomplete."
+            }
+            $seenEngineAuditPaths = @{}
+            foreach ($auditFile in $engineAuditFiles) {
+                $auditPath = [string]$auditFile.path
+                if ($auditPath -notmatch '^(nq|spx)/DUKASCOPY_[^\\/:]+\.csv$' -or
+                    [string]$auditFile.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                    [long]$auditFile.bytes -le 0 -or
+                    $seenEngineAuditPaths.ContainsKey($auditPath)) {
+                    throw "Release manifest contains an invalid or duplicate engine-audit input: $auditPath"
+                }
+                $seenEngineAuditPaths[$auditPath] = [string]$auditFile.sha256
+            }
+            $canonicalEngineAuditSet = @(
+                $engineAuditFiles | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $(([string]$_.sha256).ToLowerInvariant())"
+                }
+            ) -join "`n"
+            $engineAuditSetBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalEngineAuditSet + "`n")
+            if ((Get-ReleaseBytesSha256 -Bytes $engineAuditSetBytes) -cne ([string]$testInputs.engine_audit_set_sha256).ToLowerInvariant()) {
+                throw "Release manifest engine-audit input set hash is invalid."
+            }
         }
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
