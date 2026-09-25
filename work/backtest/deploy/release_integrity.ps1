@@ -13,6 +13,13 @@ function Get-ReleaseSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-ReleaseBytesSha256 {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
 function Assert-ReleaseArtifactTestFiles {
     param([Parameter(Mandatory = $true)][object]$Manifest)
     $expected = @(
@@ -174,6 +181,39 @@ function Assert-SignedReleaseArchive {
         Assert-ManifestTestGate -Manifest $manifest -Prefix "pytest"
         Assert-ManifestTestGate -Manifest $manifest -Prefix "artifact_pytest"
         Assert-ReleaseArtifactTestFiles -Manifest $manifest
+        if ([string]$manifest.profile -ceq "super1") {
+            $testInputs = $manifest.test_inputs
+            if ($null -eq $testInputs -or
+                [string]$testInputs.risk_manifest_path -cne "data/provenance/first30_pre2025_inputs.sha256" -or
+                [int]$testInputs.risk_file_count -ne 144 -or
+                [string]$testInputs.risk_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [string]$testInputs.risk_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [string]$testInputs.engine_audit_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [int]$testInputs.engine_audit_csv_count -ne 2) {
+                throw "Release manifest hash-pinned test input evidence is incomplete."
+            }
+            $riskFiles = @($testInputs.risk_files)
+            if ($riskFiles.Count -ne 144) { throw "Release manifest must bind all 144 hash-pinned risk test inputs." }
+            $seenRiskPaths = @{}
+            foreach ($riskFile in $riskFiles) {
+                $riskPath = [string]$riskFile.path
+                if ($riskPath -notmatch '^data/raw/(nq|spx)/DUKASCOPY_[^\r\n]+\.csv$' -or
+                    [string]$riskFile.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                    $seenRiskPaths.ContainsKey($riskPath)) {
+                    throw "Release manifest contains an invalid or duplicate pinned risk input: $riskPath"
+                }
+                $seenRiskPaths[$riskPath] = [string]$riskFile.sha256
+            }
+            $canonicalRiskSet = @(
+                $riskFiles | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $(([string]$_.sha256).ToLowerInvariant())"
+                }
+            ) -join "`n"
+            $riskSetBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalRiskSet + "`n")
+            if ((Get-ReleaseBytesSha256 -Bytes $riskSetBytes) -cne ([string]$testInputs.risk_set_sha256).ToLowerInvariant()) {
+                throw "Release manifest pinned risk input set hash is invalid."
+            }
+        }
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
             $path = [string]$f.path
@@ -207,7 +247,11 @@ function Assert-SignedReleaseArchive {
     }
 
     if ($SourceRoot) {
-        Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFilesMap -SourceRoot $SourceRoot -Profile ([string]$manifest.profile)
+        Assert-ReleaseSourceIntegrity `
+            -ArchiveFilesMap $archiveFilesMap `
+            -SourceRoot $SourceRoot `
+            -Profile ([string]$manifest.profile) `
+            -TestInputs $manifest.test_inputs
     }
 
     return $manifest
@@ -217,7 +261,8 @@ function Assert-ReleaseSourceIntegrity {
     param(
         [Parameter(Mandatory = $true)][hashtable]$ArchiveFilesMap,
         [Parameter(Mandatory = $true)][string]$SourceRoot,
-        [Parameter(Mandatory = $true)][string]$Profile
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [object]$TestInputs
     )
     $resolvedSource = [IO.Path]::GetFullPath($SourceRoot)
     if (-not (Test-Path -LiteralPath $resolvedSource -PathType Container)) {
@@ -229,6 +274,43 @@ function Assert-ReleaseSourceIntegrity {
     $sourceFiles += "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json"
 
     if ($Profile -eq "super1") {
+        $riskManifestPath = Join-Path $resolvedSource "data\provenance\first30_pre2025_inputs.sha256"
+        if ($null -eq $TestInputs -or -not (Test-Path -LiteralPath $riskManifestPath -PathType Leaf) -or
+            (Get-ReleaseSha256 -Path $riskManifestPath) -cne ([string]$TestInputs.risk_manifest_sha256).ToLowerInvariant()) {
+            throw "Signed release risk input manifest does not match the inspected source contract."
+        }
+        $expectedPinnedPaths = @($TestInputs.risk_files | ForEach-Object { [string]$_.path } | Sort-Object -CaseSensitive -Culture en-US)
+        foreach ($riskFile in @($TestInputs.risk_files)) {
+            $rawInput = Join-Path $resolvedSource ([string]$riskFile.path.Replace("/", [IO.Path]::DirectorySeparatorChar))
+            if (Test-Path -LiteralPath $rawInput -PathType Leaf) {
+                if ((Get-Item -LiteralPath $rawInput -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "Pinned risk test input is reparse-backed: $($riskFile.path)"
+                }
+                if ((Get-ReleaseSha256 -Path $rawInput) -cne ([string]$riskFile.sha256).ToLowerInvariant()) {
+                    throw "Pinned risk test input differs from its signed manifest record: $($riskFile.path)"
+                }
+            }
+        }
+        $sourceRawRoot = Join-Path $resolvedSource "data\raw"
+        if (Test-Path -LiteralPath $sourceRawRoot -PathType Container) {
+            $actualPinnedPaths = @(
+                foreach ($leg in @("nq", "spx")) {
+                    $legRoot = Join-Path $sourceRawRoot $leg
+                    if (Test-Path -LiteralPath $legRoot -PathType Container) {
+                        Get-ChildItem -LiteralPath $legRoot -File -Filter "DUKASCOPY_*.csv" |
+                            ForEach-Object { "data/raw/$leg/$($_.Name)" }
+                    }
+                }
+            ) | Sort-Object -CaseSensitive -Culture en-US
+            if ($actualPinnedPaths.Count -ne 144 -or
+                ($actualPinnedPaths -join "`n") -cne ($expectedPinnedPaths -join "`n")) {
+                throw "SourceRoot data/raw does not contain the exact 144 signed risk test inputs."
+            }
+        }
+        $versionedRuntimeConfig = Join-Path $resolvedSource "live_forward\super1_xm_mt5_demo_config_v4.json"
+        if (Test-Path -LiteralPath $versionedRuntimeConfig -PathType Leaf) {
+            $sourceProdFiles["live_forward/super1_xm_mt5_demo_config.json"] = Get-ReleaseSha256 -Path $versionedRuntimeConfig
+        }
         $sourceDirs += @(
             "research_candidates/super1",
             "research_candidates/v20_strategy_loop"
