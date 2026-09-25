@@ -184,8 +184,8 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     helper = DEPLOY / str(value["helper_path"])[len("deploy/") :]
     payload = helper.read_bytes()
 
-    assert value["source_commit"] == "d472023a7cba12e8295802586aee9e56426b8013"
-    assert value["source_tree"] == "eb0b1ccfe4c66bf52d710c3c861da63d5fac8bec"
+    assert value["source_commit"] == "ae4f21421000a9a5f22b056eb5e1dfd505318253"
+    assert value["source_tree"] == "495050821a1c4aa41f7ee1f4725d292d62ff8ea5"
     assert value["source_blob_sha1"] == subprocess.check_output(
         ["git", "rev-parse", f"{value['source_commit']}:work/backtest/{value['helper_path']}"],
         cwd=ROOT.parents[1],
@@ -195,13 +195,67 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     assert payload.startswith(b"\xef\xbb\xbf") is False
     assert b"\r" not in payload
     assert payload.count(b"\n") == value["lf_count"] == 573
-    assert value["sha256_lf"] == "b67aa8adcd17acafd8312bc87c03a72e31f10be5ea233ce59af930a0b2dc378d"
+    assert value["sha256_lf"] == "9e29b8d0c34127e3caa74b2625e63fe02e1fc6b927dc992dae77baa54f4131a9"
     assert hashlib.sha256(payload).hexdigest() == value["sha256_lf"]
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",
         "docs/DEPLOY_001_EVIDENCE/** -text",
         "docs/DEPLOY_001_EVIDENCE_FINAL_*/** -text",
     ]
+
+
+def test_super1_source_integrity_accepts_versioned_config_under_strict_mode(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    raw_root = source / "data" / "raw" / "nq"
+    raw_root.mkdir(parents=True)
+    raw_digest = hashlib.sha256(b"").hexdigest()
+    risk_files = []
+    for index in range(144):
+        relative = f"data/raw/nq/DUKASCOPY_TEST_{index:03d}.csv"
+        (source / relative).write_bytes(b"")
+        risk_files.append({"path": relative, "sha256": raw_digest})
+
+    manifest_path = source / "data" / "provenance" / "first30_pre2025_inputs.sha256"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_bytes = b"fixture manifest\n"
+    manifest_path.write_bytes(manifest_bytes)
+    inputs_path = tmp_path / "test-inputs.json"
+    inputs_path.write_text(
+        json.dumps({
+            "risk_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "risk_files": risk_files,
+        }),
+        encoding="utf-8",
+    )
+
+    config_path = source / "live_forward" / "super1_xm_mt5_demo_config_v4.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}\n", encoding="utf-8")
+    helper_path = DEPLOY / "release_integrity.ps1"
+    script = f"""
+$helperPath = $args[0]
+. $helperPath
+function Get-FileHash {{
+    param([string]$LiteralPath, [string]$Algorithm)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    try {{ [pscustomobject]@{{ Hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }} }}
+    finally {{ $stream.Dispose(); $sha.Dispose() }}
+}}
+$sourceRoot = $args[1]
+$testInputs = Get-Content -LiteralPath $args[2] -Raw | ConvertFrom-Json
+$archiveFiles = @{{}}
+$config = Join-Path $sourceRoot 'live_forward\\super1_xm_mt5_demo_config_v4.json'
+$configHash = Get-ReleaseSha256 -Path $config
+$archiveFiles['live_forward/super1_xm_mt5_demo_config.json'] = $configHash
+$archiveFiles['live_forward/super1_xm_mt5_demo_config_v4.json'] = $configHash
+Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFiles -SourceRoot $sourceRoot `
+    -Profile 'super1' -TestInputs $testInputs
+'PASS'
+"""
+    result = powershell_harness(script, str(helper_path), str(source), str(inputs_path))
+    assert result.returncode == 0, result.stderr
+    assert "PASS" in result.stdout
 
 
 def test_both_upgraders_have_exactly_the_contract_pin() -> None:
