@@ -184,17 +184,18 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     helper = DEPLOY / str(value["helper_path"])[len("deploy/") :]
     payload = helper.read_bytes()
 
-    assert value["source_commit"] == "65b4ff10f9f01618df4af3249217a97ea9eb1e88"
-    assert value["source_tree"] == "accc7a0d662691f0ee3e978bc83f3036ea93a1be"
+    assert value["source_commit"] == "d472023a7cba12e8295802586aee9e56426b8013"
+    assert value["source_tree"] == "eb0b1ccfe4c66bf52d710c3c861da63d5fac8bec"
     assert value["source_blob_sha1"] == subprocess.check_output(
         ["git", "rev-parse", f"{value['source_commit']}:work/backtest/{value['helper_path']}"],
         cwd=ROOT.parents[1],
         text=True,
     ).strip()
-    assert len(payload) == value["byte_length"] == 21876
+    assert len(payload) == value["byte_length"] == 26910
     assert payload.startswith(b"\xef\xbb\xbf") is False
     assert b"\r" not in payload
-    assert payload.count(b"\n") == value["lf_count"] == 491
+    assert payload.count(b"\n") == value["lf_count"] == 573
+    assert value["sha256_lf"] == "b67aa8adcd17acafd8312bc87c03a72e31f10be5ea233ce59af930a0b2dc378d"
     assert hashlib.sha256(payload).hexdigest() == value["sha256_lf"]
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",

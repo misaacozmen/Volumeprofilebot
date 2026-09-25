@@ -196,10 +196,6 @@ function Assert-TestCloneContainsOnlyPinnedInputs {
 }
 
 $SymlinkFixtureRoot = Assert-OwnerSymlinkFixture -Root $SymlinkFixtureRoot
-if ([string]::IsNullOrWhiteSpace($RiskProvenanceSourceRoot) -or
-    [string]::IsNullOrWhiteSpace($EngineAuditSourceRoot)) {
-    throw "PINNED_RISK_INPUT_ROOTS_REQUIRED: provide the 144-file source root and the separate 2025 audit root."
-}
 if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable("PYTEST_ADDOPTS"))) {
     throw "Release build refuses hidden PYTEST_ADDOPTS; pass all test options explicitly."
 }
@@ -367,6 +363,10 @@ function Assert-ReleaseIntegrityZipEntry {
 $ReleaseIntegrityContract = Assert-ReleaseIntegrityContract -SourceRoot $SourceRoot -RepoRoot $RepoRoot
 if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
     throw "DPAPI release signing key is missing: $PrivateKeyPath"
+}
+if ([string]::IsNullOrWhiteSpace($RiskProvenanceSourceRoot) -or
+    [string]::IsNullOrWhiteSpace($EngineAuditSourceRoot)) {
+    throw "PINNED_RISK_INPUT_ROOTS_REQUIRED: provide the 144-file source root and the separate 2025 audit root."
 }
 
 # 1. Git dirty check
