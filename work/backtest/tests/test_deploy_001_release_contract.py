@@ -184,24 +184,39 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     helper = DEPLOY / str(value["helper_path"])[len("deploy/") :]
     payload = helper.read_bytes()
 
-    assert value["source_commit"] == "ae4f21421000a9a5f22b056eb5e1dfd505318253"
-    assert value["source_tree"] == "495050821a1c4aa41f7ee1f4725d292d62ff8ea5"
+    assert value["source_commit"] == "5870e026b17edecba6b56ca84d766570bf53e220"
+    assert value["source_tree"] == "3952e70eece5e9d536d231fc42cffd3a13daceb5"
     assert value["source_blob_sha1"] == subprocess.check_output(
         ["git", "rev-parse", f"{value['source_commit']}:work/backtest/{value['helper_path']}"],
         cwd=ROOT.parents[1],
         text=True,
     ).strip()
-    assert len(payload) == value["byte_length"] == 26910
+    assert len(payload) == value["byte_length"] == 28631
     assert payload.startswith(b"\xef\xbb\xbf") is False
     assert b"\r" not in payload
-    assert payload.count(b"\n") == value["lf_count"] == 573
-    assert value["sha256_lf"] == "9e29b8d0c34127e3caa74b2625e63fe02e1fc6b927dc992dae77baa54f4131a9"
+    assert payload.count(b"\n") == value["lf_count"] == 599
+    assert value["sha256_lf"] == "6e7dae16e7238fb75cbe81d9d614647d3530cd83a67cc9b42c80c580d7c98b27"
     assert hashlib.sha256(payload).hexdigest() == value["sha256_lf"]
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",
         "docs/DEPLOY_001_EVIDENCE/** -text",
         "docs/DEPLOY_001_EVIDENCE_FINAL_*/** -text",
     ]
+
+
+def test_release_builder_rechecks_provenance_after_packaging_and_before_signing() -> None:
+    source = (DEPLOY / "build_signed_windows_release.ps1").read_text(encoding="utf-8")
+    package_manifest = source.rindex('$manifestJson = $manifest | ConvertTo-Json -Depth 6')
+    signing_key = source.index('$protected = [Convert]::FromBase64String')
+    assert package_manifest < signing_key
+    final_gate = source.rindex("Assert-PinnedRiskInputSetUnchanged -InputRoot $RiskProvenanceSourceRoot")
+    final_engine_gate = source.rindex("Assert-EngineAuditInputSetUnchanged -SourceRoot $engineAuditRootResolved")
+    final_clone_gate = source.rindex("Assert-TestCloneContainsOnlyPinnedInputs -CloneRoot $TestRepoRoot")
+    assert package_manifest < final_gate < signing_key
+    assert package_manifest < final_engine_gate < signing_key
+    assert package_manifest < final_clone_gate < signing_key
+    assert "$postPackageGitStatus = (& git -C $RepoRoot status --porcelain)" in source
+    assert "Release build source tree changed before manifest signing" in source
 
 
 def test_super1_source_integrity_accepts_versioned_config_under_strict_mode(tmp_path: Path) -> None:
@@ -261,7 +276,12 @@ Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFiles -SourceRoot $source
 def test_both_upgraders_have_exactly_the_contract_pin() -> None:
     expected = str(contract()["sha256_lf"])
     pattern = re.compile(r'\$ExpectedIntegrityScriptSha256\s*=\s*"([0-9a-f]{64})"')
-    for name in ("upgrade_super1_signed_app_windows.ps1", "upgrade_forward_shadow_windows.ps1"):
+    for name in (
+        "upgrade_super1_signed_app_windows.ps1",
+        "upgrade_forward_shadow_windows.ps1",
+        "install_super1_app_inert_windows.ps1",
+        "manage_super1_app_inert_windows.ps1",
+    ):
         matches = pattern.findall((DEPLOY / name).read_text(encoding="utf-8"))
         assert matches == [expected]
 

@@ -23,7 +23,15 @@ $IntegrityHelper = Join-Path $PSScriptRoot "release_integrity.ps1"
 if (-not (Test-Path -LiteralPath $IntegrityHelper -PathType Leaf)) {
     throw "Signed release integrity helper is missing from the inspected deploy source."
 }
-. $IntegrityHelper
+$ExpectedIntegrityScriptSha256 = "6e7dae16e7238fb75cbe81d9d614647d3530cd83a67cc9b42c80c580d7c98b27"
+$integrityBytes = [IO.File]::ReadAllBytes($IntegrityHelper)
+$integrityHasher = [Security.Cryptography.SHA256]::Create()
+try { $integritySha256 = ([BitConverter]::ToString($integrityHasher.ComputeHash($integrityBytes))).Replace("-", "").ToLowerInvariant() }
+finally { $integrityHasher.Dispose() }
+if ($integritySha256 -cne $ExpectedIntegrityScriptSha256) {
+    throw "Inspected signed-release helper does not match this installer's reviewed byte pin."
+}
+. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString($integrityBytes)))
 
 function Assert-NotReparsePoint {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -110,10 +118,109 @@ function Expand-VerifiedArchive {
     finally { $zip.Dispose() }
 }
 
-foreach ($component in @($Archive, $ManifestPath, $SignaturePath, $BootstrapPython)) {
-    if (-not (Test-Path -LiteralPath $component -PathType Leaf)) { throw "Required inert install input is missing: $component" }
-    Assert-NotReparsePoint -Path $component
+function Assert-ExtractedReleaseMatchesManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [switch]$AllowBuildArtifacts
+    )
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $expected = @{}
+    foreach ($entry in @($Manifest.files)) { $expected[[string]$entry.path] = ([string]$entry.sha256).ToLowerInvariant() }
+    $actual = @{}
+    foreach ($item in @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -File -Force -ErrorAction Stop)) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Extracted release contains a reparse point: $($item.FullName)" }
+        $relative = $item.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        $actual[$relative] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $expectedPaths = @($expected.Keys | Sort-Object -CaseSensitive -Culture en-US)
+    $actualPaths = @($actual.Keys | Sort-Object -CaseSensitive -Culture en-US)
+    $unexpectedPaths = @($actualPaths | Where-Object {
+        -not $expected.ContainsKey([string]$_) -and
+        (-not $AllowBuildArtifacts -or [string]$_ -notmatch '(^|/)([^/]+\.egg-info|__pycache__|build|dist)(/|$)')
+    })
+    $missingExpected = @($expectedPaths | Where-Object { -not $actual.ContainsKey([string]$_) })
+    if ($missingExpected.Count -gt 0 -or $unexpectedPaths.Count -gt 0) {
+        throw "Extracted release file set differs from its signed archive manifest."
+    }
+    foreach ($path in $expectedPaths) {
+        if ($actual[$path] -cne $expected[$path]) { throw "Extracted/installed release bytes differ from signed manifest: $path" }
+    }
 }
+
+function Open-InertReleaseInputLocks {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    $locks = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($path in $Paths) {
+            $stream = [IO.File]::Open(
+                $path,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                [IO.FileShare]::Read
+            )
+            $locks.Add([pscustomobject]@{ path = $path; stream = $stream })
+        }
+        return ,$locks
+    }
+    catch {
+        foreach ($lock in $locks) { $lock.stream.Dispose() }
+        throw
+    }
+}
+
+function Restore-InertTargetAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Sddl)
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $acl.SetSecurityDescriptorSddlForm($Sddl)
+    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+}
+
+function Move-InertInstallFailureArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string[]]$OwnedPaths,
+        [Parameter(Mandatory = $true)][string]$OriginalSddl
+    )
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $parent = Split-Path -Parent $resolvedRoot
+    Assert-NotReparsePoint -Path $resolvedRoot
+    Assert-NotReparsePoint -Path $parent
+    $failureRoot = Join-Path $parent (".super1-inert-failed-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $failureRoot -ErrorAction Stop | Out-Null
+    foreach ($ownedPath in $OwnedPaths) {
+        $resolvedOwned = [IO.Path]::GetFullPath($ownedPath)
+        if (-not $resolvedOwned.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Rollback source is outside the inert install root: $resolvedOwned"
+        }
+        if (-not (Test-Path -LiteralPath $resolvedOwned)) { continue }
+        Assert-NotReparsePoint -Path $resolvedOwned
+        Move-Item -LiteralPath $resolvedOwned -Destination (Join-Path $failureRoot ([IO.Path]::GetFileName($resolvedOwned))) -ErrorAction Stop
+    }
+    $remaining = @(Get-ChildItem -LiteralPath $resolvedRoot -Force -ErrorAction Stop)
+    if ($remaining.Count -ne 0) { throw "INERT_INSTALL_ROLLBACK_UNEXPECTED_REMAINDER: $($remaining.Name -join ',')" }
+    Restore-InertTargetAcl -Path $resolvedRoot -Sddl $OriginalSddl
+    return $failureRoot
+}
+
+$inputLocks = $null
+$installMutationStarted = $false
+$originalTargetSddl = $null
+$appRoot = Join-Path $TargetRoot "app"
+$appStagingRoot = Join-Path $TargetRoot ".app-stage-pending"
+$venvRoot = Join-Path $TargetRoot "venv311"
+$installedSidecars = @(
+    (Join-Path $TargetRoot "super1-forward.zip"),
+    (Join-Path $TargetRoot "super1-forward.manifest.json"),
+    (Join-Path $TargetRoot "super1-forward.manifest.sig")
+)
+try {
+    foreach ($component in @($Archive, $ManifestPath, $SignaturePath, $BootstrapPython)) {
+        if (-not (Test-Path -LiteralPath $component -PathType Leaf)) { throw "Required inert install input is missing: $component" }
+        Assert-NotReparsePoint -Path $component
+    }
+    $inputLocks = Open-InertReleaseInputLocks -Paths @($Archive, $ManifestPath, $SignaturePath, $BootstrapPython)
+
 $manifest = Assert-SignedReleaseArchive -Archive $Archive -ExpectedProfile "super1" -RequireProvenance
 if ([string]$manifest.release_id -cne $ExpectedReleaseId) { throw "Signed release ID does not match the reviewed install plan." }
 if ([string]$manifest.release_id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
@@ -165,8 +272,9 @@ if ($PlanOnly) {
     return
 }
 
+$originalTargetSddl = (Get-Acl -LiteralPath $TargetRoot -ErrorAction Stop).Sddl
+$installMutationStarted = $true
 Set-InertInstallDirectoryAcl -Path $TargetRoot -UserSid $ReadOnlyUserSid
-$appRoot = Join-Path $TargetRoot "app"
 $appStagingRoot = Join-Path $TargetRoot (".app-stage-" + [string]$manifest.release_id)
 if ((Test-Path -LiteralPath $appRoot) -or (Test-Path -LiteralPath $appStagingRoot)) {
     throw "Inert install app or staging path already exists; refusing to replace it."
@@ -175,22 +283,26 @@ New-Item -ItemType Directory -Path $appStagingRoot -ErrorAction Stop | Out-Null
 Set-InertInstallDirectoryAcl -Path $appStagingRoot -UserSid $ReadOnlyUserSid
 try {
     Expand-VerifiedArchive -ArchivePath $Archive -Destination $appStagingRoot
-    $venvRoot = Join-Path $TargetRoot "venv311"
+    Assert-ExtractedReleaseMatchesManifest -Root $appStagingRoot -Manifest $manifest
     & $BootstrapPython -I -E -B -m venv $venvRoot
     if ($LASTEXITCODE -ne 0) { throw "Inert app venv creation failed." }
     $venvPython = Join-Path $venvRoot "Scripts\python.exe"
-    Push-Location -LiteralPath $appStagingRoot
-    try {
-        & $venvPython -I -E -B -m pip install --disable-pip-version-check --no-index --require-hashes -r "requirements-windows.lock"
-        if ($LASTEXITCODE -ne 0) { throw "Locked offline venv dependency install failed." }
-        & $venvPython -I -E -B -m pip install --disable-pip-version-check --no-index --no-deps --no-build-isolation "."
-        if ($LASTEXITCODE -ne 0) { throw "Inert Super1 application install failed." }
-    }
-    finally { Pop-Location }
+    Install-LockedRelease -Python $venvPython -App $appStagingRoot
+    Assert-ExtractedReleaseMatchesManifest -Root $appStagingRoot -Manifest $manifest -AllowBuildArtifacts
     Move-Item -LiteralPath $appStagingRoot -Destination $appRoot -ErrorAction Stop
-    Copy-Item -LiteralPath $Archive -Destination (Join-Path $TargetRoot "super1-forward.zip")
-    Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $TargetRoot "super1-forward.manifest.json")
-    Copy-Item -LiteralPath $SignaturePath -Destination (Join-Path $TargetRoot "super1-forward.manifest.sig")
+    Copy-Item -LiteralPath $Archive -Destination $installedSidecars[0]
+    Copy-Item -LiteralPath $ManifestPath -Destination $installedSidecars[1]
+    Copy-Item -LiteralPath $SignaturePath -Destination $installedSidecars[2]
+    foreach ($pair in @(
+        @{ source = $Archive; target = $installedSidecars[0] },
+        @{ source = $ManifestPath; target = $installedSidecars[1] },
+        @{ source = $SignaturePath; target = $installedSidecars[2] }
+    )) {
+        if ((Get-FileHash -LiteralPath ([string]$pair.source) -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+            (Get-FileHash -LiteralPath ([string]$pair.target) -Algorithm SHA256).Hash.ToLowerInvariant()) {
+            throw "Installed signed release sidecar differs from its locked verified input: $($pair.target)"
+        }
+    }
     foreach ($directory in @(Get-ChildItem -LiteralPath $TargetRoot -Directory -Recurse -Force)) {
         Assert-NotReparsePoint -Path $directory.FullName
         Set-InertInstallDirectoryAcl -Path $directory.FullName -UserSid $ReadOnlyUserSid
@@ -211,5 +323,21 @@ try {
     } | ConvertTo-Json -Depth 4
 }
 catch {
-    throw "INERT_INSTALL_FAILED_WITH_FILES_PRESERVED: inspect $TargetRoot before any retry. $($_.Exception.Message)"
+    if (-not $installMutationStarted) { throw }
+    $failureMessage = $_.Exception.Message
+    $rollbackErrors = [Collections.Generic.List[string]]::new()
+    $failureRoot = ""
+    try {
+        $ownedPaths = @($appRoot, $appStagingRoot, $venvRoot) + $installedSidecars
+        $failureRoot = Move-InertInstallFailureArtifacts -Root $TargetRoot -OwnedPaths $ownedPaths -OriginalSddl $originalTargetSddl
+    }
+    catch { $rollbackErrors.Add($_.Exception.Message) }
+    if ($rollbackErrors.Count -gt 0) {
+        throw "INERT_INSTALL_ROLLBACK_INCOMPLETE: original=$failureMessage rollback=$($rollbackErrors -join '; ') preserved=$failureRoot"
+    }
+    throw "INERT_INSTALL_FAILED_ROLLED_BACK: $failureMessage preserved=$failureRoot"
+}
+}
+finally {
+    if ($null -ne $inputLocks) { foreach ($lock in $inputLocks) { $lock.stream.Dispose() } }
 }

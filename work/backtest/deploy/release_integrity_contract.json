@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "helper_path": "deploy/release_integrity.ps1",
-  "source_commit": "ae4f21421000a9a5f22b056eb5e1dfd505318253",
-  "source_tree": "495050821a1c4aa41f7ee1f4725d292d62ff8ea5",
-  "source_blob_sha1": "01d5757562612ebe3a329ef4559a0649af2ca20a",
+  "source_commit": "5870e026b17edecba6b56ca84d766570bf53e220",
+  "source_tree": "3952e70eece5e9d536d231fc42cffd3a13daceb5",
+  "source_blob_sha1": "43ecfa2d56704b2fa3871141adad8adb05f6cffa",
   "encoding": "UTF-8",
   "bom": false,
   "eol": "LF",
-  "byte_length": 26910,
-  "lf_count": 573,
+  "byte_length": 28631,
+  "lf_count": 599,
   "cr_count": 0,
-  "sha256_lf": "9e29b8d0c34127e3caa74b2625e63fe02e1fc6b927dc992dae77baa54f4131a9"
+  "sha256_lf": "6e7dae16e7238fb75cbe81d9d614647d3530cd83a67cc9b42c80c580d7c98b27"
 }

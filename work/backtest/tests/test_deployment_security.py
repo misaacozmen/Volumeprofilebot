@@ -666,22 +666,37 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
 
 def test_inert_super1_installer_verifies_signed_release_without_activating_runtime() -> None:
     source = text("install_super1_app_inert_windows.ps1")
+    integrity = text("release_integrity.ps1")
 
     assert "Assert-SignedReleaseArchive" in source
     assert "-ExpectedProfile \"super1\" -RequireProvenance" in source
     assert "Target root is not empty" in source
     assert "Set-InertInstallDirectoryAcl" in source
-    assert "--require-hashes" in source
-    assert "--no-index" in source
+    assert "Install-LockedRelease -Python $venvPython -App $appStagingRoot" in source
+    assert "--find-links $wheelhouse" in integrity
+    assert "--require-hashes" in integrity
+    assert "--no-index" in integrity
+    assert "Open-InertReleaseInputLocks" in source
+    assert "FileShare]::Read" in source
+    assert "Move-InertInstallFailureArtifacts" in source
     assert 'status = "PLAN_ONLY_NO_CHANGES"' in source
     assert 'status = "INERT_APP_INSTALLED"' in source
     assert "deployment_ready = $false" in source
-    lock_install = source.index("-m pip install --disable-pip-version-check --no-index --require-hashes -r \"requirements-windows.lock\"")
-    staging_push = source.rindex('Push-Location -LiteralPath $appStagingRoot', 0, lock_install)
-    staging_pop = source.index("Pop-Location", lock_install)
-    assert staging_push < lock_install < staging_pop
-    assert "INERT_INSTALL_FAILED_WITH_FILES_PRESERVED" in source
+    assert "INERT_INSTALL_FAILED_ROLLED_BACK" in source
     for forbidden in ("Register-ScheduledTask", "schtasks.exe", "Start-ScheduledTask", "Start-Process"):
+        assert forbidden not in source
+
+
+def test_inert_app_upgrade_and_rollback_are_explicitly_inert() -> None:
+    source = text("manage_super1_app_inert_windows.ps1")
+
+    assert 'ValidateSet("Upgrade", "Rollback")' in source
+    assert "Move-InertBundleTo" in source
+    assert "Restore-InertBundleFrom" in source
+    assert 'state = "UPGRADED"' in source
+    assert 'state = "ROLLED_BACK"' in source
+    assert "deployment_ready = $false" in source
+    for forbidden in ("Register-ScheduledTask", "schtasks.exe", "Start-ScheduledTask", "Start-Process", "OrderSend", "order_send"):
         assert forbidden not in source
 
 
