@@ -228,7 +228,7 @@ if ($loadedScheduledTasksModule.Count -ne 1 -or -not [IO.Path]::GetFullPath([str
 $Root = [IO.Path]::GetFullPath("C:\Super1")
 $MainTask = "Super1XM"
 $WatchdogTask = "Super1Watchdog"
-$ExpectedIntegrityScriptSha256 = "6e7dae16e7238fb75cbe81d9d614647d3530cd83a67cc9b42c80c580d7c98b27"
+$ExpectedIntegrityScriptSha256 = "4a7c54683ea4e98c7464d607d85131b0e8419891d2dbaae5632da432c024b109"
 
 function Test-PathWithin {
     param(

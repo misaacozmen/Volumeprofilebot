@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $TargetRoot = [IO.Path]::GetFullPath($TargetRoot)
 $IntegrityHelper = Join-Path $PSScriptRoot "release_integrity.ps1"
-$ExpectedIntegrityScriptSha256 = "6e7dae16e7238fb75cbe81d9d614647d3530cd83a67cc9b42c80c580d7c98b27"
+$ExpectedIntegrityScriptSha256 = "4a7c54683ea4e98c7464d607d85131b0e8419891d2dbaae5632da432c024b109"
 $integrityBytes = [IO.File]::ReadAllBytes($IntegrityHelper)
 $integrityHasher = [Security.Cryptography.SHA256]::Create()
 try { $integritySha256 = ([BitConverter]::ToString($integrityHasher.ComputeHash($integrityBytes))).Replace("-", "").ToLowerInvariant() }
