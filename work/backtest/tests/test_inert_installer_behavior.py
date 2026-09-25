@@ -55,7 +55,7 @@ def _fixture_backend() -> bytes:
     return b'''from pathlib import Path\nimport base64, csv, hashlib, io, zipfile\n\ndef build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n    filename = "super1_install_fixture-0.0.1-py3-none-any.whl"\n    dist = "super1_install_fixture-0.0.1.dist-info"\n    entries = {\n        "super1_install_fixture.py": Path("super1_install_fixture.py").read_bytes(),\n        f"{dist}/METADATA": b"Metadata-Version: 2.1\\nName: super1-install-fixture\\nVersion: 0.0.1\\n\\n",\n        f"{dist}/WHEEL": b"Wheel-Version: 1.0\\nGenerator: inert-installer-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",\n    }\n    rows = []\n    for name, payload in entries.items():\n        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")\n        rows.append((name, "sha256=" + digest, str(len(payload))))\n    rows.append((f"{dist}/RECORD", "", ""))\n    out = io.StringIO(newline="")\n    csv.writer(out, lineterminator="\\n").writerows(rows)\n    entries[f"{dist}/RECORD"] = out.getvalue().encode()\n    destination = Path(wheel_directory) / filename\n    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as wheel:\n        for name, payload in entries.items():\n            wheel.writestr(name, payload)\n    return filename\n'''
 
 
-def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str, Path]:
+def _synthetic_release(tmp_path: Path, *, wrong_wheel_hash: bool = False) -> tuple[Path, Path, str, Path]:
     release = tmp_path / "release"
     release.mkdir()
     wheelhouse = release / "wheelhouse"
@@ -68,8 +68,9 @@ def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str, Path]:
         {"fixture_dep.py": b"VALUE = 'installed from local wheelhouse'\n"},
     )
     wheel_hash = hashlib.sha256(wheel_bytes).hexdigest()
+    locked_wheel_hash = "0" * 64 if wrong_wheel_hash else wheel_hash
     (release / "requirements-windows.lock").write_text(
-        f"fixture-dep==1.0 --hash=sha256:{wheel_hash}\n", encoding="utf-8"
+        f"fixture-dep==1.0 --hash=sha256:{locked_wheel_hash}\n", encoding="utf-8"
     )
     (release / "pyproject.toml").write_text(
         '[build-system]\nrequires = []\nbuild-backend = "fixture_backend"\nbackend-path = ["."]\n',
@@ -251,6 +252,9 @@ def _invoke_inert_installer_entrypoint(
     synthetic_helper: Path,
     expected_archive_sha256: str,
     target_root: Path,
+    *,
+    plan_only: bool = True,
+    test_platform: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     entrypoint_root = release / "entrypoint"
     entrypoint_root.mkdir(exist_ok=True)
@@ -264,12 +268,32 @@ def _invoke_inert_installer_entrypoint(
         installer_text,
     )
     assert replacements == 1
+    if test_platform:
+        trusted_start = installer_text.index("function Assert-TrustedInstallParent {")
+        trusted_end = installer_text.index("\nfunction Set-InertInstallDirectoryAcl {", trusted_start)
+        installer_text = (
+            installer_text[:trusted_start]
+            + "function Assert-TrustedInstallParent { param([string]$Path, [string]$UserSid) }\n"
+            + installer_text[trusted_end:]
+        )
+        acl_start = installer_text.index("function Set-InertInstallDirectoryAcl {")
+        acl_end = installer_text.index("\nfunction Expand-VerifiedArchive {", acl_start)
+        installer_text = (
+            installer_text[:acl_start]
+            + "function Set-InertInstallDirectoryAcl { param([string]$Path, [string]$UserSid) }\n"
+            + installer_text[acl_end:]
+        )
+        installer_text, elevation_replacements = re.subn(
+            r'(?m)^if \(-not \$PlanOnly -and -not \$admin\) \{ throw "Elevation is required only for the explicit inert app install\." \}$',
+            "# Test harness omits only the host elevation gate.",
+            installer_text,
+        )
+        assert elevation_replacements == 1
     installer_path = entrypoint_root / "install_super1_app_inert_windows.ps1"
     installer_path.write_text(installer_text, encoding="utf-8")
     sid = powershell_harness('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
     assert sid.returncode == 0 and sid.stdout.strip()
-    return subprocess.run(
-        [
+    command = [
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             "-NoProfile",
             "-NonInteractive",
@@ -289,8 +313,11 @@ def _invoke_inert_installer_entrypoint(
             sid.stdout.strip(),
             "-BootstrapPython",
             sys.executable,
-            "-PlanOnly",
-        ],
+        ]
+    if plan_only:
+        command.append("-PlanOnly")
+    return subprocess.run(
+        command,
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -373,36 +400,58 @@ def test_inert_installer_blocks_file_mutation_after_validation(tmp_path: Path) -
 
 
 def test_inert_installer_installs_from_hash_locked_offline_wheelhouse(tmp_path: Path) -> None:
-    release, helper, _, _ = _synthetic_release(tmp_path)
-    installer = DEPLOY / "install_super1_app_inert_windows.ps1"
-    extracted_check = next(
-        item["extent_text"] for item in facts(installer, "function")
-        if item["name"] == "Assert-ExtractedReleaseMatchesManifest"
-    )
-    app = tmp_path / "app"
-    app.mkdir()
-    with zipfile.ZipFile(release / "super1-forward.zip") as archive:
-        archive.extractall(app)
-    venv = tmp_path / "venv"
-    created = subprocess.run([sys.executable, "-m", "venv", str(venv)], capture_output=True, text=True)
-    assert created.returncode == 0, created.stderr
-    venv_python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    result = powershell_harness(
-        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); . $args[0];\n'
-        + extracted_check
-        + '\n$manifest = Assert-SignedReleaseArchive -Archive $args[3] -ExpectedProfile "super1" -RequireProvenance; '
-        + 'Assert-ExtractedReleaseMatchesManifest -Root $args[2] -Manifest $manifest; '
-        + 'Install-LockedRelease -Python $args[1] -App $args[2]; '
-        + 'Assert-ExtractedReleaseMatchesManifest -Root $args[2] -Manifest $manifest -AllowBuildArtifacts; '
-        + '& $args[1] -I -E -B -c "import fixture_dep, super1_install_fixture; assert fixture_dep.VALUE.startswith(\'installed from local\'); assert super1_install_fixture.INSTALLED"; '
-        + 'if ($LASTEXITCODE -ne 0) { throw "OFFLINE_WHEELHOUSE_INSTALL_VERIFY_FAILED" }; "WHEELHOUSE_INSTALL_OK"',
-        str(helper),
-        str(venv_python),
-        str(app),
-        str(release / "super1-forward.zip"),
+    release, helper, archive_sha256, _ = _synthetic_release(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    result = _invoke_inert_installer_entrypoint(
+        release, helper, archive_sha256, target, plan_only=False, test_platform=True
     )
     assert result.returncode == 0, result.stderr
-    assert "WHEELHOUSE_INSTALL_OK" in result.stdout
+    summary_match = re.search(r'(?s)(\{\s*"status"\s*:\s*"INERT_APP_INSTALLED".*?\})', result.stdout)
+    assert summary_match, result.stdout
+    summary = json.loads(summary_match.group(1))
+    assert summary["tasks_created"] is False
+    assert summary["watchdog_started"] is False
+    assert summary["terminal_installed_or_started"] is False
+    assert summary["deployment_ready"] is False
+    assert {path.name for path in target.iterdir()} == {
+        "app",
+        "venv311",
+        "super1-forward.zip",
+        "super1-forward.manifest.json",
+        "super1-forward.manifest.sig",
+    }
+    installed_python = target / "venv311" / "Scripts" / "python.exe"
+    installed = subprocess.run(
+        [str(installed_python), "-I", "-E", "-B", "-c", "import fixture_dep, super1_install_fixture; assert fixture_dep.VALUE.startswith('installed from local'); assert super1_install_fixture.INSTALLED"],
+        capture_output=True,
+        text=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+    for source_name, target_name in (
+        ("super1-forward.zip", "super1-forward.zip"),
+        ("super1-forward.manifest.json", "super1-forward.manifest.json"),
+        ("super1-forward.manifest.sig", "super1-forward.manifest.sig"),
+    ):
+        assert (release / source_name).read_bytes() == (target / target_name).read_bytes()
+
+
+def test_inert_installer_entrypoint_failed_install_restores_empty_target(tmp_path: Path) -> None:
+    release, helper, archive_sha256, _ = _synthetic_release(tmp_path, wrong_wheel_hash=True)
+    target = tmp_path / "target"
+    target.mkdir()
+    result = _invoke_inert_installer_entrypoint(
+        release, helper, archive_sha256, target, plan_only=False, test_platform=True
+    )
+    assert result.returncode != 0
+    assert "INERT_INSTALL_FAILED_ROLLED_BACK" in result.stderr
+    assert list(target.iterdir()) == []
+    quarantines = list(tmp_path.glob(".super1-inert-failed-*"))
+    assert len(quarantines) == 1
+    assert {path.name for path in quarantines[0].iterdir()} == {
+        ".app-stage-synthetic-installer-behavior-test",
+        "venv311",
+    }
 
 
 @pytest.mark.skipif(os.name != "nt", reason="The rollback behavior asserts Windows ACL restoration.")
