@@ -138,12 +138,12 @@ def test_risk_workflow_requires_separate_audit_inputs_and_owner_fixture() -> Non
     assert "engine_audit_source_root:" in workflow
     assert "symlink_fixture_root:" in workflow
     assert "ENGINE_AUDIT_SOURCE_ROOT:" in workflow
-    assert "SUPER1_SYMLINK_FIXTURE_ROOT:" in workflow
+    assert "SYMLINK_FIXTURE_ROOT:" in workflow
     assert "prepare_risk_provenance.py --source-root" in workflow
     assert "--engine-audit-source-root \"$env:ENGINE_AUDIT_SOURCE_ROOT\"" in workflow
     assert "--collect-only -q -p no:cacheprovider tests" in workflow
     assert "-q -p no:cacheprovider tests --junitxml=" in workflow
-    assert workflow.count("--symlink-fixture-root \"$env:SUPER1_SYMLINK_FIXTURE_ROOT\"") >= 3
+    assert workflow.count("--symlink-fixture-root \"$env:SYMLINK_FIXTURE_ROOT\"") >= 3
 
 
 def test_engine_audit_stage_preserves_separate_hash_pinned_inputs(tmp_path: Path) -> None:

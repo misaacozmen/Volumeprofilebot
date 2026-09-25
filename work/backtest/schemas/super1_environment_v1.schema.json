@@ -59,7 +59,7 @@
     "OTOBT_HARNESS_ARG0",
     "RISK_PROVENANCE_SOURCE_ROOT",
     "ENGINE_AUDIT_SOURCE_ROOT",
-    "SUPER1_SYMLINK_FIXTURE_ROOT"
+    "SYMLINK_FIXTURE_ROOT"
   ],
   "worker_allowed_variables": [
     "APPDATA",
