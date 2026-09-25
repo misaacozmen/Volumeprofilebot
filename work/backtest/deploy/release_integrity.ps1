@@ -416,7 +416,7 @@ function Install-LockedRelease {
         $env:PYTHONHOME = $null
         $env:PYTHONPATH = $null
         & $Python -I -E -B -m pip install --disable-pip-version-check --no-index --require-hashes `
-            -r "requirements-windows.lock"
+            --find-links $wheelhouse -r "requirements-windows.lock"
         if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
         & $Python -I -E -B -m pip install --disable-pip-version-check --no-index --no-deps `
             --no-build-isolation "."
