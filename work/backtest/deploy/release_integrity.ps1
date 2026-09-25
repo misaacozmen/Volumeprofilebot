@@ -20,6 +20,31 @@ function Get-ReleaseBytesSha256 {
     finally { $sha.Dispose() }
 }
 
+function Get-ReleaseZipEntryBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][string]$EntryPath
+    )
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        $entry = $zip.GetEntry($EntryPath)
+        if ($null -eq $entry -or $entry.Length -le 0 -or $entry.Length -gt 16777216) {
+            throw "Release ZIP entry is missing or exceeds the candidate metadata size limit: $EntryPath"
+        }
+        $source = $entry.Open()
+        $buffer = [IO.MemoryStream]::new()
+        try {
+            $source.CopyTo($buffer)
+            return ,$buffer.ToArray()
+        }
+        finally {
+            $buffer.Dispose()
+            $source.Dispose()
+        }
+    }
+    finally { $zip.Dispose() }
+}
+
 function Assert-ReleaseArtifactTestFiles {
     param([Parameter(Mandatory = $true)][object]$Manifest)
     $expected = @(
@@ -132,6 +157,7 @@ function Assert-SignedReleaseArchive {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
     $archiveFilesMap = @{}
+    $archiveFileSizesMap = @{}
     try {
         foreach ($entry in $zip.Entries) {
             $entryPath = $entry.FullName
@@ -160,6 +186,7 @@ function Assert-SignedReleaseArchive {
                 $entryStream.Dispose()
             }
             $archiveFilesMap[$entryPath] = $entryHash
+            $archiveFileSizesMap[$entryPath] = [long]$entry.Length
         }
     }
     finally {
@@ -183,13 +210,17 @@ function Assert-SignedReleaseArchive {
         Assert-ReleaseArtifactTestFiles -Manifest $manifest
         if ([string]$manifest.profile -ceq "super1") {
             $testInputs = $manifest.test_inputs
+            $testInputPropertyNames = @()
+            if ($null -ne $testInputs) { $testInputPropertyNames = @($testInputs.PSObject.Properties.Name) }
             if ($null -eq $testInputs -or
                 [string]$testInputs.risk_manifest_path -cne "data/provenance/first30_pre2025_inputs.sha256" -or
                 [int]$testInputs.risk_file_count -ne 144 -or
                 [string]$testInputs.risk_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
                 [string]$testInputs.risk_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
                 [string]$testInputs.engine_audit_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
-                [int]$testInputs.engine_audit_csv_count -le 0) {
+                [int]$testInputs.engine_audit_csv_count -le 0 -or
+                $testInputPropertyNames -notcontains "super1_candidate_manifest_sha256" -or
+                $testInputPropertyNames -notcontains "super1_candidate_provenance_files") {
                 throw "Release manifest hash-pinned test input evidence is incomplete."
             }
             $riskFiles = @($testInputs.risk_files)
@@ -238,6 +269,82 @@ function Assert-SignedReleaseArchive {
             $engineAuditSetBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalEngineAuditSet + "`n")
             if ((Get-ReleaseBytesSha256 -Bytes $engineAuditSetBytes) -cne ([string]$testInputs.engine_audit_set_sha256).ToLowerInvariant()) {
                 throw "Release manifest engine-audit input set hash is invalid."
+            }
+
+            $candidateRelative = "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json"
+            $candidateSha256 = [string]$testInputs.super1_candidate_manifest_sha256
+            $candidateFiles = @($testInputs.super1_candidate_provenance_files)
+            if ($candidateSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or $candidateFiles.Count -eq 0) {
+                throw "Release manifest Super1 candidate provenance evidence is incomplete."
+            }
+            if (-not $archiveFilesMap.ContainsKey($candidateRelative) -or
+                $archiveFilesMap[$candidateRelative] -cne $candidateSha256.ToLowerInvariant()) {
+                throw "Release manifest candidate manifest is not bound to the signed archive."
+            }
+            $candidateBytes = Get-ReleaseZipEntryBytes -Archive $archivePath -EntryPath $candidateRelative
+            if ((Get-ReleaseBytesSha256 -Bytes $candidateBytes) -cne $candidateSha256.ToLowerInvariant()) {
+                throw "Release manifest candidate manifest hash does not match archived bytes."
+            }
+            $candidatePayload = [Text.Encoding]::UTF8.GetString($candidateBytes) | ConvertFrom-Json
+            $declaredCandidateFiles = @($candidatePayload.provenance.inputs)
+            if ($declaredCandidateFiles.Count -eq 0 -or $declaredCandidateFiles.Count -ne $candidateFiles.Count) {
+                throw "Release manifest candidate provenance list does not match the archived candidate."
+            }
+            $candidatePathSeen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $declaredCandidateRecords = @()
+            foreach ($candidateFile in $declaredCandidateFiles) {
+                $candidatePath = [string]$candidateFile.path
+                $candidateFileSha256 = ([string]$candidateFile.sha256).ToLowerInvariant()
+                $candidateFileBytes = [long]$candidateFile.bytes
+                if ([string]::IsNullOrWhiteSpace($candidatePath) -or
+                    $candidatePath -ne $candidatePath.Replace("\", "/") -or
+                    [IO.Path]::IsPathRooted($candidatePath) -or $candidatePath -match '^[A-Za-z]:' -or
+                    $candidatePath -match '(^|/)\.\.(/|$)|(^|/)\./|//' -or
+                    $candidateFileSha256 -notmatch '^[a-f0-9]{64}$' -or $candidateFileBytes -le 0 -or
+                    -not $candidatePathSeen.Add($candidatePath)) {
+                    throw "Archived candidate contains an invalid or duplicate provenance input: $candidatePath"
+                }
+                if (-not $archiveFilesMap.ContainsKey($candidatePath) -or
+                    $archiveFilesMap[$candidatePath] -cne $candidateFileSha256 -or
+                    -not $archiveFileSizesMap.ContainsKey($candidatePath) -or
+                    [long]$archiveFileSizesMap[$candidatePath] -ne $candidateFileBytes) {
+                    throw "Archived candidate provenance input is not bound to its exact archive bytes: $candidatePath"
+                }
+                $declaredCandidateRecords += [pscustomobject]@{
+                    path = $candidatePath
+                    sha256 = $candidateFileSha256
+                    bytes = $candidateFileBytes
+                }
+            }
+            $testCandidatePathSeen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $testCandidateRecords = @()
+            foreach ($candidateFile in $candidateFiles) {
+                $candidatePath = [string]$candidateFile.path
+                $candidateFileSha256 = ([string]$candidateFile.sha256).ToLowerInvariant()
+                $candidateFileBytes = [long]$candidateFile.bytes
+                if ([string]::IsNullOrWhiteSpace($candidatePath) -or
+                    $candidateFileSha256 -notmatch '^[a-f0-9]{64}$' -or $candidateFileBytes -le 0 -or
+                    -not $testCandidatePathSeen.Add($candidatePath)) {
+                    throw "Release manifest contains an invalid or duplicate candidate provenance input: $candidatePath"
+                }
+                $testCandidateRecords += [pscustomobject]@{
+                    path = $candidatePath
+                    sha256 = $candidateFileSha256
+                    bytes = $candidateFileBytes
+                }
+            }
+            $canonicalDeclaredCandidateRecords = @(
+                $declaredCandidateRecords | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $([string]$_.sha256) $([long]$_.bytes)"
+                }
+            ) -join "`n"
+            $canonicalTestCandidateRecords = @(
+                $testCandidateRecords | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $([string]$_.sha256) $([long]$_.bytes)"
+                }
+            ) -join "`n"
+            if ($canonicalDeclaredCandidateRecords -cne $canonicalTestCandidateRecords) {
+                throw "Release manifest candidate provenance records do not match the archived candidate input declaration."
             }
         }
         $seenManifestPaths = @{}

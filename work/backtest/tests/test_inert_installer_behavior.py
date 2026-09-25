@@ -55,7 +55,7 @@ def _fixture_backend() -> bytes:
     return b'''from pathlib import Path\nimport base64, csv, hashlib, io, zipfile\n\ndef build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n    filename = "super1_install_fixture-0.0.1-py3-none-any.whl"\n    dist = "super1_install_fixture-0.0.1.dist-info"\n    entries = {\n        "super1_install_fixture.py": Path("super1_install_fixture.py").read_bytes(),\n        f"{dist}/METADATA": b"Metadata-Version: 2.1\\nName: super1-install-fixture\\nVersion: 0.0.1\\n\\n",\n        f"{dist}/WHEEL": b"Wheel-Version: 1.0\\nGenerator: inert-installer-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",\n    }\n    rows = []\n    for name, payload in entries.items():\n        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")\n        rows.append((name, "sha256=" + digest, str(len(payload))))\n    rows.append((f"{dist}/RECORD", "", ""))\n    out = io.StringIO(newline="")\n    csv.writer(out, lineterminator="\\n").writerows(rows)\n    entries[f"{dist}/RECORD"] = out.getvalue().encode()\n    destination = Path(wheel_directory) / filename\n    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as wheel:\n        for name, payload in entries.items():\n            wheel.writestr(name, payload)\n    return filename\n'''
 
 
-def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str]:
+def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str, Path]:
     release = tmp_path / "release"
     release.mkdir()
     wheelhouse = release / "wheelhouse"
@@ -77,12 +77,35 @@ def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str]:
     )
     (release / "fixture_backend.py").write_bytes(_fixture_backend())
     (release / "super1_install_fixture.py").write_text("INSTALLED = True\n", encoding="utf-8")
+    candidate_input_path = "outputs/reports/fixture-provenance.csv"
+    candidate_input_bytes = b"fixture,provenance\n1,verified\n"
+    candidate_input_file = release / Path(candidate_input_path)
+    candidate_input_file.parent.mkdir(parents=True)
+    candidate_input_file.write_bytes(candidate_input_bytes)
+    candidate_path = "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json"
+    candidate_payload = {
+        "provenance": {
+            "inputs": [
+                {
+                    "path": candidate_input_path,
+                    "sha256": hashlib.sha256(candidate_input_bytes).hexdigest(),
+                    "bytes": len(candidate_input_bytes),
+                }
+            ]
+        }
+    }
+    candidate_bytes = (json.dumps(candidate_payload, separators=(",", ":")) + "\n").encode("utf-8")
+    candidate_file = release / Path(candidate_path)
+    candidate_file.parent.mkdir(parents=True)
+    candidate_file.write_bytes(candidate_bytes)
     archive_path = release / "super1-forward.zip"
     package_files = [
         release / "requirements-windows.lock",
         release / "pyproject.toml",
         release / "fixture_backend.py",
         release / "super1_install_fixture.py",
+        candidate_input_file,
+        candidate_file,
         wheel_path,
     ]
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -94,7 +117,7 @@ def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str]:
         for info in archive.infolist():
             if not info.is_dir():
                 payload = archive.read(info.filename)
-                records.append({"path": info.filename, "sha256": hashlib.sha256(payload).hexdigest()})
+                records.append({"path": info.filename, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)})
 
     risk_files = [
         {
@@ -142,6 +165,14 @@ def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str]:
             "engine_audit_set_sha256": hashlib.sha256(engine_set.encode()).hexdigest(),
             "engine_audit_csv_count": len(engine_files),
             "engine_audit_files": engine_files,
+            "super1_candidate_manifest_sha256": hashlib.sha256(candidate_bytes).hexdigest(),
+            "super1_candidate_provenance_files": [
+                {
+                    "path": candidate_input_path,
+                    "sha256": hashlib.sha256(candidate_input_bytes).hexdigest(),
+                    "bytes": len(candidate_input_bytes),
+                }
+            ],
         },
         "files": records,
     }
@@ -188,7 +219,7 @@ def _synthetic_release(tmp_path: Path) -> tuple[Path, Path, str]:
         str(release / "super1-forward.manifest.sig"),
     )
     assert signed.returncode == 0, signed.stderr
-    return release, test_helper, manifest["archive_sha256"]
+    return release, test_helper, manifest["archive_sha256"], private_xml_path
 
 
 def _validate(test_helper: Path, archive: Path) -> subprocess.CompletedProcess[str]:
@@ -200,26 +231,124 @@ def _validate(test_helper: Path, archive: Path) -> subprocess.CompletedProcess[s
     )
 
 
+def _resign_manifest(manifest_path: Path, signature_path: Path, private_xml_path: Path) -> None:
+    result = powershell_harness(
+        '$rsa = New-Object Security.Cryptography.RSACryptoServiceProvider; '
+        + '$rsa.FromXmlString([IO.File]::ReadAllText($args[0])); '
+        + '$bytes = [IO.File]::ReadAllBytes($args[1]); '
+        + '$signature = $rsa.SignData($bytes, [Security.Cryptography.CryptoConfig]::MapNameToOID("SHA256")); '
+        + '[IO.File]::WriteAllText($args[2], [Convert]::ToBase64String($signature) + "`n", (New-Object Text.UTF8Encoding($false))); '
+        + '$rsa.Dispose()',
+        str(private_xml_path),
+        str(manifest_path),
+        str(signature_path),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _invoke_inert_installer_entrypoint(
+    release: Path,
+    synthetic_helper: Path,
+    expected_archive_sha256: str,
+    target_root: Path,
+) -> subprocess.CompletedProcess[str]:
+    entrypoint_root = release / "entrypoint"
+    entrypoint_root.mkdir(exist_ok=True)
+    helper_path = entrypoint_root / "release_integrity.ps1"
+    helper_path.write_bytes(synthetic_helper.read_bytes())
+    helper_sha256 = hashlib.sha256(helper_path.read_bytes()).hexdigest()
+    installer_text = (DEPLOY / "install_super1_app_inert_windows.ps1").read_text(encoding="utf-8")
+    installer_text, replacements = re.subn(
+        r'(?m)^\$ExpectedIntegrityScriptSha256 = "[a-f0-9]{64}"$',
+        f'$ExpectedIntegrityScriptSha256 = "{helper_sha256}"',
+        installer_text,
+    )
+    assert replacements == 1
+    installer_path = entrypoint_root / "install_super1_app_inert_windows.ps1"
+    installer_path.write_text(installer_text, encoding="utf-8")
+    sid = powershell_harness('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+    assert sid.returncode == 0 and sid.stdout.strip()
+    return subprocess.run(
+        [
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer_path),
+            "-ReleaseDirectory",
+            str(release),
+            "-TargetRoot",
+            str(target_root),
+            "-ExpectedReleaseId",
+            "synthetic-installer-behavior-test",
+            "-ExpectedArchiveSha256",
+            expected_archive_sha256,
+            "-ReadOnlyUserSid",
+            sid.stdout.strip(),
+            "-BootstrapPython",
+            sys.executable,
+            "-PlanOnly",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_inert_installer_rejects_signed_manifest_without_candidate_provenance_link(tmp_path: Path) -> None:
+    release, helper, _, private_key = _synthetic_release(tmp_path)
+    manifest_path = release / "super1-forward.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["test_inputs"]["super1_candidate_manifest_sha256"]
+    del manifest["test_inputs"]["super1_candidate_provenance_files"]
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
+    _resign_manifest(manifest_path, release / "super1-forward.manifest.sig", private_key)
+
+    result = _validate(helper, release / "super1-forward.zip")
+    assert result.returncode != 0
+    assert "hash-pinned test input evidence is incomplete" in result.stderr
+
+
+def test_inert_installer_rejects_candidate_provenance_record_mismatch(tmp_path: Path) -> None:
+    release, helper, _, private_key = _synthetic_release(tmp_path)
+    manifest_path = release / "super1-forward.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["test_inputs"]["super1_candidate_provenance_files"][0]["sha256"] = "f" * 64
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
+    _resign_manifest(manifest_path, release / "super1-forward.manifest.sig", private_key)
+
+    result = _validate(helper, release / "super1-forward.zip")
+    assert result.returncode != 0
+    assert "candidate provenance records do not match" in result.stderr
+
+
 def test_inert_installer_rejects_bad_signature(tmp_path: Path) -> None:
-    release, helper, _ = _synthetic_release(tmp_path)
+    release, helper, expected_archive_sha256, _ = _synthetic_release(tmp_path)
     signature = release / "super1-forward.manifest.sig"
     signature.write_text("AAAA\n", encoding="ascii")
-    result = _validate(helper, release / "super1-forward.zip")
+    target = tmp_path / "target"
+    target.mkdir()
+    result = _invoke_inert_installer_entrypoint(release, helper, expected_archive_sha256, target)
     assert result.returncode != 0
     assert "Release manifest signature validation failed" in result.stderr
 
 
 def test_inert_installer_rejects_archive_hash_change(tmp_path: Path) -> None:
-    release, helper, _ = _synthetic_release(tmp_path)
+    release, helper, expected_archive_sha256, _ = _synthetic_release(tmp_path)
     archive = release / "super1-forward.zip"
     archive.write_bytes(archive.read_bytes() + b"post-signature mutation")
-    result = _validate(helper, archive)
+    target = tmp_path / "target"
+    target.mkdir()
+    result = _invoke_inert_installer_entrypoint(release, helper, expected_archive_sha256, target)
     assert result.returncode != 0
     assert "Release archive SHA-256 validation failed" in result.stderr
 
 
 def test_inert_installer_blocks_file_mutation_after_validation(tmp_path: Path) -> None:
-    release, helper, _ = _synthetic_release(tmp_path)
+    release, helper, _, _ = _synthetic_release(tmp_path)
     installer = DEPLOY / "install_super1_app_inert_windows.ps1"
     lock_function = next(item["extent_text"] for item in facts(installer, "function") if item["name"] == "Open-InertReleaseInputLocks")
     archive = release / "super1-forward.zip"
@@ -244,7 +373,7 @@ def test_inert_installer_blocks_file_mutation_after_validation(tmp_path: Path) -
 
 
 def test_inert_installer_installs_from_hash_locked_offline_wheelhouse(tmp_path: Path) -> None:
-    release, helper, _ = _synthetic_release(tmp_path)
+    release, helper, _, _ = _synthetic_release(tmp_path)
     installer = DEPLOY / "install_super1_app_inert_windows.ps1"
     extracted_check = next(
         item["extent_text"] for item in facts(installer, "function")
