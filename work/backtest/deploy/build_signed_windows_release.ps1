@@ -9,6 +9,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$SymlinkFixtureRoot,
+    [string]$RiskProvenanceSourceRoot,
+    [string]$EngineAuditSourceRoot,
     [string]$PrivateKeyPath = (Join-Path $env:LOCALAPPDATA "OtoBacktest\release-private-key.dpapi"),
     [string]$ReleaseId
 )
@@ -27,6 +29,8 @@ $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("otobt-release-" + [Guid]::New
 $Stage = Join-Path $TempRoot "payload"
 $Wheelhouse = Join-Path $Stage "wheelhouse"
 $LinuxWheelhouse = Join-Path $Stage "wheelhouse-linux"
+$TestRepoRoot = Join-Path $TempRoot "test-repo"
+$TestSourceRoot = Join-Path $TestRepoRoot "work\backtest"
 $Super1ProvenanceFiles = @()
 
 function Assert-OwnerSymlinkFixture {
@@ -111,7 +115,91 @@ function Write-NodeIdInventory {
     }
 }
 
+function Get-PinnedRiskInputSet {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputRoot,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+
+    $resolvedRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $InputRoot -ErrorAction Stop).ProviderPath)
+    $manifestBytes = [IO.File]::ReadAllBytes($ManifestPath)
+    $expected = [ordered]@{}
+    foreach ($rawLine in [IO.File]::ReadAllLines($ManifestPath)) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        $match = [regex]::Match($line, '^(?<sha>[A-Fa-f0-9]{64})\s+\*?(?<path>data/raw/(?:nq|spx)/DUKASCOPY_[^\r\n]+\.csv)$')
+        if (-not $match.Success) { throw "PINNED_RISK_INPUT_MANIFEST_INVALID: $line" }
+        $relative = $match.Groups["path"].Value
+        if ($expected.Contains($relative)) { throw "PINNED_RISK_INPUT_DUPLICATE: $relative" }
+        $expected[$relative] = $match.Groups["sha"].Value.ToLowerInvariant()
+    }
+    if ($expected.Count -ne 144) { throw "PINNED_RISK_INPUT_COUNT_INVALID: expected=144 actual=$($expected.Count)" }
+
+    $rawRoot = Join-Path $resolvedRoot "data\raw"
+    if (-not (Test-Path -LiteralPath $rawRoot -PathType Container)) { $rawRoot = $resolvedRoot }
+    $actual = @{}
+    foreach ($leg in @("nq", "spx")) {
+        $legRoot = Join-Path $rawRoot $leg
+        if (-not (Test-Path -LiteralPath $legRoot -PathType Container)) {
+            throw "PINNED_RISK_INPUT_DIRECTORY_MISSING: $legRoot"
+        }
+        foreach ($file in @(Get-ChildItem -LiteralPath $legRoot -File -Filter "DUKASCOPY_*.csv")) {
+            $relative = "data/raw/$leg/$($file.Name)"
+            $actual[$relative] = $file.FullName
+        }
+    }
+    if ($actual.Count -ne $expected.Count -or
+        (@($actual.Keys | Sort-Object -CaseSensitive -Culture en-US) -join "`n") -cne
+        (@($expected.Keys | Sort-Object -CaseSensitive -Culture en-US) -join "`n")) {
+        throw "PINNED_RISK_INPUT_SET_MISMATCH: expected=144 actual=$($actual.Count)"
+    }
+
+    $records = @()
+    foreach ($relative in @($expected.Keys | Sort-Object -CaseSensitive -Culture en-US)) {
+        $path = [IO.Path]::GetFullPath($actual[$relative])
+        if (-not $path.StartsWith($resolvedRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "PINNED_RISK_INPUT_PATH_ESCAPES_ROOT: $relative"
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "PINNED_RISK_INPUT_REPARSE_POINT: $relative" }
+        $sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($sha256 -cne $expected[$relative]) { throw "PINNED_RISK_INPUT_HASH_MISMATCH: $relative" }
+        $records += [ordered]@{ path = $relative; sha256 = $sha256; bytes = [long]$item.Length }
+    }
+    $canonicalSet = @($records | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "`n"
+    $setBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalSet + "`n")
+    return [ordered]@{
+        count = $records.Count
+        manifest_sha256 = (Get-ByteSha256 -Bytes $manifestBytes)
+        set_sha256 = Get-ByteSha256 -Bytes $setBytes
+        files = $records
+    }
+}
+
+function Assert-TestCloneContainsOnlyPinnedInputs {
+    param(
+        [Parameter(Mandatory = $true)][string]$CloneRoot,
+        [Parameter(Mandatory = $true)][object]$InputSet
+    )
+    $trackedStatus = @(& git -C $CloneRoot status --porcelain --untracked-files=no)
+    if ($LASTEXITCODE -ne 0 -or $trackedStatus.Count -ne 0) {
+        throw "Release tests changed tracked files in their clean clone: $($trackedStatus -join '; ')"
+    }
+    $expectedPaths = @($InputSet.files | ForEach-Object { "work/backtest/$($_.path)" } | Sort-Object -CaseSensitive -Culture en-US)
+    $actualPaths = @(& git -C $CloneRoot ls-files --others --exclude-standard)
+    if ($LASTEXITCODE -ne 0) { throw "Could not enumerate release test clone untracked files." }
+    $actualPaths = @($actualPaths | ForEach-Object { ([string]$_).Replace("\", "/") } | Sort-Object -CaseSensitive -Culture en-US)
+    if ($expectedPaths.Count -ne $actualPaths.Count -or
+        ($expectedPaths -join "`n") -cne ($actualPaths -join "`n")) {
+        throw "Release test clone contains files outside its exact pinned input set. expected=$($expectedPaths.Count) actual=$($actualPaths.Count)"
+    }
+}
+
 $SymlinkFixtureRoot = Assert-OwnerSymlinkFixture -Root $SymlinkFixtureRoot
+if ([string]::IsNullOrWhiteSpace($RiskProvenanceSourceRoot) -or
+    [string]::IsNullOrWhiteSpace($EngineAuditSourceRoot)) {
+    throw "PINNED_RISK_INPUT_ROOTS_REQUIRED: provide the 144-file source root and the separate 2025 audit root."
+}
 if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable("PYTEST_ADDOPTS"))) {
     throw "Release build refuses hidden PYTEST_ADDOPTS; pass all test options explicitly."
 }
@@ -293,6 +381,17 @@ if ($LASTEXITCODE -ne 0 -or -not $gitCommit) {
     throw "Could not determine git commit."
 }
 $gitDirty = $false
+$TempRoot = [IO.Path]::GetFullPath($TempRoot)
+New-Item -ItemType Directory -Path $TempRoot -ErrorAction Stop | Out-Null
+try {
+$riskInputManifestPath = Join-Path $SourceRoot "data\provenance\first30_pre2025_inputs.sha256"
+$riskInputSet = Get-PinnedRiskInputSet -InputRoot $RiskProvenanceSourceRoot -ManifestPath $riskInputManifestPath
+$engineAuditRootResolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $EngineAuditSourceRoot -ErrorAction Stop).ProviderPath)
+$engineAuditManifestPath = Join-Path $engineAuditRootResolved "engine_audit_manifest.json"
+if (-not (Test-Path -LiteralPath $engineAuditManifestPath -PathType Leaf)) {
+    throw "ENGINE_AUDIT_INPUT_MANIFEST_REQUIRED: $engineAuditManifestPath"
+}
+$engineAuditManifestSha256 = (Get-FileHash -LiteralPath $engineAuditManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # 2. CPython 3.11 check
 $pyCheck = (& $Python -c "import sys, platform; print(f'{sys.version_info.major}.{sys.version_info.minor}|{platform.python_implementation()}|{sys.version}')")
@@ -307,12 +406,28 @@ $pythonVersion = $pyParts[2].Trim()
 $pythonExe = (& $Python -c "import sys; print(sys.executable)").Trim()
 $pythonExeSha256 = (Get-FileHash -LiteralPath $pythonExe -Algorithm SHA256).Hash.ToLowerInvariant()
 
-# 3. Pre-build test suite execution
+# 3. Prepare an isolated clean test clone with exact, hash-pinned external inputs.
+$cloneOutput = & git clone --quiet --local --no-hardlinks $RepoRoot $TestRepoRoot
+if ($LASTEXITCODE -ne 0) { throw "Release build aborted: isolated full-suite clone failed." }
+$cloneCheckout = & git -C $TestRepoRoot checkout --quiet --detach $gitCommit
+if ($LASTEXITCODE -ne 0) { throw "Release build aborted: isolated full-suite clone could not check out the exact source commit." }
+$cloneHead = (& git -C $TestRepoRoot rev-parse HEAD).Trim()
+$cloneInitialStatus = @(& git -C $TestRepoRoot status --porcelain --untracked-files=all)
+if ($cloneHead -cne $gitCommit -or $cloneInitialStatus.Count -ne 0) {
+    throw "Release build aborted: isolated full-suite clone is not the exact clean source commit."
+}
+$provenancePreparation = & $Python (Join-Path $TestSourceRoot "scripts\prepare_risk_provenance.py") `
+    --source-root $RiskProvenanceSourceRoot `
+    --engine-audit-source-root $engineAuditRootResolved
+if ($LASTEXITCODE -ne 0) { throw "Release build aborted: hash-pinned risk and separate audit input preparation failed." }
+Assert-TestCloneContainsOnlyPinnedInputs -CloneRoot $TestRepoRoot -InputSet $riskInputSet
+
+# 4. Pre-build test suite execution.  The caller's signed-source worktree stays untouched.
 $fullCollectPath = Join-Path $TempRoot "full.collect.txt"
 $fullJunitPath = Join-Path $TempRoot "full.junit.xml"
 $pytestCollectCmd = "$Python -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root '$SymlinkFixtureRoot'"
 $pytestCmd = "$Python -m pytest -q -p no:cacheprovider tests --symlink-fixture-root '$SymlinkFixtureRoot' --junitxml=<full-suite>"
-Push-Location -LiteralPath $SourceRoot
+Push-Location -LiteralPath $TestSourceRoot
 try {
     $fullCollectOutput = & $Python -m pytest --collect-only -q -p no:cacheprovider tests --symlink-fixture-root $SymlinkFixtureRoot
     $fullCollectExitCode = $LASTEXITCODE
@@ -325,7 +440,7 @@ if ($fullCollectExitCode -ne 0) {
 }
 $fullNodeIds = @(Get-CollectionNodeIds -Output $fullCollectOutput)
 $fullInventory = Write-NodeIdInventory -NodeIds $fullNodeIds -Path $fullCollectPath
-Push-Location -LiteralPath $SourceRoot
+Push-Location -LiteralPath $TestSourceRoot
 try {
     $pytestOutput = & $Python -m pytest -q -p no:cacheprovider tests --symlink-fixture-root $SymlinkFixtureRoot "--junitxml=$fullJunitPath"
     $fullSuiteExitCode = $LASTEXITCODE
@@ -347,10 +462,9 @@ $pytestCollectedCount = [int]$fullGate.collected_count
 $pytestPassedCount = [int]$fullGate.pass_count
 $pytestSkippedCount = [int]$fullGate.skipped_count
 $pytestNodeIdSha256 = [string]$fullGate.nodeid_sha256
+Assert-TestCloneContainsOnlyPinnedInputs -CloneRoot $TestRepoRoot -InputSet $riskInputSet
 $postTestGitStatus = (& git -C $RepoRoot status --porcelain)
-if ($postTestGitStatus) {
-    throw "Tests modified the source tree; refusing release build: $($postTestGitStatus -join '; ')"
-}
+if ($postTestGitStatus) { throw "Release build source tree changed during tests: $($postTestGitStatus -join '; ')" }
 
 $createdAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 if (-not $ReleaseId) {
@@ -358,10 +472,11 @@ if (-not $ReleaseId) {
     $shortCommit = if ($gitCommit.Length -ge 12) { $gitCommit.Substring(0, 12) } else { $gitCommit }
     $ReleaseId = "$Profile-$utcFormatted-$shortCommit-v16"
 }
+if ($ReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+    throw "Release ID must be a safe single path component."
+}
 
 New-Item -ItemType Directory -Force -Path $Stage,$Wheelhouse,$OutputRoot | Out-Null
-
-try {
     foreach ($directory in @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")) {
         Copy-Item -LiteralPath (Join-Path $SourceRoot $directory) -Destination (Join-Path $Stage $directory) -Recurse
     }
@@ -560,6 +675,7 @@ try {
     else {
         $requiredPayloadFiles += @(
             "deploy/check_super1_flat_windows.ps1",
+            "deploy/install_super1_app_inert_windows.ps1",
             "deploy/rollover_super1_campaign_windows.ps1",
             "deploy/run_super1_windows.ps1",
             "deploy/run_super1_demo_smoke_windows.ps1",
@@ -645,6 +761,15 @@ try {
         built_at_utc = $createdAtUtc
         git_commit = $gitCommit
         git_dirty = $gitDirty
+        test_inputs = [ordered]@{
+            risk_manifest_path = "data/provenance/first30_pre2025_inputs.sha256"
+            risk_manifest_sha256 = [string]$riskInputSet.manifest_sha256
+            risk_set_sha256 = [string]$riskInputSet.set_sha256
+            risk_file_count = [int]$riskInputSet.count
+            risk_files = $riskInputSet.files
+            engine_audit_manifest_sha256 = $engineAuditManifestSha256
+            engine_audit_csv_count = 2
+        }
         python_version = $pythonVersion
         python_executable_sha256 = $pythonExeSha256
         pytest_command = $pytestCmd
