@@ -521,18 +521,136 @@ def test_inert_upgrade_partial_bundle_move_restores_already_moved_components(tmp
     assert (destination / "super1-forward.zip").read_text(encoding="utf-8") == "preexisting destination collision"
 
 
+def test_inert_recovery_resumes_interrupted_previous_bundle_move(tmp_path: Path) -> None:
+    manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
+    required = {"Assert-PathNotReparse", "Move-InertBundleTo", "Restore-InertBundleFrom", "Write-InertTransactionRecord", "Invoke-InertAppRecovery"}
+    functions = [item["extent_text"] for item in facts(manager, "function") if item["name"] in required]
+    assert len(functions) == len(required)
+    target = tmp_path / "target"
+    transaction = target / "history" / ("a" * 32)
+    previous = transaction / "previous"
+    target.mkdir()
+    previous.mkdir(parents=True)
+    for name in ("app", "venv311"):
+        (target / name).mkdir()
+        (target / name / "release.txt").write_text(f"old-{name}", encoding="utf-8")
+        (target / name).rename(previous / name)
+    for name in ("super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"):
+        (target / name).write_text(f"old-{name}", encoding="utf-8")
+    (transaction / "transaction.json").write_text(json.dumps({
+        "schema": "super1-inert-upgrade-v1",
+        "transaction_id": "a" * 32,
+        "state": "UPGRADE_MOVING_PREVIOUS",
+        "previous_release_id": "old-release",
+        "previous_archive_sha256": "a" * 64,
+        "release_id": "new-release",
+        "archive_sha256": "b" * 64,
+        "failure": None,
+        "task_or_watchdog_created": False,
+        "terminal_or_bot_started": False,
+        "deployment_ready": False,
+    }), encoding="utf-8")
+    harness_assert = '''function Assert-InertBundle {
+    param([string]$Root, [string]$ExpectedReleaseId, [string]$ExpectedArchiveSha256)
+    foreach ($name in @("app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $name))) { throw "BUNDLE_COMPONENT_MISSING: $name" }
+    }
+    return [pscustomobject]@{ manifest = [pscustomobject]@{ release_id = $ExpectedReleaseId }; archive_sha256 = $ExpectedArchiveSha256 }
+}'''
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Management"); '
+        + harness_assert
+        + "\n".join(functions)
+        + '\n$TargetRoot = $args[0]; $null = Invoke-InertAppRecovery -TransactionId ("a" * 32); '
+        + '$record = Get-Content -LiteralPath (Join-Path $args[0] ("history/" + ("a" * 32) + "/transaction.json")) -Raw | ConvertFrom-Json; '
+        + 'if ($record.state -cne "FAILED_ROLLED_BACK") { throw "UPGRADE_CRASH_RECOVERY_PHASE_WRONG" }; "UPGRADE_CRASH_RECOVERED"',
+        str(target),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "UPGRADE_CRASH_RECOVERED" in result.stdout
+    assert {item.name for item in target.iterdir()} == {
+        "app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig", "history"
+    }
+    assert (target / "app" / "release.txt").read_text(encoding="utf-8") == "old-app"
+
+
+def test_inert_recovery_resumes_interrupted_rollback_and_preserves_both_bundles(tmp_path: Path) -> None:
+    manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
+    required = {"Assert-PathNotReparse", "Move-InertBundleTo", "Restore-InertBundleFrom", "Write-InertTransactionRecord", "Invoke-InertAppRecovery"}
+    functions = [item["extent_text"] for item in facts(manager, "function") if item["name"] in required]
+    assert len(functions) == len(required)
+    target = tmp_path / "target"
+    transaction = target / "history" / ("b" * 32)
+    previous = transaction / "previous"
+    rolled_back = transaction / "rolled-back-current"
+    failed_target = transaction / "failed-rollback-target"
+    for root in (target, previous, rolled_back):
+        root.mkdir(parents=True)
+    for name in ("app", "venv311"):
+        for root, label in ((target, "old"), (rolled_back, "new")):
+            (root / name).mkdir()
+            (root / name / "release.txt").write_text(f"{label}-{name}", encoding="utf-8")
+    # This models a crash after the old app and venv were moved back, before sidecars.
+    for name in ("super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"):
+        (previous / name).write_text(f"old-{name}", encoding="utf-8")
+        (rolled_back / name).write_text(f"new-{name}", encoding="utf-8")
+    (transaction / "transaction.json").write_text(json.dumps({
+        "schema": "super1-inert-upgrade-v1",
+        "transaction_id": "b" * 32,
+        "state": "ROLLBACK_RESTORING_PREVIOUS",
+        "previous_release_id": "old-release",
+        "previous_archive_sha256": "a" * 64,
+        "release_id": "new-release",
+        "archive_sha256": "b" * 64,
+        "failure": None,
+        "task_or_watchdog_created": False,
+        "terminal_or_bot_started": False,
+        "deployment_ready": False,
+    }), encoding="utf-8")
+    harness_assert = '''function Assert-InertBundle {
+    param([string]$Root, [string]$ExpectedReleaseId, [string]$ExpectedArchiveSha256)
+    foreach ($name in @("app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $name))) { throw "BUNDLE_COMPONENT_MISSING: $name" }
+    }
+    return [pscustomobject]@{ manifest = [pscustomobject]@{ release_id = $ExpectedReleaseId }; archive_sha256 = $ExpectedArchiveSha256 }
+}'''
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Management"); '
+        + harness_assert
+        + "\n".join(functions)
+        + '\n$TargetRoot = $args[0]; $null = Invoke-InertAppRecovery -TransactionId ("b" * 32); '
+        + '$record = Get-Content -LiteralPath (Join-Path $args[0] ("history/" + ("b" * 32) + "/transaction.json")) -Raw | ConvertFrom-Json; '
+        + 'if ($record.state -cne "UPGRADED") { throw "ROLLBACK_CRASH_RECOVERY_PHASE_WRONG" }; "ROLLBACK_CRASH_RECOVERED"',
+        str(target),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ROLLBACK_CRASH_RECOVERED" in result.stdout
+    assert {item.name for item in target.iterdir()} == {
+        "app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig", "history"
+    }
+    assert (target / "app" / "release.txt").read_text(encoding="utf-8") == "new-app"
+    assert {item.name for item in previous.iterdir()} == {
+        "app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"
+    }
+    assert (previous / "app" / "release.txt").read_text(encoding="utf-8") == "old-app"
+    assert failed_target.is_dir() and list(failed_target.iterdir()) == []
+
+
 def test_inert_upgrade_failure_journal_is_atomic_and_does_not_reset_unrelated_acls(tmp_path: Path) -> None:
     manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
     source = manager.read_text(encoding="utf-8")
     assert 'state = "FAILED_ROLLED_BACK"' in source
-    assert "Write-InertTransactionRecord -Path (Join-Path $transaction \"transaction.json\") -Record $failedRecord" in source
+    assert "Write-InertTransactionRecord -Path $transactionRecordPath -Record $transactionRecord" in source
     assert "Get-ChildItem -LiteralPath $TargetRoot -Directory -Recurse" not in source
-    assert "$oldMoveComplete = $true" in source
-    assert "$currentMoveComplete = $true" in source
+    assert 'state = "UPGRADE_MOVING_PREVIOUS"' in source
+    assert '$transactionRecord.state = "UPGRADE_PROMOTING"' in source
+    assert '$record.state = "ROLLBACK_MOVING_CURRENT"' in source
+    assert '$record.state = "ROLLBACK_RESTORING_PREVIOUS"' in source
+    assert "function Invoke-InertAppRecovery" in source
     assert "-PreserveExistingTargetPaths" in source
     assert "$existingRollbackItems.Count -ne 0" in source
-    assert "Assert-InertBundle -Root $TargetRoot `\n                    -ExpectedReleaseId ([string]$previousApp.manifest.release_id)" in source
-    assert "-ExpectedReleaseId ([string]$current.manifest.release_id)" in source
+    assert "-ExpectedReleaseId ([string]$record.previous_release_id)" in source
+    assert "-ExpectedReleaseId ([string]$record.release_id)" in source
     write_function = next(item["extent_text"] for item in facts(manager, "function") if item["name"] == "Write-InertTransactionRecord")
     record = tmp_path / "transaction.json"
     result = powershell_harness(

@@ -691,7 +691,8 @@ def test_inert_super1_installer_verifies_signed_release_without_activating_runti
 def test_inert_app_upgrade_and_rollback_are_explicitly_inert() -> None:
     source = text("manage_super1_app_inert_windows.ps1")
 
-    assert 'ValidateSet("Upgrade", "Rollback")' in source
+    assert 'ValidateSet("Upgrade", "Rollback", "Recover")' in source
+    assert "Invoke-InertAppRecovery" in source
     assert "Move-InertBundleTo" in source
     assert "Restore-InertBundleFrom" in source
     assert 'state = "UPGRADED"' in source

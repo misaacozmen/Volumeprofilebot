@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet("Upgrade", "Rollback")][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet("Upgrade", "Rollback", "Recover")][string]$Action,
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$TargetRoot,
     [Parameter(Mandatory = $true)][ValidatePattern('^S-1-5-(?:\d+-)*\d+$')][string]$ReadOnlyUserSid,
     [string]$ReleaseDirectory,
@@ -272,6 +272,95 @@ function Write-InertTransactionRecord {
     }
 }
 
+function Invoke-InertAppRecovery {
+    param([Parameter(Mandatory = $true)][string]$TransactionId)
+    if ($TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw "Recovery requires the 32-character transaction ID returned by an inert upgrade." }
+    $history = Join-Path $TargetRoot "history"
+    $transaction = Join-Path $history $TransactionId
+    Assert-PathNotReparse -Path $history
+    Assert-PathNotReparse -Path $transaction
+    $recordPath = Join-Path $transaction "transaction.json"
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { throw "Inert recovery transaction record is missing." }
+    Assert-PathNotReparse -Path $recordPath
+    $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    if ([string]$record.schema -cne "super1-inert-upgrade-v1" -or [string]$record.transaction_id -cne $TransactionId) {
+        throw "Inert recovery transaction identity is invalid."
+    }
+    $previous = Join-Path $transaction "previous"
+    $failedCurrent = Join-Path $transaction "failed-current"
+    $rolledBack = Join-Path $transaction "rolled-back-current"
+    $failedRollbackTarget = Join-Path $transaction "failed-rollback-target"
+    foreach ($ownedPath in @($previous, $failedCurrent, $rolledBack, $failedRollbackTarget)) {
+        if (Test-Path -LiteralPath $ownedPath) { Assert-PathNotReparse -Path $ownedPath }
+    }
+
+    if ([string]$record.state -ceq "UPGRADE_MOVING_PREVIOUS") {
+        Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+        $null = Assert-InertBundle -Root $TargetRoot `
+            -ExpectedReleaseId ([string]$record.previous_release_id) `
+            -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
+        $record.state = "FAILED_ROLLED_BACK"
+        $record.failure = "Recovered interrupted upgrade while moving the previous bundle."
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+        return $record | ConvertTo-Json -Depth 4
+    }
+    if ([string]$record.state -ceq "UPGRADE_PROMOTING") {
+        $record.state = "RECOVER_UPGRADE_QUARANTINING"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+    }
+    if ([string]$record.state -ceq "RECOVER_UPGRADE_QUARANTINING") {
+        Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedCurrent
+        $record.state = "RECOVER_UPGRADE_RESTORING_PREVIOUS"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+    }
+    if ([string]$record.state -ceq "RECOVER_UPGRADE_RESTORING_PREVIOUS") {
+        Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+        $null = Assert-InertBundle -Root $TargetRoot `
+            -ExpectedReleaseId ([string]$record.previous_release_id) `
+            -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
+        $record.state = "FAILED_ROLLED_BACK"
+        $record.failure = "Recovered interrupted upgrade promotion and restored the previous bundle."
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+        return $record | ConvertTo-Json -Depth 4
+    }
+    if ([string]$record.state -ceq "ROLLBACK_MOVING_CURRENT") {
+        Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+        $null = Assert-InertBundle -Root $TargetRoot `
+            -ExpectedReleaseId ([string]$record.release_id) `
+            -ExpectedArchiveSha256 ([string]$record.archive_sha256)
+        $record.state = "UPGRADED"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+        return $record | ConvertTo-Json -Depth 4
+    }
+    if ([string]$record.state -ceq "ROLLBACK_RESTORING_PREVIOUS") {
+        $record.state = "RECOVER_ROLLBACK_QUARANTINING_PREVIOUS"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+    }
+    if ([string]$record.state -ceq "RECOVER_ROLLBACK_QUARANTINING_PREVIOUS") {
+        Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedRollbackTarget
+        $record.state = "RECOVER_ROLLBACK_RESTORING_CURRENT"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+    }
+    if ([string]$record.state -ceq "RECOVER_ROLLBACK_RESTORING_CURRENT") {
+        Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+        $null = Assert-InertBundle -Root $TargetRoot `
+            -ExpectedReleaseId ([string]$record.release_id) `
+            -ExpectedArchiveSha256 ([string]$record.archive_sha256)
+        $record.state = "RECOVER_ROLLBACK_RESTORING_PREVIOUS_HISTORY"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+    }
+    if ([string]$record.state -ceq "RECOVER_ROLLBACK_RESTORING_PREVIOUS_HISTORY") {
+        Restore-InertBundleFrom -SourceRoot $failedRollbackTarget -TargetRoot $previous -PreserveExistingTargetPaths
+        $null = Assert-InertBundle -Root $previous `
+            -ExpectedReleaseId ([string]$record.previous_release_id) `
+            -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
+        $record.state = "UPGRADED"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
+        return $record | ConvertTo-Json -Depth 4
+    }
+    throw "Inert transaction has no interrupted move phase to recover: $($record.state)"
+}
+
 function Invoke-InertAppUpgrade {
     param()
     foreach ($required in @($ReleaseDirectory, $ExpectedReleaseId, $ExpectedArchiveSha256, $BootstrapPython)) {
@@ -294,9 +383,10 @@ function Invoke-InertAppUpgrade {
     $python = [IO.Path]::GetFullPath($BootstrapPython)
     $locks = Open-InertInputLocks -Paths @($archive, $manifestPath, $signaturePath, $python)
     $transaction = $null
+    $transactionRecord = $null
+    $transactionRecordPath = $null
     $stage = Join-Path $TargetRoot (".upgrade-stage-" + [Guid]::NewGuid().ToString("N"))
     $oldMoveStarted = $false
-    $oldMoveComplete = $false
     try {
         $newManifest = Assert-SignedReleaseArchive -Archive $archive -ExpectedProfile "super1" -RequireProvenance
         if ([string]$newManifest.release_id -cne $ExpectedReleaseId) { throw "Signed release ID does not match the upgrade plan." }
@@ -333,58 +423,47 @@ function Invoke-InertAppUpgrade {
             (Join-Path $incoming "super1-forward.manifest.sig")
         )
         $previousApp = Assert-InertBundle -Root $TargetRoot
-        $oldMoveStarted = $true
-        Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $previous
-        $oldMoveComplete = $true
-        Move-Item -LiteralPath $stageApp -Destination (Join-Path $TargetRoot "app") -ErrorAction Stop
-        Move-Item -LiteralPath $stageVenv -Destination (Join-Path $TargetRoot "venv311") -ErrorAction Stop
-        Restore-InertBundleFrom -SourceRoot $incoming -TargetRoot $TargetRoot
-        $verified = Assert-InertBundle -Root $TargetRoot -ExpectedReleaseId $ExpectedReleaseId -ExpectedArchiveSha256 $ExpectedArchiveSha256
-        $record = [ordered]@{
+        $transactionRecordPath = Join-Path $transaction "transaction.json"
+        $transactionRecord = [ordered]@{
             schema = "super1-inert-upgrade-v1"
             transaction_id = [IO.Path]::GetFileName($transaction)
-            state = "UPGRADED"
+            state = "UPGRADE_MOVING_PREVIOUS"
             previous_release_id = [string]$previousApp.manifest.release_id
             previous_archive_sha256 = [string]$previousApp.archive_sha256
-            release_id = [string]$verified.manifest.release_id
-            archive_sha256 = [string]$verified.archive_sha256
+            release_id = [string]$newManifest.release_id
+            archive_sha256 = $ExpectedArchiveSha256.ToLowerInvariant()
+            attempted_release_id = [string]$newManifest.release_id
+            attempted_archive_sha256 = $ExpectedArchiveSha256.ToLowerInvariant()
+            rollback_release_id = $null
+            rollback_archive_sha256 = $null
+            failure = $null
             task_or_watchdog_created = $false
             terminal_or_bot_started = $false
             deployment_ready = $false
         }
-        Write-InertTransactionRecord -Path (Join-Path $transaction "transaction.json") -Record $record
-        return $record | ConvertTo-Json -Depth 4
+        Write-InertTransactionRecord -Path $transactionRecordPath -Record $transactionRecord
+        $oldMoveStarted = $true
+        Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $previous
+        $transactionRecord.state = "UPGRADE_PROMOTING"
+        Write-InertTransactionRecord -Path $transactionRecordPath -Record $transactionRecord
+        Move-Item -LiteralPath $stageApp -Destination (Join-Path $TargetRoot "app") -ErrorAction Stop
+        Move-Item -LiteralPath $stageVenv -Destination (Join-Path $TargetRoot "venv311") -ErrorAction Stop
+        Restore-InertBundleFrom -SourceRoot $incoming -TargetRoot $TargetRoot
+        $verified = Assert-InertBundle -Root $TargetRoot -ExpectedReleaseId $ExpectedReleaseId -ExpectedArchiveSha256 $ExpectedArchiveSha256
+        $transactionRecord.state = "UPGRADED"
+        $transactionRecord.release_id = [string]$verified.manifest.release_id
+        $transactionRecord.archive_sha256 = [string]$verified.archive_sha256
+        Write-InertTransactionRecord -Path $transactionRecordPath -Record $transactionRecord
+        return $transactionRecord | ConvertTo-Json -Depth 4
     }
     catch {
         $failure = $_.Exception.Message
         $rollbackErrors = [Collections.Generic.List[string]]::new()
         if ($oldMoveStarted -and $transaction) {
             try {
-                if ($oldMoveComplete) {
-                    $failed = Join-Path $transaction "failed-current"
-                    if (-not (Test-Path -LiteralPath $failed)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failed }
-                    Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot
-                }
-                else {
-                    Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot -PreserveExistingTargetPaths
-                }
-                $null = Assert-InertBundle -Root $TargetRoot `
-                    -ExpectedReleaseId ([string]$previousApp.manifest.release_id) `
-                    -ExpectedArchiveSha256 ([string]$previousApp.archive_sha256)
-                $failedRecord = [ordered]@{
-                    schema = "super1-inert-upgrade-v1"
-                    transaction_id = [IO.Path]::GetFileName($transaction)
-                    state = "FAILED_ROLLED_BACK"
-                    previous_release_id = [string]$previousApp.manifest.release_id
-                    previous_archive_sha256 = [string]$previousApp.archive_sha256
-                    attempted_release_id = [string]$newManifest.release_id
-                    attempted_archive_sha256 = $ExpectedArchiveSha256.ToLowerInvariant()
-                    failure = $failure
-                    task_or_watchdog_created = $false
-                    terminal_or_bot_started = $false
-                    deployment_ready = $false
-                }
-                Write-InertTransactionRecord -Path (Join-Path $transaction "transaction.json") -Record $failedRecord
+                $transactionRecord.failure = $failure
+                Write-InertTransactionRecord -Path $transactionRecordPath -Record $transactionRecord
+                $null = Invoke-InertAppRecovery -TransactionId ([IO.Path]::GetFileName($transaction))
             }
             catch { $rollbackErrors.Add($_.Exception.Message) }
         }
@@ -419,17 +498,19 @@ function Invoke-InertAppRollback {
         $existingRollbackItems = @(Get-ChildItem -LiteralPath $rolledBack -Force -ErrorAction Stop)
         if ($existingRollbackItems.Count -ne 0) { throw "Rollback has already preserved a current bundle for this transaction." }
     }
+    $record.state = "ROLLBACK_MOVING_CURRENT"
+    Write-InertTransactionRecord -Path $recordPath -Record $record
     $currentMoveStarted = $false
-    $currentMoveComplete = $false
     try {
         $currentMoveStarted = $true
         Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $rolledBack
-        $currentMoveComplete = $true
+        $record.state = "ROLLBACK_RESTORING_PREVIOUS"
+        Write-InertTransactionRecord -Path $recordPath -Record $record
         Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot
         $restored = Assert-InertBundle -Root $TargetRoot -ExpectedReleaseId ([string]$record.previous_release_id) -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
         $record.state = "ROLLED_BACK"
-        $record.rollback_release_id = [string]$restored.manifest.release_id
-        $record.rollback_archive_sha256 = [string]$restored.archive_sha256
+        $record | Add-Member -MemberType NoteProperty -Name rollback_release_id -Value ([string]$restored.manifest.release_id) -Force
+        $record | Add-Member -MemberType NoteProperty -Name rollback_archive_sha256 -Value ([string]$restored.archive_sha256) -Force
         $record.task_or_watchdog_created = $false
         $record.terminal_or_bot_started = $false
         $record.deployment_ready = $false
@@ -440,17 +521,7 @@ function Invoke-InertAppRollback {
         $failure = $_.Exception.Message
         if ($currentMoveStarted) {
             try {
-                if ($currentMoveComplete) {
-                    $failedRestored = Join-Path $transaction "failed-rollback-target"
-                    if (-not (Test-Path -LiteralPath $failedRestored)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedRestored }
-                    Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot
-                }
-                else {
-                    Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot -PreserveExistingTargetPaths
-                }
-                $null = Assert-InertBundle -Root $TargetRoot `
-                    -ExpectedReleaseId ([string]$current.manifest.release_id) `
-                    -ExpectedArchiveSha256 ([string]$current.archive_sha256)
+                $null = Invoke-InertAppRecovery -TransactionId $TransactionId
             }
             catch { throw "INERT_ROLLBACK_RECOVERY_INCOMPLETE: original=$failure recovery=$($_.Exception.Message) transaction=$transaction" }
         }
@@ -464,4 +535,10 @@ $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($ReadOnlyUserSid -cne $currentSid) { throw "ReadOnlyUserSid must match the interactive account." }
 Assert-InertTargetParent -Path $TargetRoot -UserSid $ReadOnlyUserSid
 if ($Action -eq "Upgrade") { Invoke-InertAppUpgrade }
-else { Invoke-InertAppRollback }
+elseif ($Action -eq "Rollback") { Invoke-InertAppRollback }
+else {
+    Assert-InertTargetAcl -Path $TargetRoot -UserSid $ReadOnlyUserSid
+    $admin = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $admin) { throw "Elevation is required only for inert app recovery." }
+    Invoke-InertAppRecovery -TransactionId $TransactionId
+}
