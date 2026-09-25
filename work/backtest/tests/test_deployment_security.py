@@ -154,7 +154,8 @@ def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None
         ).read_text(encoding="utf-8")
     )
 
-    assert "$candidatePayload.provenance.inputs" in source
+    assert "Get-Super1CandidateProvenanceSet -SourceRoot $SourceRoot" in source
+    assert "$super1ProvenanceSet.files" in source
     assert "$requiredPayloadFiles += $Super1ProvenanceFiles" in source
     assert "Super1 provenance input is missing" in source
     assert any(item["path"].startswith("outputs/reports/") for item in candidate["provenance"]["inputs"])

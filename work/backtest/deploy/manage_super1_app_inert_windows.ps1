@@ -240,6 +240,27 @@ function Restore-InertBundleFrom {
     }
 }
 
+function Write-InertTransactionRecord {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object]$Record)
+    $target = [IO.Path]::GetFullPath($Path)
+    $temporary = $target + ".tmp-" + [Guid]::NewGuid().ToString("N")
+    $backup = $target + ".bak-" + [Guid]::NewGuid().ToString("N")
+    $payload = ($Record | ConvertTo-Json -Depth 4) + "`n"
+    try {
+        [IO.File]::WriteAllText($temporary, $payload, (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            [IO.File]::Replace($temporary, $target, $backup)
+            [IO.File]::Delete($backup)
+        } else {
+            [IO.File]::Move($temporary, $target)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) }
+        if (Test-Path -LiteralPath $backup -PathType Leaf) { [IO.File]::Delete($backup) }
+    }
+}
+
 function Invoke-InertAppUpgrade {
     param()
     foreach ($required in @($ReleaseDirectory, $ExpectedReleaseId, $ExpectedArchiveSha256, $BootstrapPython)) {
@@ -318,8 +339,7 @@ function Invoke-InertAppUpgrade {
             terminal_or_bot_started = $false
             deployment_ready = $false
         }
-        [IO.File]::WriteAllText((Join-Path $transaction "transaction.json"), ($record | ConvertTo-Json -Depth 4) + "`n", (New-Object Text.UTF8Encoding($false)))
-        foreach ($dir in @(Get-ChildItem -LiteralPath $TargetRoot -Directory -Recurse -Force)) { Assert-PathNotReparse -Path $dir.FullName; Set-InertAppAcl -Path $dir.FullName -UserSid $ReadOnlyUserSid }
+        Write-InertTransactionRecord -Path (Join-Path $transaction "transaction.json") -Record $record
         return $record | ConvertTo-Json -Depth 4
     }
     catch {
@@ -330,6 +350,23 @@ function Invoke-InertAppUpgrade {
                 $failed = Join-Path $transaction "failed-current"
                 if (-not (Test-Path -LiteralPath $failed)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failed }
                 Restore-InertBundleFrom -SourceRoot (Join-Path $transaction "previous") -TargetRoot $TargetRoot
+                $null = Assert-InertBundle -Root $TargetRoot `
+                    -ExpectedReleaseId ([string]$previousApp.manifest.release_id) `
+                    -ExpectedArchiveSha256 ([string]$previousApp.archive_sha256)
+                $failedRecord = [ordered]@{
+                    schema = "super1-inert-upgrade-v1"
+                    transaction_id = [IO.Path]::GetFileName($transaction)
+                    state = "FAILED_ROLLED_BACK"
+                    previous_release_id = [string]$previousApp.manifest.release_id
+                    previous_archive_sha256 = [string]$previousApp.archive_sha256
+                    attempted_release_id = [string]$newManifest.release_id
+                    attempted_archive_sha256 = $ExpectedArchiveSha256.ToLowerInvariant()
+                    failure = $failure
+                    task_or_watchdog_created = $false
+                    terminal_or_bot_started = $false
+                    deployment_ready = $false
+                }
+                Write-InertTransactionRecord -Path (Join-Path $transaction "transaction.json") -Record $failedRecord
             }
             catch { $rollbackErrors.Add($_.Exception.Message) }
         }
@@ -372,7 +409,7 @@ function Invoke-InertAppRollback {
         $record.task_or_watchdog_created = $false
         $record.terminal_or_bot_started = $false
         $record.deployment_ready = $false
-        [IO.File]::WriteAllText($recordPath, ($record | ConvertTo-Json -Depth 4) + "`n", (New-Object Text.UTF8Encoding($false)))
+        Write-InertTransactionRecord -Path $recordPath -Record $record
         return $record | ConvertTo-Json -Depth 4
     }
     catch {
@@ -382,6 +419,9 @@ function Invoke-InertAppRollback {
                 $failedRestored = Join-Path $transaction "failed-rollback-target"
                 if (-not (Test-Path -LiteralPath $failedRestored)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedRestored }
                 Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot
+                $null = Assert-InertBundle -Root $TargetRoot `
+                    -ExpectedReleaseId ([string]$current.manifest.release_id) `
+                    -ExpectedArchiveSha256 ([string]$current.archive_sha256)
             }
             catch { throw "INERT_ROLLBACK_RECOVERY_INCOMPLETE: original=$failure recovery=$($_.Exception.Message) transaction=$transaction" }
         }

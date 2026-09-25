@@ -390,6 +390,71 @@ def test_release_builder_rejects_changed_pinned_risk_input(tmp_path: Path) -> No
     assert "RISK_INPUT_CHANGE_REJECTED" in result.stdout
 
 
+def test_release_builder_holds_candidate_and_audit_provenance_files_read_locked(tmp_path: Path) -> None:
+    builder = DEPLOY / "build_signed_windows_release.ps1"
+    lock_function = next(item["extent_text"] for item in facts(builder, "function") if item["name"] == "Open-ProvenanceInputLocks")
+    source = tmp_path / "source.csv"
+    source.write_text("pinned provenance bytes", encoding="utf-8")
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); '
+        + lock_function
+        + '\n$locks = Open-ProvenanceInputLocks -Paths @($args[0]); '
+        + '$read = [IO.File]::ReadAllText($args[0]); if ($read -ne "pinned provenance bytes") { throw "READ_LOCK_BLOCKED_READ" }; '
+        + '$blocked = $false; try { $writer = [IO.File]::Open($args[0], [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None); $writer.Dispose() } '
+        + 'catch [System.IO.IOException] { $blocked = $true } catch [System.UnauthorizedAccessException] { $blocked = $true }; '
+        + 'foreach ($lock in $locks) { $lock.stream.Dispose() }; '
+        + '$writer = [IO.File]::Open($args[0], [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None); $writer.Dispose(); '
+        + 'if (-not $blocked) { throw "PROVENANCE_WRITE_WAS_NOT_BLOCKED" }; "PROVENANCE_READ_LOCK_OK"',
+        str(source),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PROVENANCE_READ_LOCK_OK" in result.stdout
+
+
+def test_super1_candidate_provenance_is_checked_against_source_and_archive(tmp_path: Path) -> None:
+    builder = DEPLOY / "build_signed_windows_release.ps1"
+    required = {
+        "Get-ByteSha256",
+        "Get-Super1CandidateProvenanceSet",
+        "Assert-Super1CandidateProvenanceUnchanged",
+        "Assert-Super1CandidateProvenanceArchive",
+    }
+    functions = [item["extent_text"] for item in facts(builder, "function") if item["name"] in required]
+    assert len(functions) == len(required)
+    source = tmp_path / "repo"
+    candidate = source / "research_candidates" / "v20_strategy_loop" / "nq_spx_local_fresh_forward_candidate_v1.json"
+    evidence = source / "outputs" / "audit.csv"
+    candidate.parent.mkdir(parents=True)
+    evidence.parent.mkdir(parents=True)
+    evidence_bytes = b"immutable audit evidence\n"
+    evidence.write_bytes(evidence_bytes)
+    candidate.write_text(
+        json.dumps({"provenance": {"inputs": [{
+            "path": "outputs/audit.csv",
+            "sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "bytes": len(evidence_bytes),
+        }]}}),
+        encoding="utf-8",
+    )
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); '
+        + "\n".join(functions)
+        + '\n$set = Get-Super1CandidateProvenanceSet -SourceRoot $args[0]; '
+        + 'Assert-Super1CandidateProvenanceUnchanged -SourceRoot $args[0] -Expected $set; '
+        + '$archiveFiles = @(@{ path = "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json"; sha256 = $set.candidate_sha256 }) + @($set.files); '
+        + 'Assert-Super1CandidateProvenanceArchive -ArchiveFiles $archiveFiles -InputSet $set; '
+        + '$badArchiveFiles = @(@{ path = "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json"; sha256 = $set.candidate_sha256 }, @{ path = $set.files[0].path; sha256 = ("0" * 64) }); '
+        + 'try { Assert-Super1CandidateProvenanceArchive -ArchiveFiles $badArchiveFiles -InputSet $set; throw "ARCHIVE_PROVENANCE_CHANGE_WAS_NOT_REJECTED" } '
+        + 'catch { if ($_.Exception.Message -notmatch "SUPER1_CANDIDATE_PROVENANCE_INPUT_NOT_BOUND_TO_ARCHIVE") { throw }; "ARCHIVE_PROVENANCE_CHANGE_REJECTED" }; '
+        + '[IO.File]::WriteAllText((Join-Path $args[0] "outputs/audit.csv"), "changed"); '
+        + 'try { Assert-Super1CandidateProvenanceUnchanged -SourceRoot $args[0] -Expected $set; throw "PROVENANCE_CHANGE_WAS_NOT_REJECTED" } '
+        + 'catch { if ($_.Exception.Message -notmatch "SUPER1_CANDIDATE_PROVENANCE_HASH_OR_SIZE_MISMATCH|SUPER1_CANDIDATE_PROVENANCE_CHANGED_DURING_RELEASE_BUILD") { throw }; "PROVENANCE_CHANGE_REJECTED" }',
+        str(source),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PROVENANCE_CHANGE_REJECTED" in result.stdout
+
+
 def test_inert_upgrade_rollback_moves_the_previous_signed_bundle_as_one_unit(tmp_path: Path) -> None:
     manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
     names = {"Move-InertBundleTo", "Restore-InertBundleFrom"}
@@ -421,3 +486,27 @@ def test_inert_upgrade_rollback_moves_the_previous_signed_bundle_as_one_unit(tmp
         "app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"
     }
     assert (restored / "app" / "release.txt").read_text(encoding="utf-8") == "previous-app"
+
+
+def test_inert_upgrade_failure_journal_is_atomic_and_does_not_reset_unrelated_acls(tmp_path: Path) -> None:
+    manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
+    source = manager.read_text(encoding="utf-8")
+    assert 'state = "FAILED_ROLLED_BACK"' in source
+    assert "Write-InertTransactionRecord -Path (Join-Path $transaction \"transaction.json\") -Record $failedRecord" in source
+    assert "Get-ChildItem -LiteralPath $TargetRoot -Directory -Recurse" not in source
+    assert "Assert-InertBundle -Root $TargetRoot `\n                    -ExpectedReleaseId ([string]$previousApp.manifest.release_id)" in source
+    assert "-ExpectedReleaseId ([string]$current.manifest.release_id)" in source
+    write_function = next(item["extent_text"] for item in facts(manager, "function") if item["name"] == "Write-InertTransactionRecord")
+    record = tmp_path / "transaction.json"
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility"); '
+        + write_function
+        + '\nWrite-InertTransactionRecord -Path $args[0] -Record ([ordered]@{ state = "UPGRADED" }); '
+        + 'Write-InertTransactionRecord -Path $args[0] -Record ([ordered]@{ state = "FAILED_ROLLED_BACK" }); '
+        + '$record = Get-Content -LiteralPath $args[0] -Raw | ConvertFrom-Json; '
+        + 'if ($record.state -cne "FAILED_ROLLED_BACK") { throw "TRANSACTION_JOURNAL_STALE" }; '
+        + 'if (@(Get-ChildItem -LiteralPath ((Split-Path -Parent $args[0])) -Filter "transaction.json.tmp-*" -Force).Count) { throw "TRANSACTION_TEMP_LEFT_BEHIND" }; "JOURNAL_ATOMIC_UPDATE_OK"',
+        str(record),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "JOURNAL_ATOMIC_UPDATE_OK" in result.stdout
