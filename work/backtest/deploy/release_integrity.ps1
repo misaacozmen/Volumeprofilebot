@@ -272,6 +272,7 @@ function Assert-ReleaseSourceIntegrity {
     $sourceDirs = @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")
     $sourceFiles = @("pyproject.toml", "README.md")
     $sourceFiles += "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json"
+    $sourceProdFiles = @{}
 
     if ($Profile -eq "super1") {
         $riskManifestPath = Join-Path $resolvedSource "data\provenance\first30_pre2025_inputs.sha256"
@@ -326,7 +327,6 @@ function Assert-ReleaseSourceIntegrity {
         }
     }
 
-    $sourceProdFiles = @{}
     foreach ($dir in $sourceDirs) {
         $fullDir = Join-Path $resolvedSource ($dir.Replace("/", [IO.Path]::DirectorySeparatorChar))
         if (Test-Path -LiteralPath $fullDir) {
