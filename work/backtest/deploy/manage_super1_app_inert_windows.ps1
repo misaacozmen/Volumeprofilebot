@@ -227,16 +227,27 @@ function Move-InertBundleTo {
     $names = @("app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig")
     foreach ($name in $names) {
         $source = Join-Path $SourceRoot $name
-        if (Test-Path -LiteralPath $source) { Move-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $name) -ErrorAction Stop }
+        if (Test-Path -LiteralPath $source) {
+            $destination = Join-Path $DestinationRoot $name
+            if (Test-Path -LiteralPath $destination) { throw "INERT_BUNDLE_DESTINATION_EXISTS: $destination" }
+            Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+        }
     }
 }
 
 function Restore-InertBundleFrom {
-    param([string]$SourceRoot, [string]$TargetRoot)
+    param([string]$SourceRoot, [string]$TargetRoot, [switch]$PreserveExistingTargetPaths)
     $names = @("app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig")
     foreach ($name in $names) {
         $source = Join-Path $SourceRoot $name
-        if (Test-Path -LiteralPath $source) { Move-Item -LiteralPath $source -Destination (Join-Path $TargetRoot $name) -ErrorAction Stop }
+        if (Test-Path -LiteralPath $source) {
+            $destination = Join-Path $TargetRoot $name
+            if (Test-Path -LiteralPath $destination) {
+                if ($PreserveExistingTargetPaths) { continue }
+                throw "INERT_BUNDLE_RESTORE_COLLISION: $destination"
+            }
+            Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+        }
     }
 }
 
@@ -284,7 +295,8 @@ function Invoke-InertAppUpgrade {
     $locks = Open-InertInputLocks -Paths @($archive, $manifestPath, $signaturePath, $python)
     $transaction = $null
     $stage = Join-Path $TargetRoot (".upgrade-stage-" + [Guid]::NewGuid().ToString("N"))
-    $oldMoved = $false
+    $oldMoveStarted = $false
+    $oldMoveComplete = $false
     try {
         $newManifest = Assert-SignedReleaseArchive -Archive $archive -ExpectedProfile "super1" -RequireProvenance
         if ([string]$newManifest.release_id -cne $ExpectedReleaseId) { throw "Signed release ID does not match the upgrade plan." }
@@ -321,8 +333,9 @@ function Invoke-InertAppUpgrade {
             (Join-Path $incoming "super1-forward.manifest.sig")
         )
         $previousApp = Assert-InertBundle -Root $TargetRoot
-        $oldMoved = $true
+        $oldMoveStarted = $true
         Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $previous
+        $oldMoveComplete = $true
         Move-Item -LiteralPath $stageApp -Destination (Join-Path $TargetRoot "app") -ErrorAction Stop
         Move-Item -LiteralPath $stageVenv -Destination (Join-Path $TargetRoot "venv311") -ErrorAction Stop
         Restore-InertBundleFrom -SourceRoot $incoming -TargetRoot $TargetRoot
@@ -345,11 +358,16 @@ function Invoke-InertAppUpgrade {
     catch {
         $failure = $_.Exception.Message
         $rollbackErrors = [Collections.Generic.List[string]]::new()
-        if ($oldMoved -and $transaction) {
+        if ($oldMoveStarted -and $transaction) {
             try {
-                $failed = Join-Path $transaction "failed-current"
-                if (-not (Test-Path -LiteralPath $failed)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failed }
-                Restore-InertBundleFrom -SourceRoot (Join-Path $transaction "previous") -TargetRoot $TargetRoot
+                if ($oldMoveComplete) {
+                    $failed = Join-Path $transaction "failed-current"
+                    if (-not (Test-Path -LiteralPath $failed)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failed }
+                    Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot
+                }
+                else {
+                    Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+                }
                 $null = Assert-InertBundle -Root $TargetRoot `
                     -ExpectedReleaseId ([string]$previousApp.manifest.release_id) `
                     -ExpectedArchiveSha256 ([string]$previousApp.archive_sha256)
@@ -396,11 +414,17 @@ function Invoke-InertAppRollback {
     $previousBundle = Assert-InertBundle -Root $previous -ExpectedReleaseId ([string]$record.previous_release_id) -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
     $current = Assert-InertBundle -Root $TargetRoot -ExpectedReleaseId ([string]$record.release_id) -ExpectedArchiveSha256 ([string]$record.archive_sha256)
     $rolledBack = Join-Path $transaction "rolled-back-current"
-    if (Test-Path -LiteralPath $rolledBack) { throw "Rollback has already preserved a current bundle for this transaction." }
-    $currentMoved = $false
+    if (Test-Path -LiteralPath $rolledBack) {
+        Assert-PathNotReparse -Path $rolledBack
+        $existingRollbackItems = @(Get-ChildItem -LiteralPath $rolledBack -Force -ErrorAction Stop)
+        if ($existingRollbackItems.Count -ne 0) { throw "Rollback has already preserved a current bundle for this transaction." }
+    }
+    $currentMoveStarted = $false
+    $currentMoveComplete = $false
     try {
-        $currentMoved = $true
+        $currentMoveStarted = $true
         Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $rolledBack
+        $currentMoveComplete = $true
         Restore-InertBundleFrom -SourceRoot $previous -TargetRoot $TargetRoot
         $restored = Assert-InertBundle -Root $TargetRoot -ExpectedReleaseId ([string]$record.previous_release_id) -ExpectedArchiveSha256 ([string]$record.previous_archive_sha256)
         $record.state = "ROLLED_BACK"
@@ -414,11 +438,16 @@ function Invoke-InertAppRollback {
     }
     catch {
         $failure = $_.Exception.Message
-        if ($currentMoved) {
+        if ($currentMoveStarted) {
             try {
-                $failedRestored = Join-Path $transaction "failed-rollback-target"
-                if (-not (Test-Path -LiteralPath $failedRestored)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedRestored }
-                Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot
+                if ($currentMoveComplete) {
+                    $failedRestored = Join-Path $transaction "failed-rollback-target"
+                    if (-not (Test-Path -LiteralPath $failedRestored)) { Move-InertBundleTo -SourceRoot $TargetRoot -DestinationRoot $failedRestored }
+                    Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot
+                }
+                else {
+                    Restore-InertBundleFrom -SourceRoot $rolledBack -TargetRoot $TargetRoot -PreserveExistingTargetPaths
+                }
                 $null = Assert-InertBundle -Root $TargetRoot `
                     -ExpectedReleaseId ([string]$current.manifest.release_id) `
                     -ExpectedArchiveSha256 ([string]$current.archive_sha256)

@@ -488,12 +488,49 @@ def test_inert_upgrade_rollback_moves_the_previous_signed_bundle_as_one_unit(tmp
     assert (restored / "app" / "release.txt").read_text(encoding="utf-8") == "previous-app"
 
 
+def test_inert_upgrade_partial_bundle_move_restores_already_moved_components(tmp_path: Path) -> None:
+    manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
+    names = {"Move-InertBundleTo", "Restore-InertBundleFrom"}
+    functions = [item["extent_text"] for item in facts(manager, "function") if item["name"] in names]
+    assert len(functions) == len(names)
+    source = tmp_path / "active"
+    destination = tmp_path / "history"
+    source.mkdir()
+    destination.mkdir()
+    for name in ("app", "venv311"):
+        (source / name).mkdir()
+        (source / name / "release.txt").write_text(f"current-{name}", encoding="utf-8")
+    for name in ("super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"):
+        (source / name).write_text(f"current-{name}", encoding="utf-8")
+    (destination / "super1-forward.zip").write_text("preexisting destination collision", encoding="utf-8")
+    result = powershell_harness(
+        'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Management"); '
+        + "\n".join(functions)
+        + '\ntry { Move-InertBundleTo -SourceRoot $args[0] -DestinationRoot $args[1]; throw "PARTIAL_MOVE_FAILURE_NOT_INJECTED" } '
+        + 'catch { if ($_.Exception.Message -notmatch "INERT_BUNDLE_DESTINATION_EXISTS") { throw }; "PARTIAL_MOVE_INJECTED" }; '
+        + 'Restore-InertBundleFrom -SourceRoot $args[1] -TargetRoot $args[0] -PreserveExistingTargetPaths; "PARTIAL_MOVE_RECOVERED"',
+        str(source),
+        str(destination),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PARTIAL_MOVE_RECOVERED" in result.stdout
+    assert {item.name for item in source.iterdir()} == {
+        "app", "venv311", "super1-forward.zip", "super1-forward.manifest.json", "super1-forward.manifest.sig"
+    }
+    assert (source / "app" / "release.txt").read_text(encoding="utf-8") == "current-app"
+    assert (destination / "super1-forward.zip").read_text(encoding="utf-8") == "preexisting destination collision"
+
+
 def test_inert_upgrade_failure_journal_is_atomic_and_does_not_reset_unrelated_acls(tmp_path: Path) -> None:
     manager = DEPLOY / "manage_super1_app_inert_windows.ps1"
     source = manager.read_text(encoding="utf-8")
     assert 'state = "FAILED_ROLLED_BACK"' in source
     assert "Write-InertTransactionRecord -Path (Join-Path $transaction \"transaction.json\") -Record $failedRecord" in source
     assert "Get-ChildItem -LiteralPath $TargetRoot -Directory -Recurse" not in source
+    assert "$oldMoveComplete = $true" in source
+    assert "$currentMoveComplete = $true" in source
+    assert "-PreserveExistingTargetPaths" in source
+    assert "$existingRollbackItems.Count -ne 0" in source
     assert "Assert-InertBundle -Root $TargetRoot `\n                    -ExpectedReleaseId ([string]$previousApp.manifest.release_id)" in source
     assert "-ExpectedReleaseId ([string]$current.manifest.release_id)" in source
     write_function = next(item["extent_text"] for item in facts(manager, "function") if item["name"] == "Write-InertTransactionRecord")
