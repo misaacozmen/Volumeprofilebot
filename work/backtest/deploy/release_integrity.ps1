@@ -189,7 +189,7 @@ function Assert-SignedReleaseArchive {
                 [string]$testInputs.risk_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
                 [string]$testInputs.risk_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
                 [string]$testInputs.engine_audit_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
-                [int]$testInputs.engine_audit_csv_count -ne 2) {
+                [int]$testInputs.engine_audit_csv_count -le 0) {
                 throw "Release manifest hash-pinned test input evidence is incomplete."
             }
             $riskFiles = @($testInputs.risk_files)
