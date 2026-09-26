@@ -13,6 +13,38 @@ function Get-ReleaseSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-ReleaseBytesSha256 {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Get-ReleaseZipEntryBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][string]$EntryPath
+    )
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        $entry = $zip.GetEntry($EntryPath)
+        if ($null -eq $entry -or $entry.Length -le 0 -or $entry.Length -gt 16777216) {
+            throw "Release ZIP entry is missing or exceeds the candidate metadata size limit: $EntryPath"
+        }
+        $source = $entry.Open()
+        $buffer = [IO.MemoryStream]::new()
+        try {
+            $source.CopyTo($buffer)
+            return ,$buffer.ToArray()
+        }
+        finally {
+            $buffer.Dispose()
+            $source.Dispose()
+        }
+    }
+    finally { $zip.Dispose() }
+}
+
 function Assert-ReleaseArtifactTestFiles {
     param([Parameter(Mandatory = $true)][object]$Manifest)
     $expected = @(
@@ -125,6 +157,7 @@ function Assert-SignedReleaseArchive {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
     $archiveFilesMap = @{}
+    $archiveFileSizesMap = @{}
     try {
         foreach ($entry in $zip.Entries) {
             $entryPath = $entry.FullName
@@ -153,6 +186,7 @@ function Assert-SignedReleaseArchive {
                 $entryStream.Dispose()
             }
             $archiveFilesMap[$entryPath] = $entryHash
+            $archiveFileSizesMap[$entryPath] = [long]$entry.Length
         }
     }
     finally {
@@ -174,6 +208,145 @@ function Assert-SignedReleaseArchive {
         Assert-ManifestTestGate -Manifest $manifest -Prefix "pytest"
         Assert-ManifestTestGate -Manifest $manifest -Prefix "artifact_pytest"
         Assert-ReleaseArtifactTestFiles -Manifest $manifest
+        if ([string]$manifest.profile -ceq "super1") {
+            $testInputs = $manifest.test_inputs
+            $testInputPropertyNames = @()
+            if ($null -ne $testInputs) { $testInputPropertyNames = @($testInputs.PSObject.Properties.Name) }
+            if ($null -eq $testInputs -or
+                [string]$testInputs.risk_manifest_path -cne "data/provenance/first30_pre2025_inputs.sha256" -or
+                [int]$testInputs.risk_file_count -ne 144 -or
+                [string]$testInputs.risk_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [string]$testInputs.risk_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [string]$testInputs.engine_audit_manifest_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                [int]$testInputs.engine_audit_csv_count -le 0 -or
+                $testInputPropertyNames -notcontains "super1_candidate_manifest_sha256" -or
+                $testInputPropertyNames -notcontains "super1_candidate_provenance_files") {
+                throw "Release manifest hash-pinned test input evidence is incomplete."
+            }
+            $riskFiles = @($testInputs.risk_files)
+            if ($riskFiles.Count -ne 144) { throw "Release manifest must bind all 144 hash-pinned risk test inputs." }
+            $seenRiskPaths = @{}
+            foreach ($riskFile in $riskFiles) {
+                $riskPath = [string]$riskFile.path
+                if ($riskPath -notmatch '^data/raw/(nq|spx)/DUKASCOPY_[^\r\n]+\.csv$' -or
+                    [string]$riskFile.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                    $seenRiskPaths.ContainsKey($riskPath)) {
+                    throw "Release manifest contains an invalid or duplicate pinned risk input: $riskPath"
+                }
+                $seenRiskPaths[$riskPath] = [string]$riskFile.sha256
+            }
+            $canonicalRiskSet = @(
+                $riskFiles | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $(([string]$_.sha256).ToLowerInvariant())"
+                }
+            ) -join "`n"
+            $riskSetBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalRiskSet + "`n")
+            if ((Get-ReleaseBytesSha256 -Bytes $riskSetBytes) -cne ([string]$testInputs.risk_set_sha256).ToLowerInvariant()) {
+                throw "Release manifest pinned risk input set hash is invalid."
+            }
+            $engineAuditFiles = @($testInputs.engine_audit_files)
+            if ([int]$testInputs.engine_audit_csv_count -le 0 -or
+                $engineAuditFiles.Count -ne [int]$testInputs.engine_audit_csv_count -or
+                [string]$testInputs.engine_audit_set_sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+                throw "Release manifest engine-audit input evidence is incomplete."
+            }
+            $seenEngineAuditPaths = @{}
+            foreach ($auditFile in $engineAuditFiles) {
+                $auditPath = [string]$auditFile.path
+                if ($auditPath -notmatch '^(nq|spx)/DUKASCOPY_[^\\/:]+\.csv$' -or
+                    [string]$auditFile.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+                    [long]$auditFile.bytes -le 0 -or
+                    $seenEngineAuditPaths.ContainsKey($auditPath)) {
+                    throw "Release manifest contains an invalid or duplicate engine-audit input: $auditPath"
+                }
+                $seenEngineAuditPaths[$auditPath] = [string]$auditFile.sha256
+            }
+            $canonicalEngineAuditSet = @(
+                $engineAuditFiles | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $(([string]$_.sha256).ToLowerInvariant())"
+                }
+            ) -join "`n"
+            $engineAuditSetBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($canonicalEngineAuditSet + "`n")
+            if ((Get-ReleaseBytesSha256 -Bytes $engineAuditSetBytes) -cne ([string]$testInputs.engine_audit_set_sha256).ToLowerInvariant()) {
+                throw "Release manifest engine-audit input set hash is invalid."
+            }
+
+            $candidateRelative = "research_candidates/v20_strategy_loop/nq_spx_local_fresh_forward_candidate_v1.json"
+            $candidateSha256 = [string]$testInputs.super1_candidate_manifest_sha256
+            $candidateFiles = @($testInputs.super1_candidate_provenance_files)
+            if ($candidateSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or $candidateFiles.Count -eq 0) {
+                throw "Release manifest Super1 candidate provenance evidence is incomplete."
+            }
+            if (-not $archiveFilesMap.ContainsKey($candidateRelative) -or
+                $archiveFilesMap[$candidateRelative] -cne $candidateSha256.ToLowerInvariant()) {
+                throw "Release manifest candidate manifest is not bound to the signed archive."
+            }
+            $candidateBytes = Get-ReleaseZipEntryBytes -Archive $archivePath -EntryPath $candidateRelative
+            if ((Get-ReleaseBytesSha256 -Bytes $candidateBytes) -cne $candidateSha256.ToLowerInvariant()) {
+                throw "Release manifest candidate manifest hash does not match archived bytes."
+            }
+            $candidatePayload = [Text.Encoding]::UTF8.GetString($candidateBytes) | ConvertFrom-Json
+            $declaredCandidateFiles = @($candidatePayload.provenance.inputs)
+            if ($declaredCandidateFiles.Count -eq 0 -or $declaredCandidateFiles.Count -ne $candidateFiles.Count) {
+                throw "Release manifest candidate provenance list does not match the archived candidate."
+            }
+            $candidatePathSeen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $declaredCandidateRecords = @()
+            foreach ($candidateFile in $declaredCandidateFiles) {
+                $candidatePath = [string]$candidateFile.path
+                $candidateFileSha256 = ([string]$candidateFile.sha256).ToLowerInvariant()
+                $candidateFileBytes = [long]$candidateFile.bytes
+                if ([string]::IsNullOrWhiteSpace($candidatePath) -or
+                    $candidatePath -ne $candidatePath.Replace("\", "/") -or
+                    [IO.Path]::IsPathRooted($candidatePath) -or $candidatePath -match '^[A-Za-z]:' -or
+                    $candidatePath -match '(^|/)\.\.(/|$)|(^|/)\./|//' -or
+                    $candidateFileSha256 -notmatch '^[a-f0-9]{64}$' -or $candidateFileBytes -le 0 -or
+                    -not $candidatePathSeen.Add($candidatePath)) {
+                    throw "Archived candidate contains an invalid or duplicate provenance input: $candidatePath"
+                }
+                if (-not $archiveFilesMap.ContainsKey($candidatePath) -or
+                    $archiveFilesMap[$candidatePath] -cne $candidateFileSha256 -or
+                    -not $archiveFileSizesMap.ContainsKey($candidatePath) -or
+                    [long]$archiveFileSizesMap[$candidatePath] -ne $candidateFileBytes) {
+                    throw "Archived candidate provenance input is not bound to its exact archive bytes: $candidatePath"
+                }
+                $declaredCandidateRecords += [pscustomobject]@{
+                    path = $candidatePath
+                    sha256 = $candidateFileSha256
+                    bytes = $candidateFileBytes
+                }
+            }
+            $testCandidatePathSeen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $testCandidateRecords = @()
+            foreach ($candidateFile in $candidateFiles) {
+                $candidatePath = [string]$candidateFile.path
+                $candidateFileSha256 = ([string]$candidateFile.sha256).ToLowerInvariant()
+                $candidateFileBytes = [long]$candidateFile.bytes
+                if ([string]::IsNullOrWhiteSpace($candidatePath) -or
+                    $candidateFileSha256 -notmatch '^[a-f0-9]{64}$' -or $candidateFileBytes -le 0 -or
+                    -not $testCandidatePathSeen.Add($candidatePath)) {
+                    throw "Release manifest contains an invalid or duplicate candidate provenance input: $candidatePath"
+                }
+                $testCandidateRecords += [pscustomobject]@{
+                    path = $candidatePath
+                    sha256 = $candidateFileSha256
+                    bytes = $candidateFileBytes
+                }
+            }
+            $canonicalDeclaredCandidateRecords = @(
+                $declaredCandidateRecords | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $([string]$_.sha256) $([long]$_.bytes)"
+                }
+            ) -join "`n"
+            $canonicalTestCandidateRecords = @(
+                $testCandidateRecords | Sort-Object -Property path -CaseSensitive -Culture en-US | ForEach-Object {
+                    "$([string]$_.path) $([string]$_.sha256) $([long]$_.bytes)"
+                }
+            ) -join "`n"
+            if ($canonicalDeclaredCandidateRecords -cne $canonicalTestCandidateRecords) {
+                throw "Release manifest candidate provenance records do not match the archived candidate input declaration."
+            }
+        }
         $seenManifestPaths = @{}
         foreach ($f in @($manifest.files)) {
             $path = [string]$f.path
@@ -207,7 +380,11 @@ function Assert-SignedReleaseArchive {
     }
 
     if ($SourceRoot) {
-        Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFilesMap -SourceRoot $SourceRoot -Profile ([string]$manifest.profile)
+        Assert-ReleaseSourceIntegrity `
+            -ArchiveFilesMap $archiveFilesMap `
+            -SourceRoot $SourceRoot `
+            -Profile ([string]$manifest.profile) `
+            -TestInputs $manifest.test_inputs
     }
 
     return $manifest
@@ -217,7 +394,8 @@ function Assert-ReleaseSourceIntegrity {
     param(
         [Parameter(Mandatory = $true)][hashtable]$ArchiveFilesMap,
         [Parameter(Mandatory = $true)][string]$SourceRoot,
-        [Parameter(Mandatory = $true)][string]$Profile
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [object]$TestInputs
     )
     $resolvedSource = [IO.Path]::GetFullPath($SourceRoot)
     if (-not (Test-Path -LiteralPath $resolvedSource -PathType Container)) {
@@ -227,8 +405,46 @@ function Assert-ReleaseSourceIntegrity {
     $sourceDirs = @("backtest", "deploy", "forward_shadow", "live_forward", "scripts")
     $sourceFiles = @("pyproject.toml", "README.md")
     $sourceFiles += "outputs/reports/engine_reliability_audit_2025_feb_mar/run_manifest.json"
+    $sourceProdFiles = @{}
 
     if ($Profile -eq "super1") {
+        $riskManifestPath = Join-Path $resolvedSource "data\provenance\first30_pre2025_inputs.sha256"
+        if ($null -eq $TestInputs -or -not (Test-Path -LiteralPath $riskManifestPath -PathType Leaf) -or
+            (Get-ReleaseSha256 -Path $riskManifestPath) -cne ([string]$TestInputs.risk_manifest_sha256).ToLowerInvariant()) {
+            throw "Signed release risk input manifest does not match the inspected source contract."
+        }
+        $expectedPinnedPaths = @($TestInputs.risk_files | ForEach-Object { [string]$_.path } | Sort-Object -CaseSensitive -Culture en-US)
+        foreach ($riskFile in @($TestInputs.risk_files)) {
+            $rawInput = Join-Path $resolvedSource ([string]$riskFile.path.Replace("/", [IO.Path]::DirectorySeparatorChar))
+            if (Test-Path -LiteralPath $rawInput -PathType Leaf) {
+                if ((Get-Item -LiteralPath $rawInput -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "Pinned risk test input is reparse-backed: $($riskFile.path)"
+                }
+                if ((Get-ReleaseSha256 -Path $rawInput) -cne ([string]$riskFile.sha256).ToLowerInvariant()) {
+                    throw "Pinned risk test input differs from its signed manifest record: $($riskFile.path)"
+                }
+            }
+        }
+        $sourceRawRoot = Join-Path $resolvedSource "data\raw"
+        if (Test-Path -LiteralPath $sourceRawRoot -PathType Container) {
+            $actualPinnedPaths = @(
+                foreach ($leg in @("nq", "spx")) {
+                    $legRoot = Join-Path $sourceRawRoot $leg
+                    if (Test-Path -LiteralPath $legRoot -PathType Container) {
+                        Get-ChildItem -LiteralPath $legRoot -File -Filter "DUKASCOPY_*.csv" |
+                            ForEach-Object { "data/raw/$leg/$($_.Name)" }
+                    }
+                }
+            ) | Sort-Object -CaseSensitive -Culture en-US
+            if ($actualPinnedPaths.Count -ne 144 -or
+                ($actualPinnedPaths -join "`n") -cne ($expectedPinnedPaths -join "`n")) {
+                throw "SourceRoot data/raw does not contain the exact 144 signed risk test inputs."
+            }
+        }
+        $versionedRuntimeConfig = Join-Path $resolvedSource "live_forward\super1_xm_mt5_demo_config_v4.json"
+        if (Test-Path -LiteralPath $versionedRuntimeConfig -PathType Leaf) {
+            $sourceProdFiles["live_forward/super1_xm_mt5_demo_config.json"] = Get-ReleaseSha256 -Path $versionedRuntimeConfig
+        }
         $sourceDirs += @(
             "research_candidates/super1",
             "research_candidates/v20_strategy_loop"
@@ -244,7 +460,6 @@ function Assert-ReleaseSourceIntegrity {
         }
     }
 
-    $sourceProdFiles = @{}
     foreach ($dir in $sourceDirs) {
         $fullDir = Join-Path $resolvedSource ($dir.Replace("/", [IO.Path]::DirectorySeparatorChar))
         if (Test-Path -LiteralPath $fullDir) {
@@ -308,7 +523,7 @@ function Install-LockedRelease {
         $env:PYTHONHOME = $null
         $env:PYTHONPATH = $null
         & $Python -I -E -B -m pip install --disable-pip-version-check --no-index --require-hashes `
-            -r "requirements-windows.lock"
+            --find-links $wheelhouse -r "requirements-windows.lock"
         if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
         & $Python -I -E -B -m pip install --disable-pip-version-check --no-index --no-deps `
             --no-build-isolation "."

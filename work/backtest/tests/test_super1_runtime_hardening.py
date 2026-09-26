@@ -157,6 +157,49 @@ def test_contract_path_resolver_returns_release_triple() -> None:
     assert "C:\\Super1\\super1-forward.manifest.sig" in paths
 
 
+def test_contract_uses_parent_of_installed_app_only_for_deployed_layout(tmp_path: Path) -> None:
+    installed_root = tmp_path / "super1-install"
+    deploy = installed_root / "app" / "deploy"
+    deploy.mkdir(parents=True)
+    contract_copy = deploy / "super1_runtime_contract.ps1"
+    contract_copy.write_bytes(Path(_contract_script()).read_bytes())
+    command = f". '{contract_copy}'; (Assert-Super1RuntimeContract | ConvertTo-Json -Compress)"
+    result = _powershell("-Command", command)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip())
+    assert payload["root"] == str(installed_root)
+    assert payload["health"] == str(installed_root / "state" / "health.json")
+
+
+def test_runtime_config_binds_deployed_terminal_to_its_installed_root(tmp_path: Path) -> None:
+    installed_root = tmp_path / "super1-install"
+    app_root = installed_root / "app"
+    config_path = app_root / "live_forward" / "super1_xm_mt5_demo_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes((ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json").read_bytes())
+
+    config, resolved_path, digest = guard.load_runtime_config(
+        app_root,
+        allow_unsigned_placeholder=True,
+    )
+
+    assert resolved_path == config_path
+    assert config["terminal_path"] == str(installed_root / "mt5" / "terminal64.exe")
+    assert digest == guard.file_sha256(config_path)
+
+
+def test_runtime_config_rejects_terminal_outside_installed_root(tmp_path: Path) -> None:
+    app_root = tmp_path / "super1-install" / "app"
+    config_path = app_root / "live_forward" / "super1_xm_mt5_demo_config.json"
+    config_path.parent.mkdir(parents=True)
+    config = json.loads((ROOT / "live_forward" / "super1_xm_mt5_demo_config_v4.json").read_text(encoding="utf-8"))
+    config["terminal_path"] = r"C:\OtherSuper1\mt5\terminal64.exe"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(guard.Super1RuntimeError, match="outside its installed root"):
+        guard.load_runtime_config(app_root, allow_unsigned_placeholder=True)
+
+
 def test_r8_read_only_lease_cli_classifies_missing_without_runtime_imports(tmp_path: Path) -> None:
     cli = ROOT / "scripts" / "super1_lease_cli.py"
     result = subprocess.run(
@@ -241,7 +284,7 @@ Write-Output (($used | Sort-Object -Unique) -join ',')
 
 def test_missing_health_contract_fails_in_real_powershell(tmp_path: Path) -> None:
     source = Path(_contract_script()).read_text(encoding="utf-8")
-    source = source.replace('    health = "C:\\Super1\\state\\health.json"\n', "")
+    source = source.replace('    health = Join-Path $script:Super1RuntimeRoot "state\\health.json"\n', "")
     broken = tmp_path / "broken_contract.ps1"
     broken.write_text(source, encoding="utf-8")
     result = _powershell("-Command", f". '{broken}'; Assert-Super1RuntimeContract")

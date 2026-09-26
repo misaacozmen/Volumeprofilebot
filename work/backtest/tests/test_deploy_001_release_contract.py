@@ -184,17 +184,21 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     helper = DEPLOY / str(value["helper_path"])[len("deploy/") :]
     payload = helper.read_bytes()
 
-    assert value["source_commit"] == "65b4ff10f9f01618df4af3249217a97ea9eb1e88"
-    assert value["source_tree"] == "accc7a0d662691f0ee3e978bc83f3036ea93a1be"
+    assert re.fullmatch(r"[A-Fa-f0-9]{40}", str(value["source_commit"]))
+    assert value["source_tree"] == subprocess.check_output(
+        ["git", "rev-parse", f"{value['source_commit']}^{{tree}}"],
+        cwd=ROOT.parents[1],
+        text=True,
+    ).strip()
     assert value["source_blob_sha1"] == subprocess.check_output(
         ["git", "rev-parse", f"{value['source_commit']}:work/backtest/{value['helper_path']}"],
         cwd=ROOT.parents[1],
         text=True,
     ).strip()
-    assert len(payload) == value["byte_length"] == 21876
+    assert len(payload) == value["byte_length"]
     assert payload.startswith(b"\xef\xbb\xbf") is False
     assert b"\r" not in payload
-    assert payload.count(b"\n") == value["lf_count"] == 491
+    assert payload.count(b"\n") == value["lf_count"]
     assert hashlib.sha256(payload).hexdigest() == value["sha256_lf"]
     assert (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines() == [
         "deploy/release_integrity.ps1 text eol=lf",
@@ -203,10 +207,84 @@ def test_release_integrity_contract_binds_the_exact_git_source_and_bytes() -> No
     ]
 
 
+def test_release_builder_rechecks_provenance_after_packaging_and_before_signing() -> None:
+    source = (DEPLOY / "build_signed_windows_release.ps1").read_text(encoding="utf-8")
+    package_manifest = source.rindex('$manifestJson = $manifest | ConvertTo-Json -Depth 6')
+    signing_key = source.index('$protected = [Convert]::FromBase64String')
+    assert package_manifest < signing_key
+    final_gate = source.rindex("Assert-PinnedRiskInputSetUnchanged -InputRoot $RiskProvenanceSourceRoot")
+    final_engine_gate = source.rindex("Assert-EngineAuditInputSetUnchanged -SourceRoot $engineAuditRootResolved")
+    final_clone_gate = source.rindex("Assert-TestCloneContainsOnlyPinnedInputs -CloneRoot $TestRepoRoot")
+    assert package_manifest < final_gate < signing_key
+    assert package_manifest < final_engine_gate < signing_key
+    assert package_manifest < final_clone_gate < signing_key
+    assert "$postPackageGitStatus = (& git -C $RepoRoot status --porcelain)" in source
+    assert "Release build source tree changed before manifest signing" in source
+
+
+def test_super1_source_integrity_accepts_versioned_config_under_strict_mode(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    raw_root = source / "data" / "raw" / "nq"
+    raw_root.mkdir(parents=True)
+    raw_digest = hashlib.sha256(b"").hexdigest()
+    risk_files = []
+    for index in range(144):
+        relative = f"data/raw/nq/DUKASCOPY_TEST_{index:03d}.csv"
+        (source / relative).write_bytes(b"")
+        risk_files.append({"path": relative, "sha256": raw_digest})
+
+    manifest_path = source / "data" / "provenance" / "first30_pre2025_inputs.sha256"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_bytes = b"fixture manifest\n"
+    manifest_path.write_bytes(manifest_bytes)
+    inputs_path = tmp_path / "test-inputs.json"
+    inputs_path.write_text(
+        json.dumps({
+            "risk_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "risk_files": risk_files,
+        }),
+        encoding="utf-8",
+    )
+
+    config_path = source / "live_forward" / "super1_xm_mt5_demo_config_v4.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}\n", encoding="utf-8")
+    helper_path = DEPLOY / "release_integrity.ps1"
+    script = f"""
+$helperPath = $args[0]
+. $helperPath
+function Get-FileHash {{
+    param([string]$LiteralPath, [string]$Algorithm)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    try {{ [pscustomobject]@{{ Hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }} }}
+    finally {{ $stream.Dispose(); $sha.Dispose() }}
+}}
+$sourceRoot = $args[1]
+$testInputs = Get-Content -LiteralPath $args[2] -Raw | ConvertFrom-Json
+$archiveFiles = @{{}}
+$config = Join-Path $sourceRoot 'live_forward\\super1_xm_mt5_demo_config_v4.json'
+$configHash = Get-ReleaseSha256 -Path $config
+$archiveFiles['live_forward/super1_xm_mt5_demo_config.json'] = $configHash
+$archiveFiles['live_forward/super1_xm_mt5_demo_config_v4.json'] = $configHash
+Assert-ReleaseSourceIntegrity -ArchiveFilesMap $archiveFiles -SourceRoot $sourceRoot `
+    -Profile 'super1' -TestInputs $testInputs
+'PASS'
+"""
+    result = powershell_harness(script, str(helper_path), str(source), str(inputs_path))
+    assert result.returncode == 0, result.stderr
+    assert "PASS" in result.stdout
+
+
 def test_both_upgraders_have_exactly_the_contract_pin() -> None:
     expected = str(contract()["sha256_lf"])
     pattern = re.compile(r'\$ExpectedIntegrityScriptSha256\s*=\s*"([0-9a-f]{64})"')
-    for name in ("upgrade_super1_signed_app_windows.ps1", "upgrade_forward_shadow_windows.ps1"):
+    for name in (
+        "upgrade_super1_signed_app_windows.ps1",
+        "upgrade_forward_shadow_windows.ps1",
+        "install_super1_app_inert_windows.ps1",
+        "manage_super1_app_inert_windows.ps1",
+    ):
         matches = pattern.findall((DEPLOY / name).read_text(encoding="utf-8"))
         assert matches == [expected]
 

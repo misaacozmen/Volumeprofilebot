@@ -154,7 +154,8 @@ def test_super1_release_stages_every_sealed_candidate_provenance_input() -> None
         ).read_text(encoding="utf-8")
     )
 
-    assert "$candidatePayload.provenance.inputs" in source
+    assert "Get-Super1CandidateProvenanceSet -SourceRoot $SourceRoot" in source
+    assert "$super1ProvenanceSet.files" in source
     assert "$requiredPayloadFiles += $Super1ProvenanceFiles" in source
     assert "Super1 provenance input is missing" in source
     assert any(item["path"].startswith("outputs/reports/") for item in candidate["provenance"]["inputs"])
@@ -626,9 +627,19 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
     assert "Release build aborted: pytest test suite failed" in source
     assert "Assert-JunitMatchesInventory" in source
     assert "Get-CollectionNodeIds" in source
+    assert "PINNED_RISK_INPUT_COUNT_INVALID: expected=144" in source
+    assert "PINNED_RISK_INPUT_SET_MISMATCH" in source
+    assert "PINNED_RISK_INPUT_HASH_MISMATCH" in source
+    assert "git clone --quiet --local --no-hardlinks" in source
+    assert "prepare_risk_provenance.py" in source
+    assert "Assert-TestCloneContainsOnlyPinnedInputs" in source
+    assert "risk_set_sha256" in source
+    assert "engine_audit_manifest_sha256" in source
+    assert "New-Item -ItemType Directory -Path $TempRoot" in source
     assert "pytest_nodeid_sha256" in source
     assert "artifact_pytest_nodeid_sha256" in source
     assert "deploy/stage_signed_upgrader_windows.ps1" in source
+    assert "deploy/install_super1_app_inert_windows.ps1" in source
     for key in (
         "release_id",
         "created_at_utc",
@@ -648,9 +659,47 @@ def test_build_signed_release_enforces_dirty_git_python311_and_test_gates() -> N
         "artifact_pytest_skipped_count",
         "artifact_pytest_nodeid_sha256",
         "archive_sha256",
+        "test_inputs = [ordered]@{",
         "files = $manifestFiles",
     ):
         assert key in source
+
+
+def test_inert_super1_installer_verifies_signed_release_without_activating_runtime() -> None:
+    source = text("install_super1_app_inert_windows.ps1")
+    integrity = text("release_integrity.ps1")
+
+    assert "Assert-SignedReleaseArchive" in source
+    assert "-ExpectedProfile \"super1\" -RequireProvenance" in source
+    assert "Target root is not empty" in source
+    assert "Set-InertInstallDirectoryAcl" in source
+    assert "Install-LockedRelease -Python $venvPython -App $appStagingRoot" in source
+    assert "--find-links $wheelhouse" in integrity
+    assert "--require-hashes" in integrity
+    assert "--no-index" in integrity
+    assert "Open-InertReleaseInputLocks" in source
+    assert "FileShare]::Read" in source
+    assert "Move-InertInstallFailureArtifacts" in source
+    assert 'status = "PLAN_ONLY_NO_CHANGES"' in source
+    assert 'status = "INERT_APP_INSTALLED"' in source
+    assert "deployment_ready = $false" in source
+    assert "INERT_INSTALL_FAILED_ROLLED_BACK" in source
+    for forbidden in ("Register-ScheduledTask", "schtasks.exe", "Start-ScheduledTask", "Start-Process"):
+        assert forbidden not in source
+
+
+def test_inert_app_upgrade_and_rollback_are_explicitly_inert() -> None:
+    source = text("manage_super1_app_inert_windows.ps1")
+
+    assert 'ValidateSet("Upgrade", "Rollback", "Recover")' in source
+    assert "Invoke-InertAppRecovery" in source
+    assert "Move-InertBundleTo" in source
+    assert "Restore-InertBundleFrom" in source
+    assert 'state = "UPGRADED"' in source
+    assert 'state = "ROLLED_BACK"' in source
+    assert "deployment_ready = $false" in source
+    for forbidden in ("Register-ScheduledTask", "schtasks.exe", "Start-ScheduledTask", "Start-Process", "OrderSend", "order_send"):
+        assert forbidden not in source
 
 
 def test_release_integrity_validates_entries_and_rejects_credentials_and_source_mismatch() -> None:
@@ -666,3 +715,9 @@ def test_release_integrity_validates_entries_and_rejects_credentials_and_source_
     assert "Production source file missing from release archive" in source
     assert "Production file content mismatch between source and release archive" in source
     assert "Release archive contains unexpected production entry not present in source tree" in source
+    assert "Release manifest must bind all 144 hash-pinned risk test inputs" in source
+    assert "Release manifest pinned risk input set hash is invalid" in source
+    assert "engine_audit_manifest_sha256" in source
+    assert "Signed release risk input manifest does not match the inspected source contract" in source
+    assert "SourceRoot data/raw does not contain the exact 144 signed risk test inputs" in source
+    assert 'sourceProdFiles["live_forward/super1_xm_mt5_demo_config.json"]' in source

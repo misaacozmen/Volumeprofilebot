@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import ctypes
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import platform
@@ -150,6 +151,7 @@ def load_runtime_config(
     release builder materializes the legacy deployed filename from those exact
     bytes for installers and the installed runtime guard.
     """
+    app_root = Path(app_root).resolve()
     path = Path(config_path) if config_path is not None else app_root / "live_forward" / "super1_xm_mt5_demo_config.json"
     if not path.is_absolute():
         path = app_root / path
@@ -169,13 +171,31 @@ def load_runtime_config(
         and config.get("status") == "UNSIGNED_VALIDATION_ONLY"
         and config.get("account_login") is None
     )
+    legacy_terminal_path = r"C:\Super1\mt5\terminal64.exe"
+    configured_terminal_path = str(config.get("terminal_path") or "")
+    installed_app_layout = app_root.name.casefold() == "app"
+    if installed_app_layout:
+        try:
+            path.resolve().relative_to(app_root)
+        except ValueError as exc:
+            raise Super1RuntimeError("Installed Super1 runtime config escapes the protected app root.") from exc
+        installed_terminal_path = str((app_root.parent / "mt5" / "terminal64.exe").resolve())
+        legacy_match = ntpath.normcase(ntpath.normpath(configured_terminal_path)) == ntpath.normcase(legacy_terminal_path)
+        installed_match = os.path.normcase(os.path.abspath(configured_terminal_path)) == os.path.normcase(installed_terminal_path)
+        if not (legacy_match or installed_match):
+            raise Super1RuntimeError("Signed Super1 runtime config names a terminal outside its installed root.")
+        # The signed V4 source keeps its legacy default.  At runtime the protected
+        # app location is authoritative, so never connect back to another root.
+        config["terminal_path"] = installed_terminal_path
+    else:
+        installed_terminal_path = legacy_terminal_path
     if (
         config.get("environment") != "XM_MT5_DEMO_ORDER"
         or config.get("account_mode") != "DEMO_ORDER"
         or config.get("execution") != "MT5_DEMO_ORDERS"
         or config.get("manual_required") is not False
         or config.get("live_order_approval_required") is not True
-        or config.get("terminal_path") != r"C:\Super1\mt5\terminal64.exe"
+        or config.get("terminal_path") != installed_terminal_path
         or config.get("target") != "LOCAL_WINDOWS_PC"
         or config.get("isolation_required") is not True
         or config.get("demo_order_execution_enabled") is not True
